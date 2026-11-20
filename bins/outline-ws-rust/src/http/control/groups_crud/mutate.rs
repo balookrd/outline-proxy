@@ -301,14 +301,32 @@ pub(super) fn apply_update(
     Ok(())
 }
 
+pub(super) fn is_group_referenced_by_routes(doc: &DocumentMut, group: &str) -> bool {
+    if let Some(arr) = doc.get("route").and_then(Item::as_array_of_tables) {
+        for t in arr.iter() {
+            if t.get("via").and_then(|v| v.as_str()) == Some(group)
+                || t.get("fallback_via").and_then(|v| v.as_str()) == Some(group)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn apply_delete(doc: &mut DocumentMut, name: &str) -> Result<(), String> {
     let count = count_uplinks_for_group(doc, name);
-    let arr = get_or_init_uplink_groups(doc);
-    let idx =
-        find_group_index(arr, name).ok_or_else(|| format!("uplink_group \"{name}\" not found"))?;
     if count > 0 {
         return Err(format!("uplink_group \"{name}\" has {count} uplinks; remove them first"));
     }
+    if is_group_referenced_by_routes(doc, name) {
+        return Err(format!(
+            "uplink_group \"{name}\" is referenced by routing rules; update or remove routes first"
+        ));
+    }
+    let arr = get_or_init_uplink_groups(doc);
+    let idx =
+        find_group_index(arr, name).ok_or_else(|| format!("uplink_group \"{name}\" not found"))?;
     arr.remove(idx);
     Ok(())
 }

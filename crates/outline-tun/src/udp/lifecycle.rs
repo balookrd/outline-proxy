@@ -1117,7 +1117,11 @@ impl ReaderStop {
 /// detection path, robust to added context layers). A *dirty* read error
 /// returns `false` and escalates as before.
 fn is_clean_ws_close(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.downcast_ref::<WsClosed>().is_some())
+    if error.chain().any(|cause| cause.downcast_ref::<WsClosed>().is_some()) {
+        return true;
+    }
+    let lower = error.to_string().to_ascii_lowercase();
+    lower.contains("h3_no_error")
 }
 
 async fn report_udp_runtime_failure(

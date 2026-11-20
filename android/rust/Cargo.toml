@@ -46,6 +46,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+libc = "0.2"
 
 # A thin binary so `cargo run --bin uniffi-bindgen -- ...` can generate the
 # Kotlin bindings from the compiled library. See android/README.md.

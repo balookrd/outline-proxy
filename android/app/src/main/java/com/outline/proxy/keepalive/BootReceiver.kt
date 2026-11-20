@@ -16,10 +16,19 @@ import com.outline.proxy.OutlineVpnService
  */
 class BootReceiver : BroadcastReceiver() {
 
-    override fun onReceive(context: Context, intent: Intent) {
+    override fun onReceive(context: Context, intent: Intent?) {
+        val action = intent?.action ?: return
+        if (action != Intent.ACTION_BOOT_COMPLETED &&
+            action != ACTION_QUICKBOOT_POWERON &&
+            action != Intent.ACTION_MY_PACKAGE_REPLACED
+        ) {
+            Log.w(TAG, "ignoring unexpected broadcast action: $action")
+            return
+        }
+
         if (!KeepAliveState(context).shouldRun) return
 
-        Log.i(TAG, "restoring the tunnel after ${intent.action}")
+        Log.i(TAG, "restoring the tunnel after $action")
         OutlineVpnService.ensure(context)
         WatchdogAlarm.schedule(context, FIRST_CHECK_DELAY_MS)
         WatchdogWorker.schedule(context)
@@ -28,5 +37,6 @@ class BootReceiver : BroadcastReceiver() {
     private companion object {
         const val TAG = "KeepAlive"
         const val FIRST_CHECK_DELAY_MS = 30_000L
+        const val ACTION_QUICKBOOT_POWERON = "android.intent.action.QUICKBOOT_POWERON"
     }
 }

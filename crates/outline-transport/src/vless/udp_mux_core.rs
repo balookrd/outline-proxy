@@ -253,6 +253,9 @@ impl<D: VlessUdpMuxDial> VlessUdpMuxCore<D> {
         &self,
         target: &TargetAddr,
     ) -> Result<Arc<VlessUdpMuxSessionEntry<D::Session>>> {
+        if *self.close_signal.borrow() {
+            return Err(anyhow::anyhow!("vless udp mux is closed"));
+        }
         // Fast path: populated slot for this target. Concurrent senders
         // to *different* targets share a read guard so they don't
         // serialize, and `entry.touch()` updates the LRU timestamp
@@ -273,6 +276,9 @@ impl<D: VlessUdpMuxDial> VlessUdpMuxCore<D> {
         // and the next call retries.
         let (slot, evicted) = {
             let mut guard = self.sessions.write();
+            if *self.close_signal.borrow() {
+                return Err(anyhow::anyhow!("vless udp mux is closed"));
+            }
             // Re-check (TOCTOU) before allocating a fresh slot.
             if let Some(existing) = guard.get(target) {
                 (Arc::clone(existing), None)
@@ -281,7 +287,15 @@ impl<D: VlessUdpMuxDial> VlessUdpMuxCore<D> {
                     // LRU eviction. Skip in-flight slots — abandoning their
                     // shared dial future would force every blocked waiter
                     // to restart with a fresh handshake.
-                    evict_lru_populated_session(&mut guard)
+                    match evict_lru_populated_session(&mut guard) {
+                        Some(v) => Some(v),
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "vless udp mux session capacity reached (all {} slots in-flight)",
+                                self.limits.max_sessions
+                            ));
+                        },
+                    }
                 } else {
                     None
                 };

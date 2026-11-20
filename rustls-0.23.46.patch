@@ -1160,7 +1160,7 @@ index 8652415..af309c2 100644
      #[cfg(feature = "std")]
      pub use client_conn::{ClientConnection, WriteEarlyData};
 diff --git a/src/msgs/fragmenter.rs b/src/msgs/fragmenter.rs
-index 4863677..53aab24 100644
+index 4863677..291e13e 100644
 --- a/src/msgs/fragmenter.rs
 +++ b/src/msgs/fragmenter.rs
 @@ -5,6 +5,13 @@ pub(crate) const MAX_FRAGMENT_LEN: usize = 16384;
@@ -1241,7 +1241,7 @@ index 4863677..53aab24 100644
  
 -        let (before, after) = self.payload.split_at(self.limit);
 +        let chunk_limit = if self.dynamic && self.bytes_sent < RECORD_SIZE_BOOST_THRESHOLD {
-+            TCP_MSS_PAYLOAD
++            TCP_MSS_PAYLOAD.min(self.limit)
 +        } else {
 +            self.limit
 +        };
@@ -1269,7 +1269,7 @@ index 4863677..53aab24 100644
 +            let mut sent = self.bytes_sent;
 +            while rem > 0 {
 +                let lim = if sent < RECORD_SIZE_BOOST_THRESHOLD {
-+                    TCP_MSS_PAYLOAD
++                    TCP_MSS_PAYLOAD.min(self.limit)
 +                } else {
 +                    self.limit
 +                };
@@ -1571,19 +1571,26 @@ index 2cfd8b8..8902ba3 100644
          Ok(Self::new(
              Box::new(hs::ExpectClientHello::new(config, extra_exts)),
 diff --git a/src/server/tls13.rs b/src/server/tls13.rs
-index 55e32f1..8f98fc4 100644
+index 55e32f1..8a857ab 100644
 --- a/src/server/tls13.rs
 +++ b/src/server/tls13.rs
-@@ -1333,7 +1333,7 @@ impl ExpectFinished {
+@@ -1331,9 +1331,14 @@ impl ExpectFinished {
+         cx: &ServerContext<'_>,
+         resumption: &KeyScheduleResumption,
          config: &ServerConfig,
++        total_tickets: usize,
      ) -> Result<(), Error> {
          let secure_random = config.provider.secure_random;
 -        let nonce = rand::random_vec(secure_random, 32)?;
-+        let nonce = Vec::new(); // empty nonce (0 bytes) matches Go crypto/tls single ticket
++        let nonce = if total_tickets <= 1 {
++            Vec::new() // empty nonce (0 bytes) matches Go crypto/tls single ticket
++        } else {
++            rand::random_vec(secure_random, 8)?
++        };
          let age_add = rand::random_u32(secure_random)?;
  
          let now = config.current_time()?;
-@@ -1356,7 +1356,7 @@ impl ExpectFinished {
+@@ -1356,7 +1361,7 @@ impl ExpectFinished {
                  trace!("resumption not available; not issuing ticket");
                  return Ok(());
              }
@@ -1591,4 +1598,13 @@ index 55e32f1..8f98fc4 100644
 +            let stateful_lifetime = 7 * 24 * 60 * 60; // 7 days (604800s), matches Go ticketLifetime
              (id, stateful_lifetime)
          };
+ 
+@@ -1418,7 +1423,7 @@ impl State<ServerConnectionData> for ExpectFinished {
+ 
+         let mut flight = HandshakeFlightTls13::new(&mut self.transcript);
+         for _ in 0..self.send_tickets {
+-            Self::emit_ticket(&mut flight, self.suite, cx, &resumption, &self.config)?;
++            Self::emit_ticket(&mut flight, self.suite, cx, &resumption, &self.config, self.send_tickets)?;
+         }
+         flight.finish(cx.common);
  

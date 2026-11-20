@@ -403,3 +403,55 @@ pub(super) fn table_to_section(tbl: &Table) -> Result<UplinkSection, String> {
     let text = render_table_with_arrays(tbl);
     toml::from_str::<UplinkSection>(&text).map_err(|e| e.to_string())
 }
+
+fn redact_link_or_url(s: &str) -> String {
+    if let Some((schema, rest)) = s.split_once("://") {
+        if let Some((_userinfo, host_and_beyond)) = rest.split_once('@') {
+            format!("{schema}://[REDACTED]@{host_and_beyond}")
+        } else if schema == "ss" {
+            format!("{schema}://[REDACTED]")
+        } else {
+            s.to_string()
+        }
+    } else {
+        "[REDACTED]".to_string()
+    }
+}
+
+/// Redact sensitive secrets (passwords, UUIDs, private keys, link credentials)
+/// in an uplink's JSON representation so `GET /control/uplinks` does not leak them.
+pub(crate) fn redact_uplink_config_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                match key.as_str() {
+                    "password" | "vless_id" | "uuid" | "key" | "private_key" => {
+                        *val = serde_json::Value::String("[REDACTED]".to_string());
+                    },
+                    "link" | "share_link" => {
+                        if let Some(s) = val.as_str() {
+                            *val = serde_json::Value::String(redact_link_or_url(s));
+                        }
+                    },
+                    "tcp_ws_url" | "tcp_xhttp_url" | "udp_ws_url" | "udp_xhttp_url"
+                    | "vless_ws_url" | "vless_xhttp_url" | "ss_ws_url" | "ss_xhttp_url" => {
+                        if let Some(s) = val.as_str()
+                            && s.contains('@')
+                        {
+                            *val = serde_json::Value::String(redact_link_or_url(s));
+                        }
+                    },
+                    _ => {
+                        redact_uplink_config_json(val);
+                    },
+                }
+            }
+        },
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                redact_uplink_config_json(item);
+            }
+        },
+        _ => {},
+    }
+}

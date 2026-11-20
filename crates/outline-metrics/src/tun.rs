@@ -65,7 +65,11 @@ pub fn record_tun_flow_closed(group: &str, uplink: &str, reason: &'static str, d
         .tun_flow_duration_seconds
         .with_label_values(&[reason, group, uplink])
         .observe(duration.as_secs_f64());
-    METRICS.tun_flows_active.with_label_values(&[group, uplink]).dec();
+    // Flows in the "connecting" state have never called `record_tun_flow_created`
+    // (the active gauge was not incremented), so decrementing would drive it negative.
+    if uplink != "connecting" {
+        METRICS.tun_flows_active.with_label_values(&[group, uplink]).dec();
+    }
 }
 
 pub fn record_tun_icmp_local_reply(ip_family: &'static str) {

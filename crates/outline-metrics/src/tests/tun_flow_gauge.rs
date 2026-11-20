@@ -74,3 +74,19 @@ fn moving_a_flow_onto_its_current_uplink_is_a_no_op() {
     record_tun_flow_closed(group, "same", "test", Duration::from_secs(1));
     assert_eq!(active(group, "same"), 0);
 }
+
+#[test]
+fn closing_connecting_flow_does_not_drive_gauge_negative() {
+    let _guard = test_guard();
+    let group = "tun-flow-gauge-connecting";
+
+    // A flow in "connecting" state fails dial and is closed without ever
+    // calling record_tun_flow_created.
+    assert_eq!(active(group, "connecting"), 0);
+    record_tun_flow_closed(group, "connecting", "dial_failed", Duration::from_millis(50));
+    assert_eq!(
+        active(group, "connecting"),
+        0,
+        "connecting flow close must not drive gauge negative"
+    );
+}

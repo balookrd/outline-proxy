@@ -254,7 +254,10 @@ release_field() {
     | sed -E "s/^\"${field}\":[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"$/\\1/"
 }
 
-strip_v() { echo "${1#v}"; }
+strip_v() {
+  local ver="${1#"${TAG_PREFIX:-}"}"
+  echo "${ver#v}"
+}
 
 # Возвращает короткий (12 символов) SHA коммита для тега nightly.
 # Сначала берёт target_commitish из release JSON; если это ветка, а не SHA —
@@ -334,7 +337,7 @@ resolve_release() {
     [[ -n "$RELEASE_COMMIT" ]] || warn "Не удалось получить commit SHA для nightly — проверка версии будет пропущена"
   fi
 
-  asset_pattern="/${BINARY_NAME}-v[^/]*-${TARGET_TRIPLE}\\.tar\\.gz$"
+  asset_pattern="/${BINARY_NAME}-v?[^/]*-${TARGET_TRIPLE}\\.tar\\.gz$"
   RELEASE_ASSET_URL="$(printf '%s' "$release_json" \
     | grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' \
     | sed -E 's/^"browser_download_url":[[:space:]]*"([^"]+)"$/\1/' \

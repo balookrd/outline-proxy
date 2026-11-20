@@ -94,6 +94,9 @@ pub async fn update_user(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
+    if !is_valid_user_id(&id) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid user id");
+    }
     let path = format!("/control/users/{}", encode_path_segment(&id));
     forward(&state, &query.instance, Method::PATCH, &path, Some(body)).await
 }
@@ -103,6 +106,9 @@ pub async fn delete_user(
     Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
+    if !is_valid_user_id(&id) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid user id");
+    }
     let path = format!("/control/users/{}", encode_path_segment(&id));
     forward(&state, &query.instance, Method::DELETE, &path, None).await
 }
@@ -112,6 +118,9 @@ pub async fn block_user(
     Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
+    if !is_valid_user_id(&id) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid user id");
+    }
     let path = format!("/control/users/{}/block", encode_path_segment(&id));
     forward(&state, &query.instance, Method::POST, &path, None).await
 }
@@ -121,8 +130,22 @@ pub async fn unblock_user(
     Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
+    if !is_valid_user_id(&id) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid user id");
+    }
     let path = format!("/control/users/{}/unblock", encode_path_segment(&id));
     forward(&state, &query.instance, Method::POST, &path, None).await
+}
+
+fn is_valid_user_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return false;
+    }
+    if id.contains('/') || id.contains('\\') {
+        return false;
+    }
+    true
 }
 
 /// Resolves the instance and passes the call through, mirroring the control
@@ -153,7 +176,7 @@ fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'~' => {
                 encoded.push(byte as char);
             },
             other => encoded.push_str(&format!("%{other:02X}")),

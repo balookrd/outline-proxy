@@ -45,7 +45,8 @@ public enum ConfigGenerator {
         }
 
         let linkStr = effectiveTcpOnly ? TcpOnlyConfig.enforceLink(profile.link) : profile.link
-        let transportStr = effectiveTcpOnly ? (profile.transport == "xhttp_h3" ? "xhttp_h2" : (profile.transport == "ws_h3" ? "ws_h2" : profile.transport)) : profile.transport
+        let rawTransport = effectiveTcpOnly ? (profile.transport == "xhttp_h3" ? "xhttp_h2" : (profile.transport == "ws_h3" ? "ws_h2" : profile.transport)) : profile.transport
+        let transportStr = sanitizeTransport(rawTransport)
 
         toml += """
         [h2]
@@ -65,6 +66,18 @@ public enum ConfigGenerator {
 
         """
         return effectiveTcpOnly ? TcpOnlyConfig.apply(to: toml) : toml
+    }
+
+    private static let allowedTransports: Set<String> = [
+        "vless", "ss", "xhttp_h2", "xhttp_h3", "ws_h2", "ws_h3"
+    ]
+
+    public static func sanitizeTransport(_ transport: String) -> String {
+        let trimmed = transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if allowedTransports.contains(trimmed) {
+            return trimmed
+        }
+        return "vless"
     }
 
     /// Legacy alias for SOCKS5 mode config generation.
@@ -140,8 +153,31 @@ public enum ConfigGenerator {
         }
     }
 
-    private static func escapeToml(_ str: String) -> String {
-        str.replacingOccurrences(of: "\\", with: "\\\\")
-           .replacingOccurrences(of: "\"", with: "\\\"")
+    public static func escapeToml(_ str: String) -> String {
+        var result = ""
+        result.reserveCapacity(str.count + 8)
+        for scalar in str.unicodeScalars {
+            switch scalar.value {
+            case 0x5C: // \
+                result.append("\\\\")
+            case 0x22: // "
+                result.append("\\\"")
+            case 0x0A: // \n
+                result.append("\\n")
+            case 0x0D: // \r
+                result.append("\\r")
+            case 0x09: // \t
+                result.append("\\t")
+            case 0x08: // \b
+                result.append("\\b")
+            case 0x0C: // \f
+                result.append("\\f")
+            case 0x00...0x1F, 0x7F: // other control characters
+                result.append(String(format: "\\u%04x", scalar.value))
+            default:
+                result.append(Character(scalar))
+            }
+        }
+        return result
     }
 }

@@ -177,10 +177,16 @@ pub(super) async fn drive_tls_handshake(
             let chunk_len = chunk_bytes.len();
             let mut cursor = std::io::Cursor::new(chunk_bytes);
             while (cursor.position() as usize) < chunk_len {
-                conn.read_tls(&mut cursor).context("rustls read_tls failed")?;
+                let n = conn.read_tls(&mut cursor).context("rustls read_tls failed")?;
+                conn.process_new_packets()
+                    .context("TLS handshake processing failed")?;
+                if n == 0 {
+                    if (cursor.position() as usize) < chunk_len {
+                        bail!("rustls read_tls made no progress with remaining data");
+                    }
+                    break;
+                }
             }
-            conn.process_new_packets()
-                .context("TLS handshake processing failed")?;
         }
     }
 

@@ -20,14 +20,17 @@ use tracing::warn;
 /// and the rest of the body is never buffered.
 pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
+/// Timeout for reading the entire request body to prevent Slowloris attacks.
+pub(crate) const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Read a request body into memory, refusing anything over
-/// [`MAX_REQUEST_BODY_BYTES`].
+/// [`MAX_REQUEST_BODY_BYTES`] or taking longer than [`REQUEST_BODY_TIMEOUT`].
 ///
 /// On the error path the caller gets a ready-made JSON response — 413 for an
-/// over-limit body, 400 for a transport-level read failure — so handlers stay a
-/// single `match` away from their payload. The response type is the one both
-/// planes already use (`ControlResponse` / `DashboardResponse` are aliases of
-/// it). `endpoint` is a static label used only for the warn log.
+/// over-limit body, 408 for a timeout, 400 for a transport-level read failure —
+/// so handlers stay a single `match` away from their payload. The response type
+/// is the one both planes already use (`ControlResponse` / `DashboardResponse` are
+/// aliases of it). `endpoint` is a static label used only for the warn log.
 // The error variant is a ready-to-send HTTP `Response` — the shape both planes
 // return as their error — so `result_large_err` is expected here; boxing it
 // would only churn every caller for no real gain.
@@ -40,9 +43,10 @@ where
     B: Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    match Limited::new(body, MAX_REQUEST_BODY_BYTES).collect().await {
-        Ok(collected) => Ok(collected.to_bytes()),
-        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+    let collect_fut = Limited::new(body, MAX_REQUEST_BODY_BYTES).collect();
+    match tokio::time::timeout(REQUEST_BODY_TIMEOUT, collect_fut).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes()),
+        Ok(Err(error)) if error.downcast_ref::<LengthLimitError>().is_some() => {
             warn!(
                 endpoint,
                 limit_bytes = MAX_REQUEST_BODY_BYTES,
@@ -50,9 +54,17 @@ where
             );
             Err(json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"))
         },
-        Err(error) => {
+        Ok(Err(error)) => {
             warn!(endpoint, error = %error, "failed to read request body");
             Err(json_error(StatusCode::BAD_REQUEST, "failed to read request body"))
+        },
+        Err(_elapsed) => {
+            warn!(
+                endpoint,
+                timeout_secs = REQUEST_BODY_TIMEOUT.as_secs(),
+                "request body read timed out; rejecting"
+            );
+            Err(json_error(StatusCode::REQUEST_TIMEOUT, "request body read timed out"))
         },
     }
 }

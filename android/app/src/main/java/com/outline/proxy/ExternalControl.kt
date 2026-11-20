@@ -57,10 +57,17 @@ sealed interface ControlUri {
 
 /** External-control settings, owned by [ExternalControlStore]. */
 data class ExternalControlConfig(
-    val enabled: Boolean = true,
-    /** Blank = no secret required. */
+    val enabled: Boolean = false,
+    /** Token is required when enabled. Blank/empty token is considered invalid. */
     val token: String = "",
 )
+
+/** Generates a cryptographically random hexadecimal secret token for external control. */
+fun generateSecureToken(): String {
+    val bytes = ByteArray(16)
+    java.security.SecureRandom().nextBytes(bytes)
+    return bytes.joinToString("") { "%02x".format(it) }
+}
 
 private const val SCHEME = "outline://"
 private const val KEY_PROFILE = "profile"
@@ -95,7 +102,7 @@ fun parseControlUri(raw: String?): ControlUri {
  */
 fun checkAccess(token: String?, config: ExternalControlConfig): RejectReason? {
     if (!config.enabled) return RejectReason.DISABLED
-    if (config.token.isEmpty()) return null
+    if (config.token.isBlank()) return RejectReason.BAD_TOKEN
 
     val expected = config.token.toByteArray(Charsets.UTF_8)
     val supplied = (token ?: "").toByteArray(Charsets.UTF_8)
@@ -144,7 +151,7 @@ class ExternalControlStore(context: Context) {
     private val prefs = context.getSharedPreferences("outline_external", Context.MODE_PRIVATE)
 
     fun load(): ExternalControlConfig = ExternalControlConfig(
-        enabled = prefs.getBoolean(KEY_ENABLED, true),
+        enabled = prefs.getBoolean(KEY_ENABLED, false),
         token = prefs.getString(KEY_SECRET, "").orEmpty(),
     )
 

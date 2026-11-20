@@ -179,86 +179,133 @@ impl TunTcpEngine {
             // sniff is threaded into the branch below via `presniffed`, so the
             // flow is peeked only once; with the flag off nothing here runs and
             // the legacy per-branch sniff + IP route are unchanged.
-            let presniffed: Option<TargetAddr> =
-                if engine.inner.tcp.route_by_sni && engine.inner.tcp.sniffing {
-                    let sniffed = match engine
-                        .sniff_and_override_target(&flow, target.clone(), &mut close_rx)
-                        .await
-                    {
-                        Some(t) => t,
-                        None => {
-                            metrics::record_tun_tcp_async_connect("cancelled");
-                            debug!(flow_id, "TUN TCP flow closed during SNI-routing sniff");
-                            return;
-                        },
-                    };
-                    let sni_host = match &sniffed {
-                        TargetAddr::Domain(host, _) => Some(host.as_str()),
-                        _ => None,
-                    };
-                    let new_route = engine
-                        .inner
-                        .dispatch
-                        .resolve_sni(sni_host, &target, outline_uplink::TransportKind::Tcp)
-                        .await;
-                    match &new_route {
-                        crate::TunRoute::Drop { reason } => {
-                            debug!(flow_id, remote = %target, reason, "SNI route: dropping flow");
-                            engine.abort_flow_with_rst(&key, "sni_policy_drop").await;
-                            return;
-                        },
-                        crate::TunRoute::Group { manager: m, .. } => manager = m.clone(),
-                        // Direct uses a dummy manager (default group), matching
-                        // handle_new_flow — the direct branch skips the uplink pipeline.
-                        crate::TunRoute::Direct { .. } => {
-                            manager = engine.inner.dispatch.default_group().clone()
-                        },
-                    }
-                    route = new_route.clone();
-                    // Publish the re-resolved route so metrics, the pump's group
-                    // label, and any carrier-migration re-dial see the group the SNI
-                    // selected — mirroring handle_new_flow's initial commit.
-                    {
-                        let mut state = flow.lock().await;
-                        let was_tunnelled =
-                            matches!(state.routing.route, crate::TunRoute::Group { .. });
-                        let now_tunnelled = matches!(new_route, crate::TunRoute::Group { .. });
-                        state.routing.manager = manager.clone();
-                        state.routing.route = new_route.clone();
-                        state.routing.group_name = Arc::from(manager.group_name());
+            let presniffed: Option<TargetAddr> = if engine.inner.tcp.route_by_sni
+                && engine.inner.tcp.sniffing
+            {
+                let sniffed = match engine
+                    .sniff_and_override_target(&flow, target.clone(), &mut close_rx)
+                    .await
+                {
+                    Some(t) => t,
+                    None => {
+                        metrics::record_tun_tcp_async_connect("cancelled");
+                        debug!(flow_id, "TUN TCP flow closed during SNI-routing sniff");
+                        return;
+                    },
+                };
+                let sni_host = match &sniffed {
+                    TargetAddr::Domain(host, _) => Some(host.as_str()),
+                    _ => None,
+                };
+                let new_route = engine
+                    .inner
+                    .dispatch
+                    .resolve_sni(sni_host, &target, outline_uplink::TransportKind::Tcp)
+                    .await;
+                match &new_route {
+                    crate::TunRoute::Drop { reason } => {
+                        debug!(flow_id, remote = %target, reason, "SNI route: dropping flow");
+                        engine.abort_flow_with_rst(&key, "sni_policy_drop").await;
+                        return;
+                    },
+                    crate::TunRoute::Group { manager: m, .. } => manager = m.clone(),
+                    // Direct uses a dummy manager (default group), matching
+                    // handle_new_flow — the direct branch skips the uplink pipeline.
+                    crate::TunRoute::Direct { .. } => {
+                        manager = engine.inner.dispatch.default_group().clone()
+                    },
+                }
+                let was_tunnelled = {
+                    let state = flow.lock().await;
+                    matches!(state.routing.route, crate::TunRoute::Group { .. })
+                };
+                let now_tunnelled = matches!(new_route, crate::TunRoute::Group { .. });
 
-                        // The carrier budget counts carriers, so a flow that
-                        // changes sides here has to change its accounting too:
-                        // the SNI re-resolve runs *after* the flow was admitted
-                        // and can send it either way. Leaving the slot with a
-                        // now-direct flow would leak it (the cap wedges as those
-                        // accumulate); not taking one for a flow that just became
-                        // tunnelled would let carriers exceed the cap unseen.
-                        if was_tunnelled != now_tunnelled {
-                            if now_tunnelled {
-                                if let Some(slots) = engine.inner.carrier_slots.get() {
-                                    // No eviction here: this flow already exists
-                                    // and its carrier is about to be dialled, so
-                                    // refusing it would strand a live connection.
-                                    // The overshoot is bounded by how many flows
-                                    // flip in one direction at once.
-                                    state.carrier_slot = Some(slots.acquire_evicted());
-                                    engine.inner.carrier_eviction_index.upsert(
-                                        key.clone(),
-                                        flow_id,
-                                        state.timestamps.last_seen,
+                let acquired_carrier_slot = if !was_tunnelled && now_tunnelled {
+                    if let Some(slots) = engine.inner.carrier_slots.get() {
+                        match slots.try_acquire() {
+                            Some(slot) => Some(slot),
+                            None => {
+                                let mut evicted_slot = None;
+                                while let Some(candidate) =
+                                    engine.inner.carrier_eviction_index.pop_oldest()
+                                {
+                                    if candidate.flow_id == flow_id && candidate.key == key {
+                                        continue;
+                                    }
+                                    debug!(
+                                        evicted_flow_id = candidate.flow_id,
+                                        admitted_flow_id = flow_id,
+                                        "TUN TCP carrier budget full on SNI re-route: evicting LRU tunnelled flow"
                                     );
+                                    engine
+                                        .abort_flow_with_rst_if_id(
+                                            &candidate.key,
+                                            candidate.flow_id,
+                                            "carrier_cap",
+                                        )
+                                        .await;
+                                    evicted_slot = Some(slots.acquire_evicted());
+                                    break;
                                 }
-                            } else {
-                                state.carrier_slot = None;
-                                engine.inner.carrier_eviction_index.remove(&key, flow_id);
-                            }
+                                if let Some(slot) = evicted_slot {
+                                    Some(slot)
+                                } else {
+                                    warn!(
+                                        flow_id,
+                                        "TUN TCP carrier limit reached during SNI re-routing and no flow could be evicted; aborting"
+                                    );
+                                    engine
+                                        .abort_flow_with_rst_if_id(&key, flow_id, "carrier_limit")
+                                        .await;
+                                    return;
+                                }
+                            },
                         }
+                    } else {
+                        None
                     }
-                    Some(sniffed)
                 } else {
                     None
                 };
+
+                route = new_route.clone();
+                // Publish the re-resolved route so metrics, the pump's group
+                // label, and any carrier-migration re-dial see the group the SNI
+                // selected — mirroring handle_new_flow's initial commit.
+                {
+                    let mut state = flow.lock().await;
+                    state.routing.manager = manager.clone();
+                    state.routing.route = new_route.clone();
+                    state.routing.group_name = Arc::from(manager.group_name());
+
+                    // The carrier budget counts carriers, so a flow that
+                    // changes sides here has to change its accounting too:
+                    // the SNI re-resolve runs *after* the flow was admitted
+                    // and can send it either way. Leaving the slot with a
+                    // now-direct flow would leak it (the cap wedges as those
+                    // accumulate); not taking one for a flow that just became
+                    // tunnelled would let carriers exceed the cap unseen.
+                    if was_tunnelled != now_tunnelled {
+                        if now_tunnelled {
+                            if engine.inner.carrier_slots.get().is_some() {
+                                state.carrier_slot = acquired_carrier_slot;
+                                engine.inner.carrier_eviction_index.upsert(
+                                    key.clone(),
+                                    flow_id,
+                                    state.timestamps.last_seen,
+                                );
+                            }
+                        } else {
+                            state.carrier_slot = None;
+                            engine.inner.carrier_eviction_index.remove(&key, flow_id);
+                        }
+                    }
+                }
+                Some(sniffed)
+            } else {
+                None
+            };
 
             let is_direct = matches!(route, crate::TunRoute::Direct { .. });
 

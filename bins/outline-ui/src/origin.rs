@@ -106,6 +106,9 @@ impl OriginPolicy {
     /// the operator browses through is not knowable here), or an
     /// operator-declared name.
     fn host_allowed(&self, host_header: &str) -> bool {
+        if host_header.contains('@') {
+            return false;
+        }
         let host = host_of_authority(host_header).to_ascii_lowercase();
         if host.is_empty() {
             return false;
@@ -126,6 +129,10 @@ impl OriginPolicy {
     /// any port mapping. An ingress that rewrites `Host` breaks that equality, so
     /// an operator-declared name is accepted too.
     fn origin_allowed(&self, origin: &str, host_header: &str) -> bool {
+        // Userinfo (@) in Origin or Host is forbidden.
+        if origin.contains('@') || host_header.contains('@') {
+            return false;
+        }
         // Opaque origins ("null", from a sandboxed frame or a `file://` page)
         // have no `://` and fall out here.
         let Some((scheme, authority)) = origin.split_once("://") else {
@@ -135,7 +142,10 @@ impl OriginPolicy {
             return false;
         }
         let authority = authority.split('/').next().unwrap_or("").trim();
-        if !authority.is_empty() && authority.eq_ignore_ascii_case(host_header.trim()) {
+        if authority.is_empty() || authority.contains('@') {
+            return false;
+        }
+        if authority.eq_ignore_ascii_case(host_header.trim()) {
             return true;
         }
         let host = host_of_authority(authority).to_ascii_lowercase();
@@ -161,6 +171,9 @@ pub async fn enforce_origin(
 /// dropped, as is the DNS root dot (`localhost.` is `localhost`).
 fn host_of_authority(authority: &str) -> &str {
     let authority = authority.trim();
+    if authority.contains('@') {
+        return "";
+    }
     let host = if let Some(rest) = authority.strip_prefix('[') {
         rest.split_once(']').map_or(rest, |(host, _)| host)
     } else if authority.matches(':').count() > 1 {

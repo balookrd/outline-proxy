@@ -180,11 +180,11 @@ fn local_day_and_secs() -> Option<(i64, u32)> {
         return None;
     }
     let secs = tm.tm_hour as u32 * 3600 + tm.tm_min as u32 * 60 + tm.tm_sec as u32;
-    // `tm_year` is years since 1900, `tm_yday` is 0..=365 — the combination
-    // is unique per local calendar day, which is all `due_slot` needs (it
-    // never interprets `day_key` as an actual date, only compares equality
-    // and ordering with the previous tick's key).
-    Some((i64::from(tm.tm_year) * 366 + i64::from(tm.tm_yday), secs))
+    // tm_gmtoff is seconds east of UTC (POSIX/BSD/glibc).
+    // Using local epoch days avoids phantom day jumps over year transitions (e.g. 366 factor).
+    let local_epoch_secs = (t as i64) + (tm.tm_gmtoff as i64);
+    let day_key = local_epoch_secs.div_euclid(86400);
+    Some((day_key, secs))
 }
 
 impl UplinkManager {

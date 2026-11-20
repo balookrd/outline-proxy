@@ -1231,6 +1231,9 @@ impl UplinkManager {
             // Drop any sticky routes pinned to the now disabled uplink so the
             // next dispatch re-selects from the enabled set.
             self.inner.sticky_routes.write().await.clear();
+            if let Some(pool) = self.inner.standby_pools.get(index) {
+                pool.clear().await;
+            }
             // In strict scopes, proactively move the active slot off the
             // disabled uplink instead of waiting for the next connection.
             if self.strict_active_uplink_for(TransportKind::Tcp) {
@@ -1393,49 +1396,68 @@ impl UplinkManager {
         let reason = reason.into();
         let uplink_name = self.inner.uplinks[uplink_index].name.as_str();
         let group_name = self.inner.group_name.as_str();
-        if self.strict_global_active_uplink() {
+
+        {
             let mut active = self.inner.active_uplinks.write().await;
-            let changed = active.global != Some(uplink_index);
-            active.global = Some(uplink_index);
-            if changed || active.global_reason.is_none() || reason == "manual switch" {
-                active.global_reason = Some(reason.clone());
+            if self.strict_global_active_uplink() {
+                let changed = active.global != Some(uplink_index);
+                active.global = Some(uplink_index);
+                if changed || active.global_reason.is_none() || reason == "manual switch" {
+                    active.global_reason = Some(reason.clone());
+                }
+                // Mirror to the sync snapshot consulted by `UpstreamTransportGuard`'s
+                // `Drop` to classify a closing connection as belonging to the
+                // active uplink or to a stranded one. Done while we hold the
+                // async write so the two views never disagree across a pending
+                // close racing with the switch.
+                outline_metrics::set_global_active_uplink(group_name, Some(uplink_name));
+            } else if self.strict_per_uplink_active_uplink() {
+                match transport {
+                    TransportKind::Tcp => {
+                        let changed = active.tcp != Some(uplink_index);
+                        active.tcp = Some(uplink_index);
+                        if changed || active.tcp_reason.is_none() || reason == "manual switch" {
+                            active.tcp_reason = Some(reason.clone());
+                        }
+                        outline_metrics::set_per_uplink_active_uplink(
+                            group_name,
+                            "tcp",
+                            Some(uplink_name),
+                        );
+                    },
+                    TransportKind::Udp => {
+                        let changed = active.udp != Some(uplink_index);
+                        active.udp = Some(uplink_index);
+                        if changed || active.udp_reason.is_none() || reason == "manual switch" {
+                            active.udp_reason = Some(reason.clone());
+                        }
+                        outline_metrics::set_per_uplink_active_uplink(
+                            group_name,
+                            "udp",
+                            Some(uplink_name),
+                        );
+                    },
+                }
             }
-            // Mirror to the sync snapshot consulted by `UpstreamTransportGuard`'s
-            // `Drop` to classify a closing connection as belonging to the
-            // active uplink or to a stranded one. Done while we hold the
-            // async write so the two views never disagree across a pending
-            // close racing with the switch.
-            outline_metrics::set_global_active_uplink(group_name, Some(uplink_name));
-        } else if self.strict_per_uplink_active_uplink() {
-            match transport {
-                TransportKind::Tcp => {
-                    let mut active = self.inner.active_uplinks.write().await;
-                    let changed = active.tcp != Some(uplink_index);
-                    active.tcp = Some(uplink_index);
-                    if changed || active.tcp_reason.is_none() || reason == "manual switch" {
-                        active.tcp_reason = Some(reason.clone());
-                    }
-                    outline_metrics::set_per_uplink_active_uplink(
-                        group_name,
-                        "tcp",
-                        Some(uplink_name),
-                    );
-                },
-                TransportKind::Udp => {
-                    let mut active = self.inner.active_uplinks.write().await;
-                    let changed = active.udp != Some(uplink_index);
-                    active.udp = Some(uplink_index);
-                    if changed || active.udp_reason.is_none() || reason == "manual switch" {
-                        active.udp_reason = Some(reason.clone());
-                    }
-                    outline_metrics::set_per_uplink_active_uplink(
-                        group_name,
-                        "udp",
-                        Some(uplink_name),
-                    );
-                },
-            }
-        }
+
+            // Publish a fresh snapshot under the same write-lock as the mutation,
+            // eliminating TOCTOU race windows between updating active indices
+            // and capturing the intent with the corresponding snapshot.
+            let snapshot = crate::types::ActiveUplinksSnapshot {
+                global: active.global,
+                tcp: active.tcp,
+                udp: active.udp,
+                intent,
+            };
+            let _ = self.inner.active_uplinks_tx.send_if_modified(|current| {
+                if *current == snapshot {
+                    false
+                } else {
+                    *current = snapshot;
+                    true
+                }
+            });
+        };
 
         if let Some(store) = &self.inner.state_store {
             let uplink_name_owned = uplink_name.to_string();
@@ -1458,30 +1480,5 @@ impl UplinkManager {
                 }
             }
         }
-
-        // Publish a fresh snapshot AFTER every active-uplink mutation. The
-        // outer write-lock has been released by the per-branch blocks above,
-        // so the read here may briefly race with a subsequent mutation in
-        // another task — but each mutation pushes its own snapshot, so the
-        // last-writer-wins ordering still surfaces every change to
-        // subscribers. `send_replace` is a no-op for equal snapshots, so
-        // back-to-back idempotent writes do not wake watchers.
-        let snapshot = {
-            let active = self.inner.active_uplinks.read().await;
-            crate::types::ActiveUplinksSnapshot {
-                global: active.global,
-                tcp: active.tcp,
-                udp: active.udp,
-                intent,
-            }
-        };
-        let _ = self.inner.active_uplinks_tx.send_if_modified(|current| {
-            if *current == snapshot {
-                false
-            } else {
-                *current = snapshot;
-                true
-            }
-        });
     }
 }

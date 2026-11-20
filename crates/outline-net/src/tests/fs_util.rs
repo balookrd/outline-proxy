@@ -119,7 +119,11 @@ fn failed_write_leaves_the_target_intact_and_no_temp_file() {
         b"original contents".as_slice(),
         "target was damaged by a failed write"
     );
-    assert!(!dir.join(".config.toml.tmp").exists(), "temp file left behind");
+    let has_tmp = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+    assert!(!has_tmp, "temp file left behind");
 }
 
 /// A successful write cleans up after itself too.
@@ -131,6 +135,10 @@ fn successful_write_leaves_no_temp_file() {
 
     atomic_write(&path, b"new").expect("atomic_write");
 
-    assert!(!dir.join(".config.toml.tmp").exists(), "temp file left behind");
+    let has_tmp = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+    assert!(!has_tmp, "temp file left behind");
     assert_eq!(fs::read(&path).unwrap(), b"new".as_slice());
 }

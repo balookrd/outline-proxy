@@ -188,10 +188,10 @@ fn unknown_type_is_rejected() {
 }
 
 #[test]
-fn security_reality_maps_to_tls_scheme() {
-    let link = parse(&format!("vless://{UUID}@host:443?type=ws&security=reality"));
-    let url = link.vless_ws_url.expect("ws url");
-    assert_eq!(url.scheme(), "wss");
+fn security_reality_is_rejected() {
+    let err = VlessShareLink::parse(&format!("vless://{UUID}@host:443?type=ws&security=reality"))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("reality is not supported"));
 }
 
 #[test]

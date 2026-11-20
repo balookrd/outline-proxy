@@ -35,6 +35,8 @@ fn is_client_write_failure(error: &Error) -> bool {
 const EXTERNAL_WS_CLOSE_STRINGS: &[&str] = &[
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
+    "applicationclose: h3_no_error",
+    "h3_no_error",
 ];
 
 pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {

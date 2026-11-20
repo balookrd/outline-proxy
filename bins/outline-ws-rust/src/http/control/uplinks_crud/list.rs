@@ -10,7 +10,9 @@ use crate::http::control::server::ControlState;
 use crate::http::control::{ControlResponse, json_error, json_response};
 
 use super::mutate::{find_outline_uplink_index, get_or_init_outline_uplinks};
-use super::payload::{UplinkListEntry, UplinkListResponse, table_to_json};
+use super::payload::{
+    UplinkListEntry, UplinkListResponse, redact_uplink_config_json, table_to_json,
+};
 
 pub(super) async fn handle_list(state: Arc<ControlState>, query: Option<&str>) -> ControlResponse {
     let mut filter_group: Option<String> = None;
@@ -55,14 +57,18 @@ pub(super) async fn handle_list(state: Arc<ControlState>, query: Option<&str>) -
     if let Some(path) = &state.config_path
         && let Ok(raw) = fs::read_to_string(path).await
         && let Ok(mut doc) = raw.parse::<DocumentMut>()
+        && let Ok(arr) = get_or_init_outline_uplinks(&mut doc)
     {
-        let arr = get_or_init_outline_uplinks(&mut doc);
         for entry in entries.iter_mut() {
             let Some(idx) = find_outline_uplink_index(arr, &entry.group, &entry.name) else {
                 continue;
             };
             if let Some(tbl) = arr.get(idx) {
-                entry.config = table_to_json(tbl);
+                let mut json = table_to_json(tbl);
+                if let Some(ref mut val) = json {
+                    redact_uplink_config_json(val);
+                }
+                entry.config = json;
             }
         }
     }

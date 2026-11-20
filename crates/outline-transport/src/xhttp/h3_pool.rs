@@ -147,6 +147,8 @@ pub(super) struct SharedXhttpH3Connection {
     /// Sessions currently riding this carrier. Rises and falls with real usage
     /// through [`PooledSession`], and is what [`choose_slot`] balances on.
     active_sessions: Arc<AtomicU64>,
+    /// Total sessions opened on this carrier over its lifetime. Feeds `ConnLife`.
+    sessions_opened: Arc<AtomicU64>,
     /// Consecutive maintenance sweeps that found this carrier empty. Reset the
     /// moment a session lands on it.
     idle_sweeps: AtomicU32,
@@ -197,6 +199,7 @@ struct PooledSession {
 
 impl PooledSession {
     fn new(carrier: Arc<SharedXhttpH3Connection>) -> Self {
+        carrier.sessions_opened.fetch_add(1, Ordering::Relaxed);
         carrier.active_sessions.fetch_add(1, Ordering::Relaxed);
         Self { carrier }
     }
@@ -504,6 +507,7 @@ async fn dial(
         datagrams,
         send_request,
         active_sessions: Arc::new(AtomicU64::new(0)),
+        sessions_opened,
         idle_sweeps: AtomicU32::new(0),
         closed: AtomicBool::new(false),
         _connection_guard: H3ConnectionGuard(connection),

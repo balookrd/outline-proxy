@@ -106,11 +106,21 @@ fn resolve_secret(
 ) -> Result<Option<String>> {
     match (literal, file) {
         (Some(_), Some(_)) => bail!("{what}: set either token or token_file, not both"),
-        (Some(value), None) => Ok(Some(value)),
+        (Some(value), None) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                bail!("{what}: token must not be empty");
+            }
+            Ok(Some(trimmed.to_string()))
+        },
         (None, Some(path)) => {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("{what}: failed to read {}", path.display()))?;
-            Ok(Some(raw.trim_end().to_string()))
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                bail!("{what}: token file {} is empty", path.display());
+            }
+            Ok(Some(trimmed.to_string()))
         },
         (None, None) => Ok(None),
     }

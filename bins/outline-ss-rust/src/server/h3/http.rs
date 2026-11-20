@@ -58,17 +58,16 @@ pub(super) async fn handle_h3_connection(
 
     let mut is_first_request = true;
     loop {
-        let accept_timeout = if is_first_request {
-            Duration::from_secs(15)
+        let accept_res = if is_first_request {
+            match tokio::time::timeout(Duration::from_secs(15), h3_conn.accept()).await {
+                Ok(res) => res,
+                Err(_) => {
+                    debug!(peer = %peer_addr, "HTTP/3 initial request timeout; closing");
+                    break;
+                },
+            }
         } else {
-            Duration::from_secs(60)
-        };
-        let accept_res = match tokio::time::timeout(accept_timeout, h3_conn.accept()).await {
-            Ok(res) => res,
-            Err(_) => {
-                debug!(peer = %peer_addr, "HTTP/3 connection idle timeout; closing");
-                break;
-            },
+            h3_conn.accept().await
         };
         match accept_res {
             Ok(Some(resolver)) => {

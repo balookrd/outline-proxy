@@ -66,17 +66,17 @@ data class ServerProfile(
         // to every profile before the core starts.
 
         sb.append("[[outline.uplinks]]\n")
-        sb.append("name = \"").append(name.ifBlank { "primary" }).append("\"\n")
-        sb.append("transport = \"").append(transport).append("\"\n")
+        sb.append("name = \"").append(escapeTomlString(name.ifBlank { "primary" })).append("\"\n")
+        sb.append("transport = \"").append(escapeTomlString(transport)).append("\"\n")
         val effectiveVlessLink = if (effectiveTcpOnly) TcpOnlyConfig.enforceLink(vlessLink) else vlessLink
         val effectiveSsLink = if (effectiveTcpOnly) TcpOnlyConfig.enforceLink(ssLink) else ssLink
         when (transport) {
             "vless" -> {
-                sb.append("link = \"").append(effectiveVlessLink).append("\"\n")
+                sb.append("link = \"").append(escapeTomlString(effectiveVlessLink)).append("\"\n")
             }
             "ss" -> {
                 // ss:// share link carries carrier + cipher + password.
-                sb.append("link = \"").append(effectiveSsLink).append("\"\n")
+                sb.append("link = \"").append(escapeTomlString(effectiveSsLink)).append("\"\n")
             }
         }
         sb.append("\n[padding]\n")
@@ -131,7 +131,7 @@ data class ServerProfile(
             }.getOrDefault(emptyList())
         }
 
-        /** The `#remark` label of a share link, percent-decoded; null when absent/blank. */
+        /** The `#remark` label of a share link, percent-decoded and sanitized; null when absent/blank. */
         fun remarkOf(link: String): String? {
             val hash = link.lastIndexOf('#')
             if (hash < 0 || hash == link.length - 1) return null
@@ -140,8 +140,36 @@ data class ServerProfile(
                 // A URI fragment's '+' is literal; escape it so URLDecoder's form-decoding
                 // doesn't turn it into a space.
                 java.net.URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8")
-            }.getOrDefault(raw).trim()
-            return decoded.ifBlank { null }
+            }.getOrDefault(raw)
+            val sanitized = decoded.replace(Regex("[\\r\\n]+"), " ").trim()
+            return sanitized.ifBlank { null }
+        }
+
+        /**
+         * Escape a string value for safe insertion into a TOML basic string literal (in double quotes).
+         * Escapes backslashes, double quotes, common escape sequences and control characters.
+         */
+        fun escapeTomlString(value: String): String {
+            val sb = StringBuilder(value.length + 8)
+            for (ch in value) {
+                when (ch) {
+                    '\\' -> sb.append("\\\\")
+                    '"' -> sb.append("\\\"")
+                    '\n' -> sb.append("\\n")
+                    '\r' -> sb.append("\\r")
+                    '\t' -> sb.append("\\t")
+                    '\b' -> sb.append("\\b")
+                    '\u000C' -> sb.append("\\f")
+                    else -> {
+                        if (ch < ' ' || ch.code == 0x7F) {
+                            sb.append(String.format("\\u%04x", ch.code))
+                        } else {
+                            sb.append(ch)
+                        }
+                    }
+                }
+            }
+            return sb.toString()
         }
 
         /** The host of a share link / URL — pure string parse, no android.net.Uri. */

@@ -14,7 +14,8 @@ public final class ProfileStore: @unchecked Sendable {
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("OutlineProxy")
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
         self.fileURL = appSupport.appendingPathComponent("profiles.json")
         load()
     }
@@ -111,6 +112,7 @@ public final class ProfileStore: @unchecked Sendable {
         let storage = StorageData(profiles: cachedProfiles, selectedId: selectedId)
         if let data = try? JSONEncoder().encode(storage) {
             try? data.write(to: fileURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         }
     }
 }

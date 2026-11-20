@@ -106,3 +106,33 @@ fn query_string_in_the_path_is_forwarded() {
 
     assert_eq!(url.as_str(), "http://127.0.0.1:9191/control/uplinks?group=main");
 }
+
+#[tokio::test]
+async fn response_body_exceeding_limit_is_rejected() {
+    let app = Router::new().route(
+        "/control/huge",
+        get(|| async move { (StatusCode::OK, vec![b'A'; 17 * 1024 * 1024]) }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let backend = Backend::new(5);
+    let inst = InstanceConfig {
+        name: "huge".to_string(),
+        control_url: format!("http://{addr}"),
+        token: "tok".to_string(),
+    };
+    let error = backend
+        .request(&inst, Method::GET, "/control/huge", None)
+        .await
+        .expect_err("must reject response exceeding 16 MiB");
+
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("failed to read control response body"),
+        "error should indicate body read failure, got: {rendered}"
+    );
+}

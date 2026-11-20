@@ -39,4 +39,27 @@ class ServerNameTest {
     @Test fun remarkLiteralPlusPreserved() {
         assertEquals("A+B", ServerProfile.deriveName("vless://uuid@h:443#A+B"))
     }
+    @Test fun remarkWithNewlinesIsSanitized() {
+        assertEquals("malicious section", ServerProfile.deriveName("vless://uuid@h:443#malicious%0Asection"))
+        assertEquals("foo bar", ServerProfile.remarkOf("vless://uuid@h:443#foo%0D%0Abar"))
+    }
+    @Test fun escapeTomlStringEscapesSpecialCharacters() {
+        assertEquals("safe", ServerProfile.escapeTomlString("safe"))
+        assertEquals("line1\\nline2", ServerProfile.escapeTomlString("line1\nline2"))
+        assertEquals("line1\\r\\nline2", ServerProfile.escapeTomlString("line1\r\nline2"))
+        assertEquals("quote\\\"and\\\\backslash", ServerProfile.escapeTomlString("quote\"and\\backslash"))
+        assertEquals("tab\\tchar", ServerProfile.escapeTomlString("tab\tchar"))
+        assertEquals("\\u0000\\u001f", ServerProfile.escapeTomlString("\u0000\u001F"))
+    }
+    @Test fun toConfigTomlEscapesInjectedSections() {
+        val profile = ServerProfile(
+            name = "injected\"\n[[malicious]]\nkey = \"value",
+            transport = "vless",
+            vlessLink = "vless://id@host:443#comment\"\n[injected]",
+        )
+        val toml = profile.toToml()
+        org.junit.Assert.assertFalse(toml.contains("\n[[malicious]]\n"))
+        org.junit.Assert.assertFalse(toml.contains("\n[injected]\n"))
+        org.junit.Assert.assertTrue(toml.contains("name = \"injected\\\"\\n[[malicious]]\\nkey = \\\"value\""))
+    }
 }

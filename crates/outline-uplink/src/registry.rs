@@ -54,6 +54,7 @@ pub struct UplinkRegistry {
     /// per-manager shutdown [`UplinkRegistry::apply_new_groups`] sends to the
     /// displaced managers must not stop a process-wide loop.
     shutdown_tx: Arc<watch::Sender<bool>>,
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for UplinkRegistry {
@@ -109,6 +110,7 @@ impl UplinkRegistry {
         Self {
             state: Arc::new(ArcSwap::from_pointee(state)),
             shutdown_tx: Arc::new(shutdown_tx),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -377,6 +379,8 @@ impl UplinkRegistry {
         dns_cache: Arc<outline_transport::DnsCache>,
         state_store: Option<Arc<StateStore>>,
     ) -> Result<()> {
+        let _apply_guard = self.apply_lock.lock().await;
+
         // Resolve persisted active-uplink names + disabled sets for the new groups.
         let mut restored: Vec<(Option<String>, Option<String>, Option<String>, Vec<String>)> =
             Vec::with_capacity(groups.len());
@@ -396,29 +400,22 @@ impl UplinkRegistry {
 
         let new_state = build_state(groups, Some(restored), dns_cache, state_store)?;
 
+        // Prime strict active-uplink selection on the new managers BEFORE taking
+        // carrier-loss registries or spawning loops, so cancellation during probes
+        // leaves running managers intact and leaks no background tasks.
+        for group in &new_state.groups {
+            group.manager.initialize_strict_active_selection().await;
+        }
+
         // Carry the live carrier-loss probe registries across the rebuild.
-        // Taken only after `build_state` succeeded, so a failed apply leaves
-        // the running managers observing exactly what they were.
-        //
-        // A probe is filed when a carrier is dialed or handed out of the warm
-        // pool, and nowhere else — so a carrier that outlives this rebuild
-        // would otherwise never be observed again. Short-lived carriers churn
-        // fast enough to hide that; a long-lived one (a video stream's UDP
-        // session) does not, and its plane goes permanently silent while still
-        // carrying traffic.
+        // Synchronous critical section without yields until after swap.
         let mut carried: std::collections::HashMap<String, Vec<_>> =
             std::collections::HashMap::new();
         for group in self.state.load().groups.iter() {
             carried.insert(group.name.clone(), group.manager.take_carrier_loss_registries());
         }
 
-        // Spawn background loops for the new managers first. If this were
-        // reordered after the swap, a small window would exist where no
-        // probes run for anyone — readers loading during that window would
-        // see the new managers but with empty health state.
         for group in &new_state.groups {
-            // Before the sampler starts, so its first tick already sees the
-            // carriers that survived the rebuild.
             if let Some(registries) = carried.remove(&group.name) {
                 group.manager.adopt_carrier_loss_registries(registries);
             }
@@ -428,22 +425,9 @@ impl UplinkRegistry {
             group.manager.spawn_standby_keepalive_loop();
             group.manager.spawn_warm_probe_keepalive_loop();
             group.manager.spawn_sticky_prune_loop();
-            // Same set bootstrap spawns: without this the anti-DPI wire
-            // rotation stops at the first hot-apply, since the loops belong to
-            // the displaced managers and are shut down together with them.
             group.manager.spawn_shuffle_timer_loops();
-            // Same reasoning: the carrier-loss sampler belongs to the displaced
-            // manager too, so a hot-apply without this respawn would leave the
-            // new group's status permanently unsampled.
             group.manager.spawn_loss_sampler_loop();
-            // Ditto for scheduled re-selection: `reselect_at`/`reselect_interval`
-            // loops belong to the displaced managers too, so they must be
-            // respawned here or a hot-apply silently stops scheduled rotation.
             group.manager.spawn_reselect_timer_loops();
-        }
-        // Prime strict active-uplink selection on the new managers.
-        for group in &new_state.groups {
-            group.manager.initialize_strict_active_selection().await;
         }
 
         // Atomic swap. Any holder of an `UplinkRegistry` clone sees the new
