@@ -47,6 +47,9 @@ pub(super) fn load_tun_config(
         return Ok(None);
     }
 
+    #[cfg(windows)]
+    let path = path.unwrap_or_else(|| std::path::PathBuf::from("wintun"));
+    #[cfg(not(windows))]
     let path =
         path.ok_or_else(|| anyhow!("missing tun.path: set it in config.toml or pass --tun-path"))?;
 

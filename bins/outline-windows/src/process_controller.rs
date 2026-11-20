@@ -52,7 +52,7 @@ enum RunningChild {
     #[cfg(windows)]
     Win32Handle {
         handle: SafeHandle,
-        pid: u32,
+        _pid: u32,
     },
 }
 
@@ -324,7 +324,7 @@ impl ProcessController {
                 match unsafe { spawn_with_uac(binary_path, config_path) } {
                     Ok((handle, pid)) => {
                         return Ok((
-                            RunningChild::Win32Handle { handle: SafeHandle(handle), pid },
+                            RunningChild::Win32Handle { handle: SafeHandle(handle), _pid: pid },
                             pid,
                         ));
                     },
@@ -498,7 +498,7 @@ unsafe fn spawn_with_uac(
     sei.lpParameters = params.as_ptr();
     sei.nShow = SW_HIDE;
 
-    if ShellExecuteExW(&mut sei) == 0 {
+    if unsafe { ShellExecuteExW(&mut sei) } == 0 {
         bail!(
             "ShellExecuteExW (runas) failed with OS error: {}",
             std::io::Error::last_os_error()

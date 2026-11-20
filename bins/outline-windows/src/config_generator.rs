@@ -69,6 +69,7 @@ impl ConfigGenerator {
         if tun_enabled {
             toml.push_str("[tun]\n");
             toml.push_str("name = \"OutlineProxy\"\n");
+            toml.push_str("path = \"wintun\"\n");
             toml.push_str("mtu = 1500\n");
             toml.push_str("sniff_quic = true\n\n");
             toml.push_str("[tun.tcp]\n");
