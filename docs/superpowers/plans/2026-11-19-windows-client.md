@@ -37,7 +37,7 @@
 * Аллокатор: на Windows активируется `mimalloc`, на non-Windows сохраняется дефолтный `jemalloc`.
 * Дескрипторы: `RunOptions::tun_fd` заменяется на безопасный тип под Windows (`Option<()>` или исключается).
 
-- [ ] **Шаг 1: Настройка аллокатора и зависимостей в `bins/outline-ws-rust/Cargo.toml`**
+- [x] **Шаг 1: Настройка аллокатора и зависимостей в `bins/outline-ws-rust/Cargo.toml`**
 
 Изменить выбор аллокатора по умолчанию: сделать `jemalloc` зависящим от non-Windows платформ либо активировать `mimalloc` при сборке под Windows.
 В `bins/outline-ws-rust/Cargo.toml`:
@@ -52,7 +52,7 @@ libmimalloc-sys = { workspace = true, features = ["extended"] }
 ```
 И в списке `default` фичей: включить `mimalloc` для Windows сборки.
 
-- [ ] **Шаг 2: Изоляция дескрипторов Unix в `bins/outline-ws-rust/src/lib.rs` и `src/bootstrap/mod.rs`**
+- [x] **Шаг 2: Изоляция дескрипторов Unix в `bins/outline-ws-rust/src/lib.rs` и `src/bootstrap/mod.rs`**
 
 В `bins/outline-ws-rust/src/lib.rs`:
 ```rust
@@ -71,7 +71,7 @@ pub struct RunOptions {
 Изолировать `std::os::fd::RawFd` под `#[cfg(unix)]`. Для Windows `tun_fd` принимает `Option<()>`.
 Убедиться, что `tokio::signal::ctrl_c().await` корректно отрабатывает на Windows (блок `#[cfg(not(unix))]` уже присутствует).
 
-- [ ] **Шаг 3: Изоляция платформозависимых вызовов в `crates/outline-net`, `outline-transport` и `outline-uplink`**
+- [x] **Шаг 3: Изоляция платформозависимых вызовов в `crates/outline-net`, `outline-transport` и `outline-uplink`**
 
 1. В `crates/outline-net/src/lib.rs`:
    Обернуть вызовы `libc::setsockopt(..., SO_MARK, ...)` и `IPV6_PREFER_SRC_PUBLIC`/`IPV6_FREEBIND` в `#[cfg(target_os = "linux")]`.
@@ -90,7 +90,7 @@ pub struct RunOptions {
 5. В `crates/outline-uplink/src/manager/reselect.rs`:
    Использовать `localtime_s` на Windows вместо `libc::localtime_r`.
 
-- [ ] **Шаг 4: Проверка компиляции ядра под Windows**
+- [x] **Шаг 4: Проверка компиляции ядра под Windows**
 
 Запустить команду проверки:
 ```bash
@@ -98,7 +98,7 @@ cargo check -p outline-ws-rust --no-default-features --features socks5,h3,metric
 ```
 Ожидается: успешная компиляция без ошибок и предупреждений.
 
-- [ ] **Шаг 5: Коммит изменений задачи 1**
+- [x] **Шаг 5: Коммит изменений задачи 1**
 
 ```bash
 git add bins/outline-ws-rust/ crates/outline-net/ crates/outline-transport/ crates/outline-uplink/
@@ -118,7 +118,7 @@ git commit -m "feat(windows): adapt outline-ws-rust and crates for Windows MSVC"
 * Экспорт: `open_tun_device(config: &TunConfig) -> Result<(TunDevice, TunGso)>` на Windows возвращает обёртку над сессией Wintun.
 * Реализация: потокобезопасный `TunDevice` на Windows, предоставляющий `async fn read(&mut self, buf: &mut [u8]) -> Result<usize>` и `async fn write(&mut self, buf: &[u8]) -> Result<usize>`.
 
-- [ ] **Шаг 1: Добавление зависимости `wintun` в `crates/outline-tun/Cargo.toml`**
+- [x] **Шаг 1: Добавление зависимости `wintun` в `crates/outline-tun/Cargo.toml`**
 
 В секцию зависимостей:
 ```toml
@@ -127,7 +127,7 @@ wintun = "0.5"
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
 ```
 
-- [ ] **Шаг 2: Реализация Wintun адаптера и сессии в `crates/outline-tun/src/device/windows.rs`**
+- [x] **Шаг 2: Реализация Wintun адаптера и сессии в `crates/outline-tun/src/device/windows.rs`**
 
 Создать модуль `crates/outline-tun/src/device/windows.rs`:
 ```rust
@@ -181,18 +181,18 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
 }
 ```
 
-- [ ] **Шаг 3: Интеграция `open_wintun_device` в `crates/outline-tun/src/device.rs`**
+- [x] **Шаг 3: Интеграция `open_wintun_device` в `crates/outline-tun/src/device.rs`**
 
 Подключить модуль при `#[cfg(target_os = "windows")]` и направить вызов `open_tun_device(config)` на `open_wintun_device(config)`.
 
-- [ ] **Шаг 4: Проверка компиляции**
+- [x] **Шаг 4: Проверка компиляции**
 
 ```bash
 cargo check -p outline-tun
 ```
 Ожидается: компиляция без ошибок.
 
-- [ ] **Шаг 5: Коммит изменений задачи 2**
+- [x] **Шаг 5: Коммит изменений задачи 2**
 
 ```bash
 git add crates/outline-tun/
@@ -211,7 +211,7 @@ git commit -m "feat(tun): add Wintun adapter driver backend for Windows" -- crat
 * Экспорт: `setup_windows_routes(server_ip: IpAddr, gateway: IpAddr, if_index: u32) -> Result<RouteGuard>`
 * Экспорт: `RouteGuard` при Drop автоматически удаляет созданные маршруты `0.0.0.0/1`, `128.0.0.0/1` и host-маршрут к серверу.
 
-- [ ] **Шаг 1: Реализация управления маршрутами через Win32 IP Helper API в `crates/outline-tun/src/routing/windows.rs`**
+- [x] **Шаг 1: Реализация управления маршрутами через Win32 IP Helper API в `crates/outline-tun/src/routing/windows.rs`**
 
 Реализовать функции:
 * `get_best_interface(dest: IpAddr) -> Result<(u32, IpAddr)>` — вызов `GetBestRoute2` для поиска физического шлюза и интерфейса выхода в интернет.
@@ -220,19 +220,19 @@ git commit -m "feat(tun): add Wintun adapter driver backend for Windows" -- crat
 * `set_interface_dns(if_index: u32, dns_servers: &[IpAddr]) -> Result<()>`.
 * Структура `RouteGuard` с реализацией `Drop` для гарантированной очистки таблицы маршрутизации при любом выходе или панике процесса.
 
-- [ ] **Шаг 2: Написание модульного теста парсинга маршрутов**
+- [x] **Шаг 2: Написание модульного теста парсинга маршрутов**
 
 Создать тест в `crates/outline-tun/src/routing/tests/windows.rs`:
 Проверка корректности разбиения подсетей `0.0.0.0/1` и `128.0.0.0/1`, конвертации в структуры `MIB_IPFORWARD_ROW2`.
 
-- [ ] **Шаг 3: Проверка компиляции и запуск тестов**
+- [x] **Шаг 3: Проверка компиляции и запуск тестов**
 
 ```bash
 cargo test -p outline-tun --lib routing
 ```
 Ожидается: PASS.
 
-- [ ] **Шаг 4: Коммит изменений задачи 3**
+- [x] **Шаг 4: Коммит изменений задачи 3**
 
 ```bash
 git add crates/outline-tun/
@@ -260,11 +260,11 @@ git commit -m "feat(tun): implement Windows route and DNS management via IP Help
 * Новый бинарник `outline-windows` компилируется как член корневого Cargo-workspace.
 * Tauri v2 инициализирует системный трей и веб-окно.
 
-- [ ] **Шаг 1: Добавление `bins/outline-windows` в корневой `Cargo.toml`**
+- [x] **Шаг 1: Добавление `bins/outline-windows` в корневой `Cargo.toml`**
 
 В список `[workspace.members]` добавить `"bins/outline-windows"`.
 
-- [ ] **Шаг 2: Создание манифеста `bins/outline-windows/Cargo.toml`**
+- [x] **Шаг 2: Создание манифеста `bins/outline-windows/Cargo.toml`**
 
 ```toml
 [package]
@@ -283,14 +283,14 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 ```
 
-- [ ] **Шаг 3: Конфигурация Tauri `bins/outline-windows/tauri.conf.json`**
+- [x] **Шаг 3: Конфигурация Tauri `bins/outline-windows/tauri.conf.json`**
 
 Настроить:
 * `identifier`: `su.beerloga.outline.windows`
 * `windows`: главное окно `main` (ширина 400, высота 600, скрыто при старте `visible: false`, декорации включены, `title`: "Outline Proxy").
 * `trayIcon`: иконка щита, всплывающая подсказка "Outline Proxy".
 
-- [ ] **Шаг 4: Настройка веб-окружения фронтенда (Svelte + Tailwind)**
+- [x] **Шаг 4: Настройка веб-окружения фронтенда (Svelte + Tailwind)**
 
 Создать `package.json`, `vite.config.ts`, `tailwind.config.ts` по аналогии с `bins/outline-ui/frontend`.
 Установить зависимости:
@@ -298,7 +298,7 @@ anyhow = { workspace = true }
 pnpm --prefix bins/outline-windows install
 ```
 
-- [ ] **Шаг 5: Минимальная точка входа Rust `bins/outline-windows/src/main.rs`**
+- [x] **Шаг 5: Минимальная точка входа Rust `bins/outline-windows/src/main.rs`**
 
 ```rust
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -315,14 +315,14 @@ fn main() {
 }
 ```
 
-- [ ] **Шаг 6: Проверка компиляции каркаса**
+- [x] **Шаг 6: Проверка компиляции каркаса**
 
 ```bash
 cargo check -p outline-windows
 ```
 Ожидается: успешная компиляция.
 
-- [ ] **Шаг 7: Коммит изменений задачи 4**
+- [x] **Шаг 7: Коммит изменений задачи 4**
 
 ```bash
 git add Cargo.toml bins/outline-windows/
@@ -345,7 +345,7 @@ git commit -m "feat(windows): scaffold Tauri v2 desktop application workspace me
 * `ProfileStore`: парсинг `vless://`, `ss://`, `outline://`, чтение/запись JSON-файла профилей в `%APPDATA%/OutlineProxy/profiles.json`.
 * `ConfigGenerator::generate(profile: &ServerProfile, tcp_only: bool, socks_port: u16, tun_enabled: bool) -> String`
 
-- [ ] **Шаг 1: Реализация `SystemProxyManager` через Windows Registry и WinINet**
+- [x] **Шаг 1: Реализация `SystemProxyManager` через Windows Registry и WinINet**
 
 В `bins/outline-windows/src/proxy_manager.rs`:
 * Запись значений в `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`:
@@ -354,7 +354,7 @@ git commit -m "feat(windows): scaffold Tauri v2 desktop application workspace me
 * Вызов `InternetSetOptionW` для сброса кеша настроек в системе.
 * Функция безопасного отключения (выставляет `ProxyEnable = 0`).
 
-- [ ] **Шаг 2: Реализация `ProfileStore` и парсера ссылок**
+- [x] **Шаг 2: Реализация `ProfileStore` и парсера ссылок**
 
 Поддержка форматов:
 * `vless://uuid@host:port?security=tls&alpn=h3,h2&type=ws&path=/ws#name`
@@ -362,7 +362,7 @@ git commit -m "feat(windows): scaffold Tauri v2 desktop application workspace me
 * `outline://...`
 * Подписки `https://...` (загрузка через `reqwest`, распаковка base64/plain списка серверов).
 
-- [ ] **Шаг 3: Реализация `ConfigGenerator`**
+- [x] **Шаг 3: Реализация `ConfigGenerator`**
 
 Генерация TOML конфигурации для `outline-ws-rust.exe`:
 * Секция `[socks5]` (порт 1080).
@@ -370,7 +370,7 @@ git commit -m "feat(windows): scaffold Tauri v2 desktop application workspace me
 * Флаг `tcp_only`: подмена `xhttp_h3` -> `xhttp_h2`, `ws_h3` -> `ws_h2`, удаление `h3` из ALPN.
 * Секция `[tun]` при TUN-режиме (`enabled = true`, `name = "OutlineProxy"`).
 
-- [ ] **Шаг 4: Написание модульных тестов**
+- [x] **Шаг 4: Написание модульных тестов**
 
 Тесты генерации конфигурации и парсинга ссылок VLESS/SS:
 ```bash
@@ -378,7 +378,7 @@ cargo test -p outline-windows --bin outline-windows
 ```
 Ожидается: PASS.
 
-- [ ] **Шаг 5: Коммит изменений задачи 5**
+- [x] **Шаг 5: Коммит изменений задачи 5**
 
 ```bash
 git add bins/outline-windows/src/
@@ -402,14 +402,14 @@ git commit -m "feat(windows): implement WinINet proxy manager, profile store, an
   * Завершение процесса по сигналу.
 * Tauri IPC команды: `connect`, `disconnect`, `get_status`, `get_profiles`, `add_profile`, `remove_profile`, `get_logs`, `set_settings`.
 
-- [ ] **Шаг 1: Реализация `ProcessController`**
+- [x] **Шаг 1: Реализация `ProcessController`**
 
 В `bins/outline-windows/src/process_controller.rs`:
 * Управление жизненным циклом `outline-ws-rust.exe`.
 * Хранение последних 1000 строк логов в кольцевом буфере `Arc<RwLock<VecDeque<String>>>`.
 * Оповещение интерфейса через события Tauri (`emit("log-message", line)`).
 
-- [ ] **Шаг 2: Реализация системного трея в `bins/outline-windows/src/tray.rs`**
+- [x] **Шаг 2: Реализация системного трея в `bins/outline-windows/src/tray.rs`**
 
 * Создание меню трея:
   * Статус подключения с цветным индикатором.
@@ -419,18 +419,18 @@ git commit -m "feat(windows): implement WinINet proxy manager, profile store, an
   * Пункты открытия окон: Серверы, Настройки, Журнал.
   * Выход (гарантированное отключение прокси и завершение ядра).
 
-- [ ] **Шаг 3: Регистрация IPC команд в `bins/outline-windows/src/commands.rs`**
+- [x] **Шаг 3: Регистрация IPC команд в `bins/outline-windows/src/commands.rs`**
 
 Реализовать функции `#[tauri::command]` для вызова из фронтенда Svelte.
 
-- [ ] **Шаг 4: Проверка компиляции**
+- [x] **Шаг 4: Проверка компиляции**
 
 ```bash
 cargo check -p outline-windows
 ```
 Ожидается: PASS.
 
-- [ ] **Шаг 5: Коммит изменений задачи 6**
+- [x] **Шаг 5: Коммит изменений задачи 6**
 
 ```bash
 git add bins/outline-windows/src/
@@ -453,24 +453,24 @@ git commit -m "feat(windows): add process controller, tray icon menu, and IPC co
 **Интерфейсы:**
 * Полный интерактивный интерфейс: переключение статуса подключения, выбор сервера, добавление ссылок из буфера, модальные окна настроек и живого журнала.
 
-- [ ] **Шаг 1: Реализация типов и API-обёртки IPC в `lib/api.ts`**
+- [x] **Шаг 1: Реализация типов и API-обёртки IPC в `lib/api.ts`**
 
 Вызовы `invoke("connect")`, `invoke("disconnect")`, `invoke("get_profiles")`, подписка на `listen("log-message")`.
 
-- [ ] **Шаг 2: Реализация компонентов `ServersList`, `SettingsModal`, `LogViewerModal`**
+- [x] **Шаг 2: Реализация компонентов `ServersList`, `SettingsModal`, `LogViewerModal`**
 
 * `ServersList`: список серверов с индикатором задержки (ping), кнопка добавления, карточка активного подключения.
 * `SettingsModal`: переключение SOCKS5/TUN, флаг TCP-only, флаг автозапуска.
 * `LogViewerModal`: виртуализированный скролл логов, кнопка «Копировать всё», фильтры по уровням.
 
-- [ ] **Шаг 3: Сборка фронтенда**
+- [x] **Шаг 3: Сборка фронтенда**
 
 ```bash
 pnpm --prefix bins/outline-windows build
 ```
 Ожидается: успешная генерация артефактов в `dist/`.
 
-- [ ] **Шаг 4: Коммит изменений задачи 7**
+- [x] **Шаг 4: Коммит изменений задачи 7**
 
 ```bash
 git add bins/outline-windows/frontend/
@@ -491,7 +491,7 @@ git commit -m "feat(windows): implement Svelte frontend for servers, settings, a
 * Скрипт `./scripts/package-windows.sh` выполняет кросс-компиляцию ядра и GUI под `x86_64-pc-windows-msvc`, скачивает проверенный `wintun.dll` и формирует готовый zip-архив в `dist/windows/OutlineProxy-x86_64.zip`.
 * CI проверяет компиляцию под Windows.
 
-- [ ] **Шаг 1: Создание скрипта `scripts/package-windows.sh`**
+- [x] **Шаг 1: Создание скрипта `scripts/package-windows.sh`**
 
 Скрипт выполняет:
 1. Проверку наличия `cargo-xwin` (выводит подсказку по установке при отсутствии).
@@ -505,15 +505,15 @@ git commit -m "feat(windows): implement Svelte frontend for servers, settings, a
    * `wintun.dll`
 7. Упаковку в `OutlineProxy-x86_64.zip`.
 
-- [ ] **Шаг 2: Добавление документации `windows/README.ru.md` и `windows/README.md`**
+- [x] **Шаг 2: Добавление документации `windows/README.ru.md` и `windows/README.md`**
 
 Описание процесса сборки, развертывания на виртуальной машине `.105` через SMB-диск и регламента тестирования.
 
-- [ ] **Шаг 3: Добавление шага Windows check в `.github/workflows/ci.yml`**
+- [x] **Шаг 3: Добавление шага Windows check в `.github/workflows/ci.yml`**
 
 Добавить проверку компиляции ядра под Windows-таргет в CI-матрицу.
 
-- [ ] **Шаг 4: Локальный прогон скрипта сборки**
+- [x] **Шаг 4: Локальный прогон скрипта сборки**
 
 ```bash
 chmod +x scripts/package-windows.sh
@@ -521,7 +521,7 @@ chmod +x scripts/package-windows.sh
 ```
 Ожидается: проверка проходит успешно.
 
-- [ ] **Шаг 5: Коммит изменений задачи 8**
+- [x] **Шаг 5: Коммит изменений задачи 8**
 
 ```bash
 git add scripts/package-windows.sh .github/workflows/ci.yml windows/
