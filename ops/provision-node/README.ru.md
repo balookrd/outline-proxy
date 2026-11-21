@@ -276,7 +276,7 @@ dnsproxy после продления не перезапускался.
 
 Две настройки в нём стоят ради дашборда, а не ради резолвера, поэтому менять их
 можно только вместе с
-[`ops/grafana/README.md`](../grafana/README.md#unbound): это
+`ops/grafana/README.md` (раздел `#unbound` в репозитории `ambar`): это
 `extended-statistics: yes`, без которой `unbound-control stats_noreset` отдаёт
 93 строки вместо 195 и 13 из 21 панели `unbound-dashboard.json` (uid
 `9FQf4fEWz`) нечего рисовать, — и отсутствие `statistics-cumulative`, которая

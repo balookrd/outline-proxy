@@ -174,7 +174,7 @@ tun2udp + tun2tcp"]
 ### Эксплуатация
 
 - метрики Prometheus
-- дашборды Grafana в [`grafana/`](grafana)
+- дашборды Grafana (`outline-client-dashboard.json`, `outline-client-hang-diagnostics.json`) в инфраструктурном репозитории `ambar` (`ops/grafana/dashboards/`)
 - контроль срока TLS-сертификатов аплинков: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` и поле `cert_not_after_unix_ms` у каждого аплинка в `GET /control/topology`
 - systemd-юниты с песочницей (см. [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
@@ -193,8 +193,7 @@ tun2udp + tun2tcp"]
 
 - [`config.toml`](config.toml) — пример конфигурации
 - [`systemd/outline-client.service`](systemd/outline-client.service), [`systemd/outline-client@.service`](systemd/outline-client@.service) — systemd-юниты
-- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json) — основной операционный дашборд
-- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json) — диагностика зависаний
+- *(Дашборды Grafana `outline-client-dashboard.json` и `outline-client-hang-diagnostics.json` ведутся в инфраструктурном репозитории `ambar` в `ops/grafana/dashboards/`.)*
 - [`src/bootstrap/`](src/bootstrap) — запуск: bind слушателей и хранилище состояния
 - [`src/config/`](src/config) — схема CLI и конфига, загрузка, валидация
 - [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (диспетчер, TCP failover, UDP-реле)
@@ -1140,7 +1139,7 @@ scrape_configs:
 - `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge открытых upstream-транспортов по аплинку. После переключения новый активный аплинк набирает соединения, старый их сливает; серия, которая не опускается, — признак утечки.
 - `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — счётчик закрытий upstream-транспортов, классифицированных в момент закрытия: `active` (аплинк ещё был активным), `inactive` (указатель активного уже ушёл — сливается оставшаяся сессия) или `unknown` (scope `per_flow`, указателя нет). `rate(...{classification="inactive"}[5m])` — скорость слива после переключения; устойчиво ненулевое значение вне недавнего переключения указывает на устаревший sticky-маршрут или warm-standby пул.
 
-Обе метрики выведены в строку Grafana «Inactive Uplink Leak (Global / Per-Uplink)» в `grafana/outline-client-dashboard.json`. Соединения проб не учитываются; метрики покрывают только дозвоны пользовательского трафика.
+Обе метрики выведены в строку Grafana «Inactive Uplink Leak (Global / Per-Uplink)» в `outline-client-dashboard.json` (в репозитории `ambar`, `ops/grafana/dashboards/`). Соединения проб не учитываются; метрики покрывают только дозвоны пользовательского трафика.
 
 `outline_ws_carrier_writer_terminations_total{writer, reason}` считает writer-задачи WebSocket-носителя, остановившиеся из-за ошибки записи. `writer` — `ss` (SS поверх WS) или `frame` (writer VLESS-чанков / датаграмм); `reason` — `peer_closed`, если носитель уже был закрыт (штатно, лог на `debug`), или `error` для настоящей ошибки записи (лог на `warn`). Устойчивый rate `reason="error"` значит, что аплинк не может писать. Строка Grafana: «Carrier Writer Terminations».
 
@@ -1154,10 +1153,10 @@ scrape_configs:
 
 На TUN UDP-пути отбросы слишком больших пакетов дополнительно порождают ICMP PTB отправителю; см. [TUN PMTUD safety gate](#tun-pmtud-safety-gate) и [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
 
-Дашборды Grafana (см. [`grafana/README.md`](grafana/README.md)):
+Дашборды Grafana (ведутся в инфраструктурном репозитории `ambar` в `ops/grafana/dashboards/`, см. `ambar/ops/grafana/README.md`):
 
-- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json)
-- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json)
+- `outline-client-dashboard.json`
+- `outline-client-hang-diagnostics.json`
 
 ## Control plane
 

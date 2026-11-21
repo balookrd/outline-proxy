@@ -114,7 +114,7 @@ nginx (`/var/www/html`, константа `NGINX_DOCUMENT_ROOT` в `config_mode
 
 Тот же префикс нужен nginx-блоку подписок — там он остаётся плейсхолдером
 `__KEYS_PREFIX__` (см. [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf)),
-как токен в [`ops/heartbeat/nginx-heartbeat.conf`](../heartbeat/nginx-heartbeat.conf).
+как токен в `ops/heartbeat/nginx-heartbeat.conf` (репозиторий `ambar`).
 
 Расширение на узлах задаёт флаг: в боевых `config.toml` ключа
 `file_extension` нет, и `save-keys.sh` вызывает генератор с

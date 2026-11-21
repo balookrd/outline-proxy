@@ -280,8 +280,9 @@ HTTP/3 WebSocket path зависит от этих патчей.
 ## Release и runtime artifacts
 
 - `target/` является generated и ignored.
-- `grafana/outline-server-dashboard.json`, `systemd/outline-server.service`,
-  `config.toml` и корневой `install-server.sh` являются user-facing deployment
-  artifacts; держи их согласованными с runtime behavior.
+- `systemd/outline-server.service`, `config.toml` и корневой `install-server.sh`
+  являются user-facing deployment artifacts; держи их согласованными с
+  runtime behavior (дашборд `outline-server-dashboard.json` ведётся в
+  инфраструктурном репозитории `ambar` в `ops/grafana/dashboards/`).
 - Не добавляй в репозиторий local secrets, generated access-key YAML files,
   certificates или private keys.

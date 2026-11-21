@@ -276,7 +276,7 @@ its own), dnsproxy has not been restarted since the renewal.
 
 Two of its settings are there for the dashboard rather than for the resolver, so
 change them only together with
-[`ops/grafana/README.md`](../grafana/README.md#unbound): `extended-statistics:
+`ops/grafana/README.md` (section `#unbound` in the `ambar` repository): `extended-statistics:
 yes`, without which `unbound-control stats_noreset` returns 93 lines instead of
 195 and 13 of the 21 panels of `unbound-dashboard.json` (uid `9FQf4fEWz`) have
 nothing to draw, and the absence of `statistics-cumulative`, which the exporter

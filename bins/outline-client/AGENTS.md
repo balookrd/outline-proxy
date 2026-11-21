@@ -408,7 +408,7 @@ cargo client-release-musl-aarch64
   transport}` (публикуется ТОЛЬКО для opted-in групп — отсутствие серии =
   опция выключена), в `/control/topology` (групповые поля скрываются при
   `false` через `skip_serializing_if`) и в чип `groupBypassChip` в
-  `dashboard.html`; в `grafana/outline-client-dashboard.json` — панели
+  `dashboard.html`; в `outline-client-dashboard.json` (репозиторий `ambar`, `ops/grafana/dashboards/`) — панели
   Direct Bypass (id 230/231) в секции Routing Policy.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
