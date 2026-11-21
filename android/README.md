@@ -7,7 +7,7 @@
 
 Russian version: [README.ru.md](README.ru.md).
 
-Android VPN client built on the `outline-ws-rust` uplink stack (padding, VLESS,
+Android VPN client built on the `outline-client` uplink stack (padding, VLESS,
 SS, WS, TLS, failover). The Rust core is reused unchanged; Android adds a
 Material Design 3 UI (Jetpack Compose) and the `VpnService` layer.
 
@@ -30,7 +30,7 @@ Material Design 3 UI (Jetpack Compose) and the `VpnService` layer.
 ```
 android/
   build-rust.sh    # builds the .so and the UniFFI Kotlin bindings
-  rust/            # outline-android: cdylib + UniFFI wrapper around ws-rust
+  rust/            # outline-android: cdylib + UniFFI wrapper around outline-client
     src/lib.rs       # start() / stop() / is_running()
     src/bin/         # uniffi-bindgen
   app/             # Android app (Gradle, Kotlin, Compose)
@@ -59,7 +59,7 @@ VpnService.establish() ──tun_fd──┐
                                  ▼
    outline-tun ── native engine, attached to the fd directly ─┐
                                                               ▼
-   outline-ws-rust uplinks: padding/VLESS/SS/WS/TLS (SOCKS5 ingress compiled out)
+   outline-client uplinks: padding/VLESS/SS/WS/TLS (SOCKS5 ingress compiled out)
                                                               │
    uplink sockets ── bypass the TUN (own package is ──────────┘
                      addDisallowedApplication'd) → real network
@@ -93,7 +93,7 @@ The Rust core is built with `default-features = false` plus `h3` and `tun`
 (`android/rust/Cargo.toml`): the native TUN engine, the WS/TLS uplink stack and
 the QUIC/HTTP-3 carriers. Left out are the `socks5` ingress, `metrics`,
 `control`, `env-filter`, `multi-thread` and the `jemalloc` allocator. On top of
-the compiled-out `socks5` feature, `outline-ws-rust` also skips the SOCKS5
+the compiled-out `socks5` feature, `outline-client` also skips the SOCKS5
 listener at runtime when a `tun_fd` is passed, regardless of the TOML.
 
 ## Requirements

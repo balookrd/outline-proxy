@@ -7,7 +7,7 @@
 
 English version: [README.md](README.md).
 
-VPN-клиент для Android поверх uplink-стека `outline-ws-rust` (padding, VLESS,
+VPN-клиент для Android поверх uplink-стека `outline-client` (padding, VLESS,
 SS, WS, TLS, failover). Rust-ядро переиспользуется без изменений; Android
 добавляет интерфейс на Material Design 3 (Jetpack Compose) и слой `VpnService`.
 
@@ -30,7 +30,7 @@ SS, WS, TLS, failover). Rust-ядро переиспользуется без и
 ```
 android/
   build-rust.sh    # собирает .so и UniFFI-биндинги Kotlin
-  rust/            # outline-android: cdylib + UniFFI-обёртка над ws-rust
+  rust/            # outline-android: cdylib + UniFFI-обёртка над outline-client
     src/lib.rs       # start() / stop() / is_running()
     src/bin/         # uniffi-bindgen
   app/             # Android-приложение (Gradle, Kotlin, Compose)
@@ -59,7 +59,7 @@ VpnService.establish() ──tun_fd──┐
                                  ▼
    outline-tun ── нативный движок, подключён к дескриптору напрямую ─┐
                                                                      ▼
-   outline-ws-rust uplinks: padding/VLESS/SS/WS/TLS (SOCKS5-вход исключён из сборки)
+   outline-client uplinks: padding/VLESS/SS/WS/TLS (SOCKS5-вход исключён из сборки)
                                                                      │
    аплинк-сокеты ── идут мимо TUN (свой пакет исключён ──────────────┘
                     через addDisallowedApplication) → реальная сеть
@@ -92,7 +92,7 @@ Rust-ядро собирается с `default-features = false` плюс `h3` �
 (`android/rust/Cargo.toml`): нативный TUN-движок, WS/TLS uplink-стек и носители
 QUIC/HTTP-3. Не входят вход `socks5`, `metrics`, `control`, `env-filter`,
 `multi-thread` и аллокатор `jemalloc`. Помимо выключенной фичи `socks5`,
-`outline-ws-rust` ещё и в рантайме не запускает SOCKS5-слушатель, если передан
+`outline-client` ещё и в рантайме не запускает SOCKS5-слушатель, если передан
 `tun_fd`, независимо от TOML.
 
 ## Требования

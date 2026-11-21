@@ -1,6 +1,6 @@
 # Changelog — Android-приложение
 
-Android-VPN-клиент ([`android/`](.)) оборачивает uplink-стек `outline-ws-rust` в
+Android-VPN-клиент ([`android/`](.)) оборачивает uplink-стек `outline-client` в
 `VpnService`, управляя нативным движком `outline-tun` напрямую через fd туннеля.
 Релизы нарезаются тегами `android-v*`; кроме них CI публикует
 rolling-prerelease `android-nightly` из `main`. Здесь фиксируются изменения,

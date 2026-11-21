@@ -1,6 +1,6 @@
 # Changelog — Android app
 
-The Android VPN client ([`android/`](.)) wraps the `outline-ws-rust` uplink
+The Android VPN client ([`android/`](.)) wraps the `outline-client` uplink
 stack in a `VpnService`, driving the native `outline-tun` engine directly over
 the tunnel fd. Releases are cut as `android-v*` tags; CI also publishes a
 rolling `android-nightly` prerelease off `main`. This log records user-visible

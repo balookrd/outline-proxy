@@ -10,7 +10,7 @@ import java.net.URL
 object ConfigValidation {
 
     /**
-     * A response only replaces the cache if it actually looks like a ws-rust
+     * A response only replaces the cache if it actually looks like an outline-client
      * client config. This is the guard against a URL that answers 200 with an
      * HTML captcha, a redirect stub or a 404 body: overwriting a working cache
      * with that would silently break the tunnel.

@@ -1394,13 +1394,54 @@ version = "26.11.0"
 dependencies = [
  "clap",
  "libc",
- "outline-ws-rust",
+ "outline-client",
  "paranoid-android",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uniffi",
+]
+
+[[package]]
+name = "outline-client"
+version = "26.11.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "blake3",
+ "bytes",
+ "clap",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "libmimalloc-sys",
+ "mimalloc",
+ "outline-metrics",
+ "outline-net",
+ "outline-routing",
+ "outline-transport",
+ "outline-tun",
+ "outline-uplink",
+ "outline-wire",
+ "parking_lot 0.13.0",
+ "rand 0.10.3",
+ "rustls",
+ "serde",
+ "shadowsocks-crypto",
+ "socket2",
+ "socks5-proto",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -1553,47 +1594,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "zeroize",
-]
-
-[[package]]
-name = "outline-ws-rust"
-version = "26.11.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "blake3",
- "bytes",
- "clap",
- "futures-util",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "libmimalloc-sys",
- "mimalloc",
- "outline-metrics",
- "outline-net",
- "outline-routing",
- "outline-transport",
- "outline-tun",
- "outline-uplink",
- "outline-wire",
- "parking_lot 0.13.0",
- "rand 0.10.3",
- "rustls",
- "serde",
- "shadowsocks-crypto",
- "socket2",
- "socks5-proto",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "tracing-subscriber",
- "url",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
