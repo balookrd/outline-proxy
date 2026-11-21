@@ -28,7 +28,7 @@
 #       --alias-peer mmv@198.18.1.104:cloud \
 #       --alias-peer mmv@198.18.1.102:cloud
 #
-# The --peer key is the uplink `name` in the new node's ws-rust config, not a
+# The --peer key is the uplink `name` in the new node's outline-client config, not a
 # hostname. A peer whose account for the reference node goes by another id
 # carries its own template as a third segment: --peer foo:sysadm@host:othername
 #
@@ -143,21 +143,21 @@ peer_connect() {
 
     # Distinguish "old binary" from "cannot read the binary": the first is a
     # real refusal, the second would otherwise masquerade as one.
-    if ! peer_ssh "$target" 'sudo test -r /usr/local/bin/outline-ss-rust'; then
-        warn "$target: cannot read /usr/local/bin/outline-ss-rust — SKIPPED"
+    if ! peer_ssh "$target" 'sudo test -r /usr/local/bin/outline-server'; then
+        warn "$target: cannot read /usr/local/bin/outline-server — SKIPPED"
         return 1
     fi
-    if ! peer_ssh "$target" 'sudo grep -a -q "failed to serialize user entry as TOML" /usr/local/bin/outline-ss-rust'; then
-        warn "$target: outline-ss-rust predates the control-API persistence fix — writing users would corrupt its config.toml"
+    if ! peer_ssh "$target" 'sudo grep -a -q "failed to serialize user entry as TOML" /usr/local/bin/outline-server'; then
+        warn "$target: outline-server predates the control-API persistence fix — writing users would corrupt its config.toml"
         warn "$target: SKIPPED. Upgrade the binary there first, then re-run for this peer."
         return 1
     fi
 
     local control
-    control="$(peer_ssh "$target" "sudo sed -n '/^\[control\]/,/^\[/p' /etc/outline-ss-rust/config.toml")"
+    control="$(peer_ssh "$target" "sudo sed -n '/^\[control\]/,/^\[/p' /etc/outline-server/config.toml")"
     PEER_TOKEN="$(printf '%s\n' "$control" | sed -n 's/^token *= *"\(.*\)"/\1/p' | head -1)"
     PEER_LISTEN="$(printf '%s\n' "$control" | sed -n 's/^listen *= *"\(.*\)"/\1/p' | head -1)"
-    [ -n "$PEER_TOKEN" ] || die "$target: no control token in /etc/outline-ss-rust/config.toml"
+    [ -n "$PEER_TOKEN" ] || die "$target: no control token in /etc/outline-server/config.toml"
     PEER_LISTEN="${PEER_LISTEN:-127.0.0.1:9190}"
     dim "control API at $PEER_LISTEN"
     return 0
@@ -347,5 +347,5 @@ else
     if [ -n "$ALIAS_PEERS" ]; then
         dim "alias peers keep shared credentials — mark those uplinks with install.sh --shared-uplink <name>"
     fi
-    dim "then restart the client there: systemctl restart outline-ws-rust"
+    dim "then restart the client there: systemctl restart outline-client"
 fi

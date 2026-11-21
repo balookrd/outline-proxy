@@ -33,7 +33,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(names, ["both.conf", "both.json", "both.toml", "both.txt"])
 
     def test_ss_only_user_gets_no_json(self):
-        # ...but still gets the ws-rust config: its chain carries SS wires.
+        # ...but still gets the outline-client config: its chain carries SS wires.
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
@@ -229,7 +229,7 @@ class ServingGroupTest(unittest.TestCase):
 
 
 class WsTomlArtifactTest(unittest.TestCase):
-    def test_writes_the_ws_rust_config(self):
+    def test_writes_the_outline_client_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             self.assertEqual(run(out), 0)

@@ -3,7 +3,7 @@
 Побайтовый снимок артефактов, которые генератор на Python (`generate_keys.py`)
 выдаёт на синтетическом `config.toml` из этого каталога. Все креды фейковые.
 
-Генерация access-key раньше жила в бинаре `outline-ss-rust`; теперь она удалена,
+Генерация access-key раньше жила в бинаре `outline-server`; теперь она удалена,
 и эталон снят с Python-генератора. Он больше не доказательство
 эквивалентности Rust↔Python, а regression-anchor самого Python-генератора:
 тесты собирают артефакты питоном и сверяют с этим каталогом побайтово. Эталон —
@@ -63,7 +63,7 @@
 - `expected/` — полный вывод генератора (то, что он пишет в `--out-dir`): до
   четырёх файлов на юзера — `<user>.conf` (Outline), `<user>.json`
   (Xray-подписка, балансируется по cloud-узлам), `<user>.toml` (конфиг
-  outline-ws-rust для Android) и `<user>.txt` (все ссылки, по одной на строку).
+  outline-client для Android) и `<user>.txt` (все ссылки, по одной на строку).
   Файл не пишется, если у юзера нет соответствующей половины: у `ss-only` нет
   `.json`, у `vless-only` нет `.conf`. Весь набор сверяется побайтово в
   `test_generate_keys.py::GoldenCorpusTest`, а по типам файлов — в
@@ -71,9 +71,9 @@
   `test_ws_toml.py` (`.toml`) и `test_artifacts.py` (`.conf` + `.txt`).
 - `expected-ws/` — `both.toml` и `ss-only.toml`, побайтовые копии тех же файлов
   из `expected/`. Служат фикстурой для `test_ws_toml.py::FixtureTest`, а
-  `both.toml` вдобавок грузится настоящим загрузчиком конфига ws-rust в
+  `both.toml` вдобавок грузится настоящим загрузчиком конфига `outline-client` в
   `generated_android_config_fixture_loads`
-  (`bins/outline-ws-rust/src/config/tests/mod.rs`): его схема
+  (`bins/outline-client/src/config/tests/mod.rs`): его схема
   `deny_unknown_fields` ловит дрейф формата, из-за которого один лишний ключ
   ронял бы бинарь на старте.
 - `expected-users.txt` — отчёт генератора со stdout (блок на юзера). Никакой

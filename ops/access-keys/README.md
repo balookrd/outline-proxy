@@ -1,19 +1,19 @@
 # Генерация access-key артефактов
 
-Генератор клиентских конфигов для узлов `outline-ss-rust`
+Генератор клиентских конфигов для узлов `outline-server`
 (`generate_keys.py`, python3, только stdlib). Читает `config.toml` узла и пишет
 до четырёх файлов на юзера в тот же каталог, откуда их раздаёт nginx.
 
 Реальные имена узлов, домены и адреса парка в этом документе заменены условными: `fleet.example` — домен парка; `relay-a`…`relay-d` — промежуточные cloud-узлы; `exit-a`…`exit-e` — выходные узлы. Соответствие — в локальном некоммитируемом `FLEET.local.md`.
 
 Дизайн: [`docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md`](../../docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md),
-ws-rust-конфиг — [`docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md`](../../docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md).
+конфиг `outline-client` — [`docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md`](../../docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md).
 
 | Файл | Условие | Содержимое |
 |---|---|---|
 | `<user>.conf` | есть `password` и на сервере есть пара сплит-ног `ws_ss_tcp` + `ws_ss_udp` | Outline YAML |
 | `<user>.json` | есть `vless_id` и непадед VLESS-эндпоинт | Xray-подписка с балансером по узлам из `--node` |
-| `<user>.toml` | есть хоть один wire | конфиг `outline-ws-rust` для Android-клиента |
+| `<user>.toml` | есть хоть один wire | конфиг `outline-client` для Android-клиента |
 | `<user>.txt` | есть хоть один URL | все URL юзера, по одному в строке |
 
 Первая строка `<user>.txt` — `ssconf://` на собственный `.conf` (ссылка для
@@ -23,7 +23,7 @@ Outline-клиента; только если `.conf` создаётся и `url
 
 ## Откуда это взялось
 
-Раньше `.conf` генерировал сам `outline-ss-rust` (режим `--write-access-keys-dir`),
+Раньше `.conf` генерировал сам `outline-server` (режим `--write-access-keys-dir`),
 и на юзера приходилось до семи файлов — по одному на носитель. Правка формата
 ссылок требовала пересборки бинаря и выкладки на весь парк, а совместимость с
 xray-клиентами правилась много раз подряд.
@@ -43,7 +43,7 @@ sudo /opt/outline/access-keys/generate_keys.py
 
 | Флаг | Значение по умолчанию |
 |---|---|
-| `--config` | `/etc/outline-ss-rust/config.toml` |
+| `--config` | `/etc/outline-server/config.toml` |
 | `--out-dir` | из `[access_keys] write_dir`; своего дефолта нет |
 | `--file-extension` | из `[access_keys] file_extension`, иначе `.yaml` |
 | `--node` | `relay-a.fleet.example`, `relay-b.fleet.example`; повторяется на каждый узел |
@@ -81,7 +81,7 @@ nginx (`/var/www/html`, константа `NGINX_DOCUMENT_ROOT` в `config_mode
 записаны.
 
 Сервер секцию `[access_keys]` парсит и игнорирует
-(`bins/outline-ss-rust/src/config/loader.rs`), она целиком принадлежит
+(`bins/outline-server/src/config/loader.rs`), она целиком принадлежит
 генератору.
 
 ### Узел без раздачи
@@ -218,7 +218,7 @@ VLESS-эндпоинтах (`ws_vless` / `xhttp_vless`). `method` берётся
 В `<user>.json` у xray-клиента `alpn` выбирает ровно одну версию HTTP, а не
 список предпочтений. Поэтому каждая xhttp-нога (`stream-one`) там размножена на
 две outbound-записи — `h3` и `h2` — на каждый узел, а WS-ноги стоят на
-`http/1.1`. Это ограничение клиента: `outline-ss-rust` умеет WebSocket поверх h2
+`http/1.1`. Это ограничение клиента: `outline-server` умеет WebSocket поверх h2
 (RFC 8441) и h3 (RFC 9220), а `wsSettings` у xray — только HTTP/1.1 Upgrade.
 
 ## Порядок outbounds в `.json`
@@ -239,7 +239,7 @@ VLESS-эндпоинтах (`ws_vless` / `xhttp_vless`). `method` берётся
 `xhttp_vless` эндпоинту: Xray паддинг не умеет. Если у сервера все
 VLESS-эндпоинты padded, `.json` не создаётся.
 
-## Конфиг ws-rust для Android (`<user>.toml`)
+## Конфиг `outline-client` для Android (`<user>.toml`)
 
 Один `[[outline.uplinks]]` на узел из `--node`, внутри — цепочка носителей
 через `[[outline.uplinks.fallbacks]]`. Все wire'ы заданы share-link'ами — теми
@@ -252,7 +252,7 @@ VLESS-эндпоинты padded, `.json` не создаётся.
 эндпоинту каждого типа). Сплит-ноги `ws_ss_tcp` / `ws_ss_udp` в цепочку не
 попадают — у них нет share-ссылки.
 
-ALPN, в отличие от `.json`, wire'ы не размножает: ws-rust читает первый токен
+ALPN, в отличие от `.json`, wire'ы не размножает: `outline-client` читает первый токен
 как запрошенный режим и понижает носитель внутри wire'а сам
 (`ws_h3 → ws_h2 → ws_h1`).
 
@@ -328,7 +328,7 @@ data plane, и клиент, у которого разом отвалились
 побайтовые копии `both.toml` и `ss-only.toml` из `golden/expected/`. Что
 фикстура — загружаемый конфиг, а не просто валидный TOML, проверяет Rust-тест
 `generated_android_config_fixture_loads`
-(`bins/outline-ws-rust/src/config/tests/mod.rs`): у схемы ws-rust
+(`bins/outline-client/src/config/tests/mod.rs`): у схемы `outline-client`
 `deny_unknown_fields`, и лишний ключ ронял бы бинарь на старте.
 
 ## Тесты
@@ -362,8 +362,8 @@ ssh sysadm@<node> 'sudo -n cp -a /tmp/access-keys/. /opt/outline/access-keys/ \
 `<node>` — FQDN узла (`relay-a.fleet.example` и т. п.). Раскатывайте по одному узлу
 за раз. Рестарт сервисов не нужен: пишутся файлы, которые nginx уже раздаёт с
 диска. На узле генератор вызывается из
-`/opt/outline/outline-ss-rust/save-keys.sh` вместо прежнего
-`outline-ss-rust --write-access-keys-dir`; при провижининге его запускает фаза
+`/opt/outline/outline-server/save-keys.sh` вместо прежнего
+`outline-server --write-access-keys-dir`; при провижининге его запускает фаза
 `services` в `ops/provision-node/install.sh` (`ACCESS_KEYS_REGEN=1`).
 
 Генератор без встроенного дефолта каталога работает только на узле, где задан

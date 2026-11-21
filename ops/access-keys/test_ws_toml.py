@@ -279,7 +279,7 @@ class BuildConfigTest(unittest.TestCase):
 class FixtureTest(unittest.TestCase):
     """The expected-ws fixtures pin the accepted format; Rust proves they load.
 
-    `both.toml` here is loaded through the real ws-rust config loader by
+    `both.toml` here is loaded through the real outline-client config loader by
     `generated_android_config_fixture_loads` — its `deny_unknown_fields` schema
     is the thing this fixture guards against silent drift.
     """
@@ -299,7 +299,7 @@ class FixtureTest(unittest.TestCase):
 class GoldenTomlTest(unittest.TestCase):
     """Every `.toml` in the golden corpus is reproducible from build_config.
 
-    Broader than FixtureTest: it walks the synthetic config and pins the ws-rust
+    Broader than FixtureTest: it walks the synthetic config and pins the outline-client
     config for every user, and asserts a credential-less user gets none. NODES
     equals xray_json.DEFAULT_NODES, the pair the generator used to snapshot the
     corpus, so the comparison is byte-for-byte.

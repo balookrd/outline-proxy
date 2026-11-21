@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse an outline-ss-rust config.toml into what the access-key artifacts need.
+"""Parse an outline-server config.toml into what the access-key artifacts need.
 
 The model mirrors the Rust side: users are pure credentials, carriers come from
 the global `[[endpoint]]` list (`{path, kind, padded}`), and the ALPN decision

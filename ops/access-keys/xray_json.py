@@ -53,7 +53,7 @@ def build_outbounds(
     ALPN is a selector in xray, not a preference list: a leg gets exactly one
     value. h3 rides QUIC, h2 rides TCP, and the WS legs must stay on http/1.1
     because xray's wsSettings speaks plain HTTP/1.1 Upgrade only (no RFC 8441),
-    even though outline-ss-rust would accept Extended CONNECT.
+    even though outline-server would accept Extended CONNECT.
 
     A path of None drops its transport rather than emitting a leg that dials
     nothing: a user configured for only one carrier gets a smaller balancer,

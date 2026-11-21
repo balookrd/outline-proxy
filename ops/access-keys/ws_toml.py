@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an outline-ws-rust client config for the Android app.
+"""Build an outline-client config for the Android app.
 
 Renders the document only. Config parsing lives in `config_model` and file
 writing in `generate_keys`, so this module stays free of I/O — the same split
@@ -44,7 +44,7 @@ SHUFFLE_WIRES = True
 # battery and — on the edge-class cells this whole exercise is about — in the
 # very bandwidth the tunnel needs. 300 s matches the floor the Android app
 # enforces on every profile (`MobilePowerConfig.kt`, 7f5dfbac): longer gaps let
-# the cellular modem drop into RRC Idle between probes. ws-rust warns below
+# the cellular modem drop into RRC Idle between probes. outline-client warns below
 # 60 s (bursts of handshakes trip upstream rate limits); the cost of 300 s is
 # that a recovered uplink without traffic is noticed within five minutes.
 PROBE_INTERVAL_SECS = 300
@@ -127,7 +127,7 @@ def build_wires(user: User, node: str, server: ServerConfig) -> list[Wire]:
     only expands to a combined path — so they never do. Each wire carries its
     endpoint's `padded` flag.
 
-    ALPN does not multiply wires the way it multiplies xray outbounds: ws-rust
+    ALPN does not multiply wires the way it multiplies xray outbounds: outline-client
     reads the first token as the requested mode and downgrades inside the wire
     (`ws_h3 -> ws_h2 -> ws_h1`).
     """
@@ -306,7 +306,7 @@ def config_warnings(user: User, server: ServerConfig) -> list[str]:
 
 
 def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str | None:
-    """One complete ws-rust config for a single user, or None if undialable.
+    """One complete outline-client config for a single user, or None if undialable.
 
     Section order is not cosmetic: `[[outline.uplinks.fallbacks]]` binds to the
     `[[outline.uplinks]]` above it, so every flat section is written first and
@@ -326,7 +326,7 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         return None
 
     lines: list[str] = [
-        "# outline-ws-rust client config for the Android app.",
+        "# outline-client client config for the Android app.",
         f"# Generated for user {user.name} — do not edit by hand.",
         "",
         "[tun]",

@@ -133,7 +133,7 @@ DOCKER_START=(); VERIFY_UNITS=(); VERIFY_TIMERS=(); VERIFY_METRICS=(); VERIFY_PO
 CERT_DOMAINS=(); DDNS_MODE="none"; DDNS_BUILD=""; DDNS_START=""; DDNS_IMAGE=""
 CERT_ISSUE_CMD=""
 NGINX_SITE=""; OCCTL_SYMLINK=0; ACCESS_KEYS_REGEN=0; IPV6=0
-CERT_NEEDS_WEBROOT=0; REQUIRES_UPLINK_CREDS=0; INSTALL_WS_RUST=0
+CERT_NEEDS_WEBROOT=0; REQUIRES_UPLINK_CREDS=0; INSTALL_CLIENT=0
 NET_POLICY_RULE_GUARD=0
 # shellcheck source=/dev/null
 . "$BUNDLE/profile.conf"
@@ -382,26 +382,26 @@ phase_users() {
     log "phase users"
     getent group certs >/dev/null || run groupadd --system certs
 
-    if ! getent passwd outline-ss-rust >/dev/null; then
+    if ! getent passwd outline-server >/dev/null; then
         run useradd --system --user-group --no-create-home \
-            --home-dir /var/lib/outline-ss-rust --shell /usr/sbin/nologin outline-ss-rust
+            --home-dir /var/lib/outline-server --shell /usr/sbin/nologin outline-server
     fi
     # Only profiles that actually install the client need its account. An exit
     # node used to get it anyway, together with a dormant unit and empty state
     # directories — dead weight that outlived the reason for it.
-    if [ "$INSTALL_WS_RUST" = "1" ] && ! getent passwd outline-ws >/dev/null; then
+    if [ "$INSTALL_CLIENT" = "1" ] && ! getent passwd outline-client >/dev/null; then
         run useradd --system --user-group --no-create-home \
-            --home-dir /home/outline-ws --shell /usr/sbin/nologin outline-ws
+            --home-dir /var/lib/outline-client --shell /usr/sbin/nologin outline-client
     fi
 
-    run usermod -aG certs outline-ss-rust
+    run usermod -aG certs outline-server
     if getent passwd sysadm >/dev/null; then
         run usermod -aG certs,docker sysadm
     fi
 
-    run install -d -o outline-ss-rust -g outline-ss-rust -m 0755 /var/lib/outline-ss-rust
-    if [ "$INSTALL_WS_RUST" = "1" ]; then
-        run install -d -o root -g root -m 0755 /var/lib/outline-ws-rust /var/log/outline-ws-rust
+    run install -d -o outline-server -g outline-server -m 0755 /var/lib/outline-server
+    if [ "$INSTALL_CLIENT" = "1" ]; then
+        run install -d -o outline-client -g outline-client -m 0755 /var/lib/outline-client /var/log/outline-client
     fi
     ok "service accounts ready"
 }
@@ -538,7 +538,7 @@ ensure_nginx_locations() {
 # (`profile-title`, `profile-update-interval`) — see
 # ops/access-keys/nginx-subscription-headers.conf. It arrives inside the
 # reference bundle, so a bundle collected before <user>.toml existed pins the
-# old `(json|txt)` and every node cloned from it serves the ws-rust config
+# old `(json|txt)` and every node cloned from it serves the outline-client config
 # without the headers: clients fetch it once and never refresh. Widening the
 # list here fixes both the stale bundle and any node provisioned from it.
 #
@@ -565,34 +565,35 @@ ensure_subscription_extensions() {
     ok "nginx: subscription location now serves .toml too"
 }
 
-# The service runs with `--config /etc/outline-ss-rust/config.toml`, and every
+# The service runs with `--config /etc/outline-server/config.toml`, and every
 # on-node caller (save-keys.sh, the key generator) now passes that same /etc
-# path explicitly. The historical /opt/outline/outline-ss-rust/config.toml — a
-# symlink on five nodes, a drifting plain copy on `sebek`/`nuxt2` (2026-08-11) —
-# bought nothing but the copy-vs-symlink drift that silently desynced the key
-# generator. Consolidate on /etc: rescue an /opt-only copy if /etc is somehow
-# empty, then drop the /opt path entirely so there is one source of truth.
+# path explicitly. The historical /opt/outline/outline-server/config.toml (and
+# legacy /opt/outline/outline-ss-rust/config.toml) — a symlink on five nodes, a
+# drifting plain copy on `sebek`/`nuxt2` (2026-08-11) — bought nothing but the
+# copy-vs-symlink drift that silently desynced the key generator. Consolidate on
+# /etc: rescue an /opt-only copy if /etc is somehow empty, then drop the /opt
+# path entirely so there is one source of truth.
 remove_ss_config_opt() {
-    local opt=/opt/outline/outline-ss-rust/config.toml
-    local etc=/etc/outline-ss-rust/config.toml
+    local opt etc=/etc/outline-server/config.toml
+    for opt in /opt/outline/outline-server/config.toml /opt/outline/outline-ss-rust/config.toml; do
+        [ -e "$opt" ] || [ -L "$opt" ] || continue
 
-    [ -e "$opt" ] || [ -L "$opt" ] || return 0
+        # A plain /opt copy while /etc is missing is the only live config — promote
+        # it before deleting anything. A dangling symlink is not a file, so `-f`
+        # skips it: there is nothing to rescue there.
+        if [ ! -f "$etc" ] && [ -f "$opt" ] && [ ! -L "$opt" ]; then
+            run install -d -o root -g root -m 0755 "$(dirname "$etc")"
+            run cp -a "$opt" "$etc"
+            ok "server config: promoted $opt to $etc"
+        fi
 
-    # A plain /opt copy while /etc is missing is the only live config — promote
-    # it before deleting anything. A dangling symlink is not a file, so `-f`
-    # skips it: there is nothing to rescue there.
-    if [ ! -f "$etc" ] && [ -f "$opt" ] && [ ! -L "$opt" ]; then
-        run install -d -o root -g root -m 0755 "$(dirname "$etc")"
-        run cp -a "$opt" "$etc"
-        ok "ss config: promoted the /opt copy to $etc"
-    fi
-
-    if [ -f "$etc" ]; then
-        run rm -f "$opt"
-        ok "ss config: removed the legacy /opt path (canonical is $etc)"
-    else
-        warn "ss config: $etc missing and no usable /opt copy — leaving /opt as is"
-    fi
+        if [ -f "$etc" ]; then
+            run rm -f "$opt"
+            ok "server config: removed the legacy $opt path (canonical is $etc)"
+        else
+            warn "server config: $etc missing and no usable /opt copy — leaving $opt as is"
+        fi
+    done
 }
 
 phase_files() {
@@ -770,10 +771,14 @@ write_policy_rule_guard() {
 
     local conf=/etc/systemd/networkd.conf.d/10-keep-foreign-rules.conf
     local unit=/etc/systemd/system/outline-ws0-routing.service
+    local init_ws0=/opt/outline/outline-client/init-ws0.sh
+    if [ ! -x "$init_ws0" ] && [ -x /opt/outline/outline-ws-rust/init-ws0.sh ]; then
+        init_ws0=/opt/outline/outline-ws-rust/init-ws0.sh
+    fi
     local conf_body unit_body
     conf_body="# Generated by ops/provision-node/install.sh from profile $PROFILE_NAME.
 # The ws0 policy rule (fwmark 0xa -> table 110) is added imperatively by
-# /opt/outline/outline-ws-rust/init-ws0.sh, so networkd counts it as foreign.
+# $init_ws0, so networkd counts it as foreign.
 [Network]
 ManageForeignRoutingPolicyRules=no"
     # Not Documentation=: systemd expects URLs there and logs a warning per word.
@@ -786,7 +791,7 @@ PartOf=systemd-networkd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/outline/outline-ws-rust/init-ws0.sh
+ExecStart=$init_ws0
 
 [Install]
 WantedBy=systemd-networkd.service"
@@ -816,24 +821,29 @@ phase_secrets() {
         run tar xzf "$archive" -C /
     done
 
-    if [ -d /etc/outline-ss-rust ]; then
-        run chown -R outline-ss-rust:outline-ss-rust /etc/outline-ss-rust
-        run chmod 0750 /etc/outline-ss-rust
-        run bash -c 'find /etc/outline-ss-rust -maxdepth 1 -type f -exec chmod 0640 {} +'
+    if [ -d /etc/outline-server ]; then
+        run chown -R outline-server:outline-server /etc/outline-server
+        run chmod 0750 /etc/outline-server
+        run bash -c 'find /etc/outline-server -maxdepth 1 -type f -exec chmod 0640 {} +'
     fi
-    if [ -d /etc/outline-ws-rust ]; then
-        run chown -R outline-ws:outline-ws /etc/outline-ws-rust
-        run chmod 0750 /etc/outline-ws-rust
-        run bash -c 'find /etc/outline-ws-rust -maxdepth 1 -type f -exec chmod 0640 {} +'
-        run install -d -o outline-ws -g outline-ws -m 0750 /etc/outline-ws-rust/instances
+    if [ -d /etc/outline-client ]; then
+        run chown -R outline-client:outline-client /etc/outline-client
+        run chmod 0750 /etc/outline-client
+        run bash -c 'find /etc/outline-client -maxdepth 1 -type f -exec chmod 0640 {} +'
+        run install -d -o outline-client -g outline-client -m 0750 /etc/outline-client/instances
     fi
 
     if [ -f "$BUNDLE/secrets/users.txt" ]; then
         # users.txt holds the access-key report, which can carry credentials —
         # keep it off world-readable, alongside ocpasswd (0600). 0640 with the
-        # service group lets outline-ss-rust read it without opening it up.
-        run install -m 0640 -o root -g outline-ss-rust "$BUNDLE/secrets/users.txt" \
-            /opt/outline/outline-ss-rust/users.txt
+        # service group lets outline-server read it without opening it up.
+        local users_dir=/opt/outline/outline-server
+        if [ ! -d "$users_dir" ] && [ -d /opt/outline/outline-ss-rust ]; then
+            users_dir=/opt/outline/outline-ss-rust
+        fi
+        run install -d -o root -g root -m 0755 "$users_dir"
+        run install -m 0640 -o root -g outline-server "$BUNDLE/secrets/users.txt" \
+            "$users_dir/users.txt"
     fi
     if [ -f "$BUNDLE/secrets/ocserv-ocpasswd" ]; then
         run install -m 0600 -o root -g root "$BUNDLE/secrets/ocserv-ocpasswd" \
@@ -842,13 +852,13 @@ phase_secrets() {
 
     # permission-certs.sh is the reference's own idea of how the ACME material
     # should be owned; run it rather than duplicating the rules here. It adds
-    # outline-ss-rust to the certs group, so the account must already exist —
+    # outline-server to the certs group, so the account must already exist —
     # the users phase creates it, but --only secrets can skip that.
     if [ -x /opt/beerloga/permission-certs.sh ]; then
-        if getent passwd outline-ss-rust >/dev/null; then
+        if getent passwd outline-server >/dev/null; then
             run bash -c '/opt/beerloga/permission-certs.sh || true'
         else
-            warn "outline-ss-rust user missing — skipping permission-certs.sh (run the users phase first)"
+            warn "outline-server user missing — skipping permission-certs.sh (run the users phase first)"
         fi
     fi
     ok "secrets installed"
@@ -1008,10 +1018,10 @@ phase_rehost() {
     # not something the install can fix on its own: shard_id must be unique
     # across the mesh, every peer needs the new node in its [cluster] peers, and
     # its address must be allowed on the mesh port fleet-wide.
-    if [ -f /etc/outline-ss-rust/config.toml ] \
-       && grep -q '^shard_id' /etc/outline-ss-rust/config.toml 2>/dev/null; then
+    if [ -f /etc/outline-server/config.toml ] \
+       && grep -q '^shard_id' /etc/outline-server/config.toml 2>/dev/null; then
         local shard
-        shard="$(sed -n 's/^shard_id *= *\([0-9]*\).*/\1/p' /etc/outline-ss-rust/config.toml | head -1)"
+        shard="$(sed -n 's/^shard_id *= *\([0-9]*\).*/\1/p' /etc/outline-server/config.toml | head -1)"
         warn "cluster shard_id=$shard was inherited from $REF_HOST and must be unique — give this node its own, then add it to [cluster] peers and to the mesh allow-list on every peer"
     fi
 
@@ -1228,7 +1238,7 @@ phase_uplinks() {
 
     # Checked after the creds file, so a --dry-run on a node that has not been
     # populated yet still validates the credentials it was handed.
-    local config=/etc/outline-ws-rust/config.toml
+    local config=/etc/outline-client/config.toml
     if [ ! -f "$config" ]; then
         if [ "$DRY_RUN" = "1" ]; then
             dim "[dry-run] $config not installed yet — the secrets phase creates it"
@@ -1267,7 +1277,7 @@ phase_uplinks() {
         dim "[dry-run] would rewrite $replaced credential line(s) in $config"
     else
         cat "$tmp" > "$config"
-        chown outline-ws:outline-ws "$config"
+        chown outline-client:outline-client "$config"
         chmod 0640 "$config"
         ok "rewrote $replaced uplink credential line(s)"
     fi
@@ -1441,7 +1451,7 @@ phase_cron() {
 # ------------------------------------------------------------------- services
 
 
-# Writes the memory drop-in for outline-ws-rust and outline-ss-rust from
+# Writes the memory drop-in for outline-client and outline-server from
 # memory-tuning/fleet.tsv in the bundle, keyed on the --host argument.
 #
 # One canonical file per service (20-memory.conf), matching what
@@ -1459,14 +1469,14 @@ install_memory_dropin() {
         return 0
     fi
 
-    local short ssh ws_high ws_max ss_high ss_max _rest
+    local short _ssh ws_high ws_max ss_high ss_max _rest
     local matched=0
-    while IFS=$'\t ' read -r short ssh ws_high ws_max ss_high ss_max _rest; do
+    while IFS=$'\t ' read -r short _ssh ws_high ws_max ss_high ss_max _rest; do
         case "$short" in ''|\#*) continue ;; esac
         [ "$short" = "$HOST" ] || continue
         matched=1
-        _write_memory_dropin outline-ws-rust "$ws_high" "$ws_max" 1
-        _write_memory_dropin outline-ss-rust "$ss_high" "$ss_max" 0
+        _write_memory_dropin outline-client "$ws_high" "$ws_max" 1
+        _write_memory_dropin outline-server "$ss_high" "$ss_max" 0
         break
     done < "$table"
 
@@ -1534,8 +1544,12 @@ phase_services() {
 
     # Access-key files are served by nginx and derived from the SS config, so
     # they are regenerated here rather than copied from the reference.
-    if [ "$ACCESS_KEYS_REGEN" = "1" ] && [ -x /opt/outline/outline-ss-rust/save-keys.sh ]; then
-        run bash -c '/opt/outline/outline-ss-rust/save-keys.sh > /dev/null || true'
+    if [ "$ACCESS_KEYS_REGEN" = "1" ]; then
+        if [ -x /opt/outline/outline-server/save-keys.sh ]; then
+            run bash -c '/opt/outline/outline-server/save-keys.sh > /dev/null || true'
+        elif [ -x /opt/outline/outline-ss-rust/save-keys.sh ]; then
+            run bash -c '/opt/outline/outline-ss-rust/save-keys.sh > /dev/null || true'
+        fi
     fi
 
     local unit
@@ -1720,7 +1734,11 @@ phase_verify() {
         if ip rule show pref 910 | grep -q . && ip -6 rule show pref 910 | grep -q .; then
             ok "ws0 policy rule present (v4 + v6)"
         else
-            warn "ws0 policy rule missing — marked traffic bypasses the tunnel; run /opt/outline/outline-ws-rust/init-ws0.sh"
+            local init_ws0=/opt/outline/outline-client/init-ws0.sh
+            if [ ! -x "$init_ws0" ] && [ -x /opt/outline/outline-ws-rust/init-ws0.sh ]; then
+                init_ws0=/opt/outline/outline-ws-rust/init-ws0.sh
+            fi
+            warn "ws0 policy rule missing — marked traffic bypasses the tunnel; run $init_ws0"
             failures=$((failures + 1))
         fi
     fi

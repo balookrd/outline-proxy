@@ -59,7 +59,7 @@ def happ_url(user: User, server: ServerConfig) -> str | None:
 
 
 def ws_url(user: User, server: ServerConfig) -> str | None:
-    """The link handed to the Android client: the ws-rust config.
+    """The link handed to the Android client: the outline-client config.
 
     Always `.toml` — `file_extension` applies to the Outline artifact only.
     """

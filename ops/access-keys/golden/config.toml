@@ -21,7 +21,7 @@ kind = "ws_ss_tcp"
 path = "/GLOBAL/udp"
 kind = "ws_ss_udp"
 
-# Combined SS carriers (one path, both legs) for the ws-rust chain and the
+# Combined SS carriers (one path, both legs) for the outline-client chain and the
 # ss:// share links. Padded, so a generated <user>.toml turns [padding] on.
 [[endpoint]]
 path = "/GLOBAL/ss"
@@ -34,7 +34,7 @@ kind = "xhttp_ss"
 padded = true
 
 # VLESS carriers for the vless:// share links: padded first (as on node .104),
-# so the ws-rust chain stays one padding class; the plain ones below them are the
+# so the outline-client chain stays one padding class; the plain ones below them are the
 # only ones the xray subscription may use (xray cannot speak the padding).
 [[endpoint]]
 path = "/GLOBAL/vless"

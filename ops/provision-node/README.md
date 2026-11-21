@@ -13,8 +13,8 @@ self-describing on the target.
 
 | Profile | Family | Shape |
 |---|---|---|
-| `relay-a` | entry node | ss+ws, ocserv, unbound+dnsproxy, ddns as a container, netplan, IPv4 |
-| `exit-a` | exit node | ss-rust, dumbproxy, unbound+dnsproxy, ddns as a container, IPv6 `/64` + ndppd |
+| `relay-a` | entry node | server+client, ocserv, unbound+dnsproxy, ddns as a container, netplan, IPv4 |
+| `exit-a` | exit node | outline-server, dumbproxy, unbound+dnsproxy, ddns as a container, IPv6 `/64` + ndppd |
 
 Both were built against live nodes (Ubuntu 24.04, x86_64); nothing is hardcoded
 to those hostnames.
@@ -60,7 +60,7 @@ ssh sysadm@relay-b.fleet.example 'sudo /tmp/provision-node/install.sh \
 
 The `--peer` list in step 2 is the one relay-b was registered with. `exit-c` and
 `exit-d` are no longer reachable from Russia [verify: current `main`-group uplink
-names in `/etc/outline-ws-rust/config.toml` on the reference before copying
+names in `/etc/outline-client/config.toml` on the reference before copying
 this command].
 
 Step 2 is entry-node-only. An exit node dials no peers, so cloning `exit-a` is
@@ -76,7 +76,7 @@ ssh sysadm@<new-node> 'sudo /tmp/provision-node/install.sh \
 ```
 
 `--ipv6-prefix` is what makes a dual-stack clone its own node: the prefix
-rewrites `ndppd.conf` and `[outbound] ipv6_prefix` in the ss-rust config
+rewrites `ndppd.conf` and `[outbound] ipv6_prefix` in the `outline-server` config
 (`REHOST_IPV6_FILES` in the `exit-a` profile), which otherwise still name the
 reference's `/64`. Without the flag `install.sh` takes the first global prefix
 from `ip -6 route show proto kernel` (excluding `fe80`, `fc`, `fd`). Only when
@@ -84,7 +84,7 @@ none is found does `preflight` warn `no --ipv6-prefix given` and the rewrite is
 skipped. Pass the flag explicitly when the host carries more than one global
 prefix.
 
-ss-rust probes the prefix at startup and logs either `outbound IPv6 startup
+`outline-server` probes the prefix at startup and logs either `outbound IPv6 startup
 probe succeeded` or `… failed for all attempts; disabling random outbound IPv6
 source`. When it fails, check in this order:
 
@@ -123,7 +123,7 @@ up ip -6 route add local <prefix> dev lo      # accept the entire routed /64
 ```
 
 So `install.sh` re-expresses them as a generated `post-up.service` (oneshot,
-before `outline-ss-rust`, from `NET_BRINGUP_EXEC` in the profile) with this
+before `outline-server`, from `NET_BRINGUP_EXEC` in the profile) with this
 node's own prefix substituted in; the route is added with `ip -6 route replace`,
 so re-running the unit is harmless. The unit
 also exports `WAN_V6_PREFIX`, because `network-online.target` can be satisfied
@@ -197,7 +197,7 @@ the reference's uplink credentials wholesale; without it and without
 `--uplink-creds`, `preflight` stops on a profile with
 `REQUIRES_UPLINK_CREDS=1` (`relay-a`).
 
-The `--peer` key is the uplink `name` in the new node's ws-rust config, not a
+The `--peer` key is the uplink `name` in the new node's `outline-client` config, not a
 hostname. `--alias-peer` takes `<ssh-target>:<shared-user>`, and the alias map
 is read, merged and written back whole, because the control API replaces it.
 
@@ -271,7 +271,7 @@ credentials. Checking a node from outside:
 openssl s_client -connect exit-a.fleet.example:8853 -servername exit-a.fleet.example </dev/null 2>/dev/null | openssl x509 -noout -enddate
 ```
 
-If that date is behind the one on `:443` (ss-rust re-reads its certificate on
+If that date is behind the one on `:443` (`outline-server` re-reads its certificate on
 its own), dnsproxy has not been restarted since the renewal.
 
 Two of its settings are there for the dashboard rather than for the resolver, so
@@ -338,9 +338,9 @@ phase is safe to re-run.
 | `preflight` | root, arch match, bundle checksums, does `<host>.fleet.example` point here, uplink creds present |
 | `identity` | what a disk-image clone kept and no bundle carries: machine-id (regenerated when it is still the reference's), hostname, the `/etc/hosts` line |
 | `packages` | docker apt repo + packages, `daemon.json` (restarts docker only if it changed) |
-| `users` | `outline-ss-rust`, group `certs`, state/log directories — plus `outline-ws` and its directories on profiles that carry the client (`INSTALL_WS_RUST=1`, entry only) |
+| `users` | `outline-server`, group `certs`, state/log directories — plus `outline-client` and its directories on profiles that carry the client (`INSTALL_CLIENT=1`, entry only) |
 | `files` | `/opt`, `/usr/local/{bin,sbin}`, units, nginx site, sysctl, `occtl` symlink, and the generated `post-up.service` where the profile defines one. Then the repo-owned files (`ASSET_FILES`, plus binary/byte-exact ones via `RAW_ASSET_FILES`) over the top, and any missing `NGINX_LOCATIONS` into the site |
-| `secrets` | service configs with owners and modes, `users.txt`, ocserv passwords, ACME material, then `permission-certs.sh` (needs the `users` phase to have created `outline-ss-rust`) |
+| `secrets` | service configs with owners and modes, `users.txt`, ocserv passwords, ACME material, then `permission-certs.sh` (needs the `users` phase to have created `outline-server`) |
 | `rehost` | rewrites every reference-host reference: cert paths, ddns cron, dnsproxy flags, ocserv `SRV_CN`, and the IPv6 `/64` when a prefix is given or detected. Adds the profile's `COMPOSE_REQUIRED_ARGS`, then audits itself: warns about anything that still names the reference and about every cert/key path that does not exist here |
 | `uplinks` | swaps this node's own `vless_id`/`password` into each `[[outline.uplinks]]` block — in the long form as their own lines, in the share-link form inside each `link = "…"` URI (VLESS userinfo, SS base64 userinfo with the cipher kept) |
 | `network` | unpacks the reference's interface definitions into `/root/provision-network-<host>` and stops. Never applied — see below |
@@ -404,7 +404,7 @@ What still has no automatic answer is anything the *peers* hold: `shard_id`,
   Two things still are not automatic. Adding a node to the cluster means
   editing `MESH_PEERS` for the whole family — the list must match on every
   member — and it only takes effect where an install is then run. And each
-  node's ss-rust config needs its own `[cluster]` block: `peers` agreeing with
+  node's `outline-server` config needs its own `[cluster]` block: `peers` agreeing with
   `MESH_PEERS`, and a `shard_id` unique within that cluster, which arrives as a
   copy of the reference's — the install warns about it but cannot choose a
   value. The `cluster_psk` is a secret and lives nowhere in this repository.
@@ -416,7 +416,7 @@ What still has no automatic answer is anything the *peers* hold: `shard_id`,
 
 ### Peer version check in register-uplink-user.sh
 
-`register-uplink-user.sh` refuses to write to a peer whose `outline-ss-rust`
+`register-uplink-user.sh` refuses to write to a peer whose `outline-server`
 predates the control-API persistence fix (`b48525b5`): an older build rewrites
 `config.toml` on user creation and drops the other users with it. The check
 greps the binary for `failed to serialize user entry as TOML`; a peer that
@@ -425,7 +425,7 @@ fails it is skipped with a warning, not silently written to.
 ## Re-running
 
 Every phase is idempotent, but a full re-run is a *restore from the bundle*, not
-a merge: the `secrets` phase overwrites `/etc/outline-{ss,ws}-rust/config.toml`
+a merge: the `secrets` phase overwrites `/etc/outline-{server,client}/config.toml`
 with the reference's copy, and `rehost` / `uplinks` then re-apply this node's
 identity on top. Anything changed on the node afterwards — users added through
 the control API or the dashboard, hand edits — is lost. To re-run one part
@@ -512,7 +512,7 @@ Rules worth keeping:
   A sibling fix of the same kind lives in the code rather than a profile: the
   `files` phase widens the subscription location to `(json|toml|txt)`. That
   extension list travels inside the bundle, so a bundle collected before
-  `<user>.toml` existed would serve the ws-rust config without the `profile-*`
+  `<user>.toml` existed would serve the `outline-client` config without the `profile-*`
   headers — a client fetches it once and never refreshes. The edit is
   idempotent and stays quiet on an already-widened file.
 - `COMPOSE_REQUIRED_ARGS` is for a flag the reference predates, written as

@@ -165,7 +165,7 @@ class UrlHelpersTest(unittest.TestCase):
         )
 
     def test_ws_url_covers_an_ss_only_user(self):
-        # The ws-rust chain also carries SS wires, so an SS-only user gets a
+        # The outline-client chain also carries SS wires, so an SS-only user gets a
         # config even though they get no Xray subscription.
         self.assertEqual(
             artifacts.ws_url(self.user("ss-only"), self.server),

@@ -311,8 +311,8 @@ chmod 600 "$OUT"/secrets/*
 # ------------------------------------------------------------------ manifest
 
 log "writing manifest"
-SS_VERSION="$(REF_SSH '/usr/local/bin/outline-ss-rust --version 2>/dev/null' | head -1)" || SS_VERSION=""
-WS_VERSION="$(REF_SSH '/usr/local/bin/outline-ws-rust --version 2>/dev/null' | head -1)" || WS_VERSION=""
+SS_VERSION="$(REF_SSH '/usr/local/bin/outline-server --version 2>/dev/null' | head -1)" || SS_VERSION=""
+WS_VERSION="$(REF_SSH '/usr/local/bin/outline-client --version 2>/dev/null' | head -1)" || WS_VERSION=""
 # Where the node publishes access keys. The answer moved twice in one day, so
 # all three shapes are accepted, newest first:
 #
@@ -327,16 +327,16 @@ WS_VERSION="$(REF_SSH '/usr/local/bin/outline-ws-rust --version 2>/dev/null' | h
 # The sed captures just the argument: save-keys.sh may keep the whole
 # invocation on one physical line, where a greedy match would drag the
 # following flags into the value.
-KEYS_DIR="$(REF_SSH "sudo -n sed -n 's#^write_dir *= *\"\(.*\)\"#\1#p' /etc/outline-ss-rust/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
+KEYS_DIR="$(REF_SSH "sudo -n sed -n 's#^write_dir *= *\"\(.*\)\"#\1#p' /etc/outline-server/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
 if [ -z "$KEYS_DIR" ]; then
-    KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *\([^ ]*\).*#\1#p;s#.*--write-access-keys-dir *\([^ ]*\).*#\1#p' /opt/outline/outline-ss-rust/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
+    KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *\([^ ]*\).*#\1#p;s#.*--write-access-keys-dir *\([^ ]*\).*#\1#p' /opt/outline/outline-server/save-keys.sh /opt/outline/outline-ss-rust/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
 fi
 # Third form, and now the canonical one: the directory lives in the node's
 # config.toml as `[access_keys] write_dir`, and save-keys.sh passes no path at
 # all. Only consulted when neither flag matched, so a reference that still
 # spells the path in save-keys.sh keeps resolving exactly as before.
 if [ -z "$KEYS_DIR" ]; then
-    KEYS_DIR="$(REF_SSH "sed -n 's#^[[:space:]]*write_dir[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*#\1#p' /etc/outline-ss-rust/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
+    KEYS_DIR="$(REF_SSH "sed -n 's#^[[:space:]]*write_dir[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*#\1#p' /etc/outline-server/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
 fi
 
 # apt-mark showmanual, filtered by the profile: only packages someone installed

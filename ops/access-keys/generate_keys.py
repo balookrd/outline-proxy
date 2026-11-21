@@ -2,7 +2,7 @@
 """Write the access-key artifacts for every user in a node's config.toml.
 
 Four files per user: <user>.conf (Outline), <user>.json (Xray subscription
-balanced across the cloud entry nodes), <user>.toml (outline-ws-rust config for
+balanced across the cloud entry nodes), <user>.toml (outline-client config for
 the Android client) and <user>.txt (every URL, one per line). The report goes to
 stdout; save-keys.sh redirects it into users.txt.
 """
@@ -25,7 +25,7 @@ import config_model  # noqa: E402
 import ws_toml  # noqa: E402
 import xray_json  # noqa: E402
 
-DEFAULT_CONFIG = "/etc/outline-ss-rust/config.toml"
+DEFAULT_CONFIG = "/etc/outline-server/config.toml"
 
 # There is deliberately no default output directory. The served directory's
 # name is a secret — it is the only thing guarding the artifacts, which carry
@@ -112,7 +112,7 @@ def render_report(written: Sequence[dict]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate access-key artifacts.")
-    parser.add_argument("--config", default=DEFAULT_CONFIG, help="outline-ss-rust config.toml")
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help="outline-server config.toml")
     parser.add_argument(
         "--out-dir",
         default=None,
