@@ -106,10 +106,10 @@
   - `check_for_updates() -> Result<UpdateCheckResponse, String>`
   - `install_update(update: UpdateInfo) -> Result<(), String>`
 
-- [ ] **Шаг 1: Написать failing тест на сериализацию команд и обработку `reconnect_after_update`**
+- [x] **Шаг 1: Написать failing тест на сериализацию команд и обработку `reconnect_after_update`**
   В `bins/outline-windows/src/profile_store.rs` проверить сохранение флага `reconnect_after_update`.
 
-- [ ] **Шаг 2: Реализовать команды в `commands.rs` и зарегистрировать их в `src/lib.rs`**
+- [x] **Шаг 2: Реализовать команды в `commands.rs` и зарегистрировать их в `src/lib.rs`**
   - `get_app_version`: возвращает `AppVersion::current()`.
   - `check_for_updates`: вызывает `UpdateChecker::check()`.
   - `install_update`:
@@ -118,10 +118,10 @@
     3. Запустить `apply_update.cmd` и завершить работу приложения через `app_handle.exit(0)`.
   - При старте `setup` в `lib.rs`: если `reconnect_after_update == true`, сбросить флаг и запланировать автоподключение активного профиля через 1 секунду.
 
-- [ ] **Шаг 3: Проверить компиляцию и unit-тесты**
+- [x] **Шаг 3: Проверить компиляцию и unit-тесты**
   Команда: `cargo test -p outline-windows`
 
-- [ ] **Шаг 4: Закоммитить изменения**
+- [x] **Шаг 4: Закоммитить изменения**
   Команда: `git add bins/outline-windows/src/commands.rs bins/outline-windows/src/lib.rs bins/outline-windows/src/profile_store.rs && git commit -m "feat(windows): wire update commands into Tauri and auto-reconnect tunnel"`
 
 ---
