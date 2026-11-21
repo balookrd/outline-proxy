@@ -120,6 +120,7 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          rm -f "/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe" 2>/dev/null || true
           mkdir -p dist/windows
 
           if [[ "$ROLLING" == "true" ]]; then
