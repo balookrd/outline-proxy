@@ -75,10 +75,18 @@ fi
 if [[ -n "$prev" ]]; then
   range="${prev}..${end_ref}"
 else
-  # First release of this component: git-cliff rejects a bare tag as a range, so
-  # span from the repo's root commit reachable from end_ref up to it.
-  root="$(git rev-list --max-parents=0 "$end_ref" 2>/dev/null | tail -1)"
-  range="${root}..${end_ref}"
+  # First release of this component (or rolling before any stable tags exist):
+  # in a monorepo, span from the commit introducing this component's primary
+  # directory up to end_ref. Using the repo's root commit would erroneously pull
+  # in commits to shared paths (crates/**, vendor/**) from before this component existed.
+  comp_root="$(git log --reverse --format="%H" "$end_ref" -- "${paths[0]}" 2>/dev/null | head -1)"
+  if [[ -n "$comp_root" ]]; then
+    base="$(git rev-parse --verify "${comp_root}^" 2>/dev/null || echo "$comp_root")"
+    range="${base}..${end_ref}"
+  else
+    root="$(git rev-list --max-parents=0 "$end_ref" 2>/dev/null | tail -1)"
+    range="${root}..${end_ref}"
+  fi
 fi
 
 # Assemble --include-path flags.
@@ -109,8 +117,12 @@ if [[ -z "$repo" ]]; then
   repo="$(printf '%s' "$origin" | sed -E 's#^.*[:/]([^/]+/[^/]+)$#\1#; s#\.git$##')"
 fi
 footer=""
-if [[ -n "$prev" && -n "$repo" ]]; then
-  footer="**Full Changelog**: ${server_url}/${repo}/compare/${prev}...${compare_to}"
+compare_from="${prev:-${base:-}}"
+if [[ -n "$compare_from" && -n "$repo" ]]; then
+  if [[ -z "$prev" && -n "${base:-}" ]]; then
+    compare_from="${base:0:8}"
+  fi
+  footer="**Full Changelog**: ${server_url}/${repo}/compare/${compare_from}...${compare_to}"
 fi
 
 # Fallback when nothing survived filtering. git-cliff still renders a bare
