@@ -112,6 +112,7 @@ jobs:
       - name: Build Windows app and package ZIP
         shell: bash
         env:
+          AR_x86_64_pc_windows_msvc: lib.exe
           VERSION: ${{ steps.vars.outputs.version_name }}
           ROLLING: ${{ inputs.rolling_tag }}
           SHA: ${{ github.sha }}

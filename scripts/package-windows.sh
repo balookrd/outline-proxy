@@ -341,6 +341,10 @@ else
 fi
 
 if [[ "${IS_WINDOWS}" == "true" ]]; then
+    # На Windows MSVC архиватором является lib.exe. .cargo/config.toml глобально форсит
+    # AR="zig ar" для кросс-сборки musl, однако zig ar не принимает флаги MSVC (-out:... -nologo).
+    # Явно задаем AR_x86_64_pc_windows_msvc для cc-rs (aws-lc-sys и др.).
+    export AR_x86_64_pc_windows_msvc="${AR_x86_64_pc_windows_msvc:-lib.exe}"
     CARGO_CMD=("cargo" "build" "--target" "${TARGET_TRIPLE}" "--release")
 else
     if ! command -v cargo-xwin >/dev/null 2>&1; then

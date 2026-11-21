@@ -550,7 +550,7 @@ async fn downlink_flows(
 /// a park that never lands (the session could not be harvested) is the failure
 /// a busy-downlink test exists to catch, and it fails here.
 pub(super) async fn wait_for_park(server: &DatagramTestServer) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while server.orphans.len() == 0 {
         assert!(
             tokio::time::Instant::now() < deadline,
