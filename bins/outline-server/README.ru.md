@@ -51,7 +51,7 @@
 | Встроенный QUIC/TLS для h3 | Поддерживается | Опционально, на `[server.h3].listen` (может занимать тот же порт, что и `[server].listen`, по UDP); список ALPN настраивается |
 | IPv6 | Поддерживается | Слушатели и upstream-резолвинг |
 | Метрики Prometheus | Поддерживается | Отдельный слушатель, метки с низкой кардинальностью |
-| Дашборд Grafana | Поддерживается | JSON в [grafana/](grafana) |
+| Дашборд Grafana | Поддерживается | `outline-server-dashboard.json` в `ambar` (`ops/grafana/dashboards/`) |
 | Outline динамические ключи | Вне бинаря | Клиентские конфиги генерирует `ops/access-keys`, а не сам бинарь; см. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing, до 8 одновременных под-соединений на сессию; поверх HTTP/1.1, HTTP/2 и HTTP/3 |
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET плюс POST'ы с порядковым номером на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер принимает POST'ы не по порядку; downlink-кольцо переживает обрыв GET'а в полёте (CDN рвут длинные запросы примерно через 100 с); `X-Padding` и заголовки в стиле SSE (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
@@ -110,7 +110,7 @@ flowchart LR
 - [src/fwmark.rs](src/fwmark.rs): хелперы Linux `SO_MARK` для исходящих сокетов
 - [config.toml](config.toml): пример конфигурации
 - [systemd/outline-server.service](systemd/outline-server.service): systemd unit
-- [grafana/outline-server-dashboard.json](grafana/outline-server-dashboard.json): дашборд Grafana
+- *(Дашборд Grafana `outline-server-dashboard.json` ведётся в инфраструктурном репозитории `ambar` в `ops/grafana/dashboards/`.)*
 - [PATCHES.ru.md](PATCHES.ru.md): указатель на общий для монорепо реестр патчей к vendored-крейтам
 
 ## Транспортная модель
@@ -846,7 +846,7 @@ scrape_configs:
 
 ### Grafana
 
-Импортируйте [grafana/outline-server-dashboard.json](grafana/outline-server-dashboard.json) в Grafana. Панели:
+Импортируйте `outline-server-dashboard.json` из инфраструктурного репозитория `ambar` (`ops/grafana/dashboards/`) в Grafana. Панели:
 
 - активные сессии и активные TCP upstream
 - доля ошибок TCP connect

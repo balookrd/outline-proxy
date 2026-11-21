@@ -174,7 +174,7 @@ tun2udp + tun2tcp"]
 ### Operations
 
 - Prometheus metrics
-- Grafana dashboards in [`grafana/`](grafana)
+- Grafana dashboards (`outline-client-dashboard.json`, `outline-client-hang-diagnostics.json`) in the `ambar` infrastructure repository (`ops/grafana/dashboards/`)
 - TLS certificate-expiry tracking for uplinks: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` and field `cert_not_after_unix_ms` per uplink in `GET /control/topology`
 - systemd units with sandboxing (see [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
@@ -193,8 +193,7 @@ Paths are relative to `bins/outline-client/`; shared crates live at the workspac
 
 - [`config.toml`](config.toml) — example configuration
 - [`systemd/outline-client.service`](systemd/outline-client.service), [`systemd/outline-client@.service`](systemd/outline-client@.service) — systemd units
-- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json) — main operational dashboard
-- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json) — hang diagnostics
+- *(Grafana dashboards `outline-client-dashboard.json` and `outline-client-hang-diagnostics.json` live in the `ambar` infrastructure repository under `ops/grafana/dashboards/`.)*
 - [`src/bootstrap/`](src/bootstrap) — startup sequence: listener binding and persistent state store
 - [`src/config/`](src/config) — CLI and config schema, loading, validation
 - [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (dispatcher, TCP failover, UDP relay)
@@ -1138,7 +1137,7 @@ Per-uplink open-connection accounting, for connections that leak into a non-acti
 - `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge of open upstream transports per uplink. After a switch the new active uplink ramps up while the old one drains; a series that does not drain is the leak signal.
 - `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — counter of upstream-transport closes, classified at close time as `active` (the uplink was still active), `inactive` (the active pointer had moved — a stranded session draining) or `unknown` (`per_flow` scope, no active pointer). `rate(...{classification="inactive"}[5m])` is the drain rate after a switch; a sustained non-zero rate outside a recent switch points at a stale sticky route or warm-standby pool.
 
-Both feed the Grafana row "Inactive Uplink Leak (Global / Per-Uplink)" in `grafana/outline-client-dashboard.json`. Probe connections are not counted; the metrics cover user-traffic dials only.
+Both feed the Grafana row "Inactive Uplink Leak (Global / Per-Uplink)" in `outline-client-dashboard.json` (in the `ambar` repository, `ops/grafana/dashboards/`). Probe connections are not counted; the metrics cover user-traffic dials only.
 
 `outline_ws_carrier_writer_terminations_total{writer, reason}` counts WebSocket carrier writer tasks that stopped because a sink write failed. `writer` is `ss` (SS over WS) or `frame` (VLESS byte-chunk / datagram writer); `reason` is `peer_closed` when the carrier was already closed (routine, logged at `debug`) or `error` for a real write failure (logged at `warn`). A sustained `reason="error"` rate means the uplink is failing writes. Grafana row: "Carrier Writer Terminations".
 
@@ -1152,10 +1151,10 @@ Further counters:
 
 On the TUN UDP path oversize drops also produce an ICMP PTB toward the sender; see [TUN PMTUD safety gate](#tun-pmtud-safety-gate) and [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md).
 
-Grafana dashboards (see [`grafana/README.md`](grafana/README.md)):
+Grafana dashboards (maintained in the `ambar` infrastructure repository under `ops/grafana/dashboards/`, see `ambar/ops/grafana/README.md`):
 
-- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json)
-- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json)
+- `outline-client-dashboard.json`
+- `outline-client-hang-diagnostics.json`
 
 ## Control plane
 
