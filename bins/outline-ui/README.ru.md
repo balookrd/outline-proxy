@@ -238,7 +238,16 @@ embedded», если бинарь не собран с `--features embed-assets`
 ## Разработка фронтенда
 
 UI дашборда — SPA на Svelte 5 + TypeScript в [`frontend/`](frontend), собирается
-Vite и Tailwind, тестируется `svelte-check` и Vitest.
+Vite и Tailwind и проверяется двумя уровнями тестов вместе с `pnpm check`
+(`svelte-check` + `tsc`), компонентными/юнит-тестами Vitest и браузерными
+E2E-тестами Playwright по собранному `dist/` под боевым CSP:
+
+```bash
+cd bins/outline-ui/frontend
+pnpm check                     # svelte-check + tsc-node (включая e2e/)
+pnpm test                      # юнит- и компонентные UI-тесты Vitest (happy-dom)
+pnpm build && pnpm test:e2e    # браузерные E2E Playwright в Chromium по dist/
+```
 
 Запустите два процесса рядом:
 
@@ -258,16 +267,19 @@ pnpm dev   # http://localhost:5173
 Запросам по-прежнему нужны `Bearer`/`Basic` credentials: dev-сервер не обходит
 `auth.rs`/`origin.rs`.
 
-`pnpm build` собирает SPA в `frontend/dist/`: хэшированные имена файлов,
-`index.html` ссылается на них под абсолютным префиксом `/ui-assets/`
-(`base: '/ui-assets/'` в `vite.config.ts`). Rust-сборка читает этот каталог,
-только если включена cargo-фича `embed-assets`, поэтому обычным `cargo build` и
-`cargo test` Node не нужен, и Rust-джобы CI работают без него.
+`pnpm build` собирает SPA в `frontend/dist/`: хэшированные имена файлов
+(`assetsInlineLimit: 0`, чтобы шрифты и изображения грузились с `'self'` под
+`Content-Security-Policy`, а не как `data:` URI), и `index.html` ссылается на
+них под абсолютным префиксом `/ui-assets/` (`base: '/ui-assets/'` в
+`vite.config.ts`). Rust-сборка читает этот каталог, только если включена
+cargo-фича `embed-assets`, поэтому обычным `cargo build` и `cargo test` Node не
+нужен, и Rust-джобы CI работают без него.
 
 Джоб `frontend` в `.github/workflows/ci.yml` запускается на каждый pull request
-и push в `main`: `pnpm install --frozen-lockfile`, `svelte-check`, `vitest run`,
-`pnpm build`, затем `cargo build -p outline-ui --features embed-assets` поверх
-свежего `dist`. Это единственный джоб CI, который собирает эту фичу.
+и push в `main`: `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm exec vitest run`, `pnpm build`, `playwright install --with-deps chromium`,
+`pnpm test:e2e`, затем `cargo build -p outline-ui --features embed-assets`
+поверх свежего `dist`. Это единственный джоб CI, который собирает эту фичу.
 
 ## Как два UI уживаются на одном порту
 

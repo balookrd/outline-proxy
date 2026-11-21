@@ -242,7 +242,16 @@ way, e.g. `/ws/dashboard/api/instances`.
 ## Frontend development
 
 The dashboard UI is a Svelte 5 + TypeScript SPA in [`frontend/`](frontend),
-built with Vite and Tailwind and tested with `svelte-check` and Vitest.
+built with Vite and Tailwind and verified with `pnpm check` (`svelte-check` +
+`tsc`), Vitest component/unit tests, and Playwright Chromium E2E tests against
+the built `dist/` bundle under production CSP headers:
+
+```bash
+cd bins/outline-ui/frontend
+pnpm check                     # svelte-check + tsc-node (including e2e/)
+pnpm test                      # Vitest unit & component UI suite (happy-dom)
+pnpm build && pnpm test:e2e    # Playwright Chromium E2E against dist/
+```
 
 Run two processes side by side:
 
@@ -262,16 +271,19 @@ calls reach the backend process and, through it, the `control_url`s in its
 `config.toml`. The requests still need `Bearer`/`Basic` credentials; the dev
 server does not bypass `auth.rs`/`origin.rs`.
 
-`pnpm build` compiles the SPA to `frontend/dist/`: hashed file names, and
-`index.html` references them under the absolute prefix `/ui-assets/`
-(`base: '/ui-assets/'` in `vite.config.ts`). The Rust build reads that directory
-only with the `embed-assets` Cargo feature on, so plain `cargo build` and
-`cargo test` do not need Node, and the Rust CI jobs run without it.
+`pnpm build` compiles the SPA to `frontend/dist/`: hashed file names
+(`assetsInlineLimit: 0`, so fonts and images load via `'self'` under
+`Content-Security-Policy` rather than `data:` URIs), and `index.html` references
+them under the absolute prefix `/ui-assets/` (`base: '/ui-assets/'` in
+`vite.config.ts`). The Rust build reads that directory only with the
+`embed-assets` Cargo feature on, so plain `cargo build` and `cargo test` do not
+need Node, and the Rust CI jobs run without it.
 
 The `frontend` job in `.github/workflows/ci.yml` runs on every pull request and
-push to `main`: `pnpm install --frozen-lockfile`, `svelte-check`, `vitest run`,
-`pnpm build`, then `cargo build -p outline-ui --features embed-assets` against
-the fresh `dist`. It is the only CI job that builds the feature.
+push to `main`: `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm exec vitest run`, `pnpm build`, `playwright install --with-deps chromium`,
+`pnpm test:e2e`, and then `cargo build -p outline-ui --features embed-assets`
+against the fresh `dist`. It is the only CI job that builds the feature.
 
 ## Serving two UIs under one port
 

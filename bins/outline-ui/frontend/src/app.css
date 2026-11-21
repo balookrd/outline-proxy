@@ -241,7 +241,7 @@ select:disabled { opacity: .6; cursor: not-allowed; }
 }
 
 /* ---- Cards / panels ---- */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: var(--sp-4); }
 .card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius);
   padding: var(--sp-5); box-shadow: var(--shadow); transition: border-color .18s, transform .18s; }
 .card.link { cursor: pointer; }
@@ -648,7 +648,7 @@ tr.drag-over td { background: color-mix(in srgb, var(--accent) 10%, var(--surfac
 /* ---- Settings & shared layout helpers ---- */
 .panel-pad { padding: var(--sp-4); }
 .stack-form { display: flex; flex-direction: column; gap: var(--sp-3); }
-.settings-two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--sp-4); align-items: start; }
+.settings-two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: var(--sp-4); align-items: start; }
 .section-head-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-2); }
 .section-head-row h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .health-chips, .key-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -832,9 +832,13 @@ dialog::backdrop {
 .tuning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-3); }
 
 @media (max-width: 900px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 56px auto 1fr; }
-  .sidebar { flex-direction: row; overflow-x: auto; }
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px auto 1fr; }
+  .topbar { min-width: 0; gap: var(--sp-2); padding: 0 var(--sp-3); }
+  .topbar .env-pill, .topbar .refresh { display: none; }
+  .sidebar { min-width: 0; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border-soft); padding: var(--sp-2) var(--sp-3); }
+  .sidebar .navlink { flex: 0 0 auto; white-space: nowrap; }
   .sidebar .foot, .nav-group { display: none; }
+  .main { min-width: 0; padding: var(--sp-4) var(--sp-3); }
   .ver-mobile { display: inline; }
   .uprow, .colhead-row { grid-template-columns: 1fr 1fr; }
   .colhead-row { display: none; }

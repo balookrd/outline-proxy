@@ -7,13 +7,22 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/svelte": "^5.4.2",
+    "@testing-library/user-event": "^14.6.13",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.13.3",
     "autoprefixer": "^10.5.4",
+    "happy-dom": "^21.0.4",
     "postcss": "^8.5.26",
     "svelte": "^5.56.8",
     "svelte-check": "^4.7.3",

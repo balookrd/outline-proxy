@@ -14,14 +14,25 @@ const DURATION_MS = 3200;
 
 let nextId = 0;
 export const toasts = $state<ToastMessage[]>([]);
+const timers = new Set<ReturnType<typeof setTimeout>>();
 
 export function toast(text: string, kind: ToastKind = 'ok') {
   const id = ++nextId;
   toasts.push({ id, kind, text });
-  setTimeout(() => dismiss(id), DURATION_MS);
+  const timer = setTimeout(() => {
+    timers.delete(timer);
+    dismiss(id);
+  }, DURATION_MS);
+  timers.add(timer);
 }
 
 export function dismiss(id: number) {
   const index = toasts.findIndex((t) => t.id === id);
   if (index !== -1) toasts.splice(index, 1);
+}
+
+export function clearToasts() {
+  for (const timer of timers) clearTimeout(timer);
+  timers.clear();
+  toasts.splice(0, toasts.length);
 }

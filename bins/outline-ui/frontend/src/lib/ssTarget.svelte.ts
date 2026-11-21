@@ -105,3 +105,18 @@ export function subscribeSsTargets(): () => void {
     }
   };
 }
+
+export function resetSsTargets() {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  subscribers = 0;
+  inflight = null;
+  ssTargetState.instances = [];
+  ssTargetState.clusters = [];
+  ssTargetState.target = null;
+  ssTargetState.refreshSecs = 5;
+  ssTargetState.loaded = false;
+  ssTargetState.error = null;
+}
