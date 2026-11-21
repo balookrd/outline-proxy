@@ -1,6 +1,6 @@
 [package]
 name = "outline-ui"
-version = "1.9.1"
+version.workspace = true
 edition = "2024"
 
 [features]

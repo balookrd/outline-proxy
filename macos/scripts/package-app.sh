@@ -67,12 +67,12 @@ fi
 COMMIT_STR="${GIT_COMMIT}${GIT_DIRTY}"
 
 CURRENT_TAG="$(git -C "${REPO_ROOT}" describe --tags --exact-match 2>/dev/null || echo "")"
-if [[ "${CURRENT_TAG}" =~ ^macos-v[0-9]+ ]]; then
+if [[ "${CURRENT_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     BUILD_CHANNEL="release"
-    APP_VERSION="${CURRENT_TAG#macos-v}"
+    APP_VERSION="${CURRENT_TAG#v}"
 else
     BUILD_CHANNEL="nightly"
-    APP_VERSION="${VERSION:-$(grep -m1 '^version =' "${REPO_ROOT}/bins/outline-ws-rust/Cargo.toml" | cut -d '"' -f2)}"
+    APP_VERSION="${VERSION:-$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/.*version *= *"|".*/, ""); print; exit}' "${REPO_ROOT}/Cargo.toml")}"
 fi
 
 BUILD_DATE="$(date -u +'%Y-%m-%d')"

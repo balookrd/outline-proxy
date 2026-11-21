@@ -103,7 +103,7 @@ open "macos/dist/Outline Proxy.app"
 ## Установка из DMG
 
 Скачайте `OutlineProxy-*-macOS-Universal.dmg` из GitHub Releases
-(`macos-nightly` или тег `macos-v*`), откройте образ и перетащите Outline Proxy в
+(`macos-nightly` или релизный тег `v*`), откройте образ и перетащите Outline Proxy в
 «Программы».
 
 При первом запуске macOS, скорее всего, откажется открывать приложение и
@@ -131,7 +131,7 @@ open "macos/dist/Outline Proxy.app"
 ## Обновления
 
 Приложение обновляется из GitHub Releases по своему каналу сборки. Релизная
-сборка (тег `macos-v*`) переходит на самую новую версию `macos-v*`.
+сборка следит за последним общим релизом `v*` (`/releases/latest`).
 Nightly-сборка следит за плавающим тегом `macos-nightly` и обновляется, когда
 опубликованный DMG собран из другого коммита.
 
@@ -176,7 +176,7 @@ Nightly-сборка следит за плавающим тегом `macos-nigh
 | Опция | По умолчанию | Что делает |
 |---|---|---|
 | `--arch <native\|universal\|aarch64\|x86_64>` | `native` | Целевая архитектура обоих бинарей |
-| `--version <версия>` | `version` из `bins/outline-ws-rust/Cargo.toml` | Версия в имени DMG |
+| `--version <версия>` | `[workspace.package].version` из корневого `Cargo.toml` | Версия в имени DMG |
 | `--output-dir <каталог>` | `macos/dist` | Куда писать DMG; относительный путь берётся от корня репозитория |
 | `--dmg-name <имя>` | см. ниже | Точное имя DMG-файла |
 | `--app-path <путь>` | — | Взять уже собранный `.app`; включает `--skip-build` |
@@ -193,5 +193,5 @@ Nightly-сборка следит за плавающим тегом `macos-nigh
 |---|---|---|
 | `.github/workflows/ci.yml`, джоб `macos` | Каждый pull request и push в `main` | `package-dmg.sh --arch native`; выкладывает DMG артефактом `OutlineProxy-macOS-preview`, хранится 7 дней |
 | `.github/workflows/macos-nightly-release.yml` | Push в `main`, затрагивающий `macos/**`, `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; ручной запуск | Собирает `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` и обновляет плавающий релиз `macos-nightly` |
-| `.github/workflows/macos-tag-release.yml` | Push тега `macos-v*` | Собирает `OutlineProxy-v<версия>-macOS-Universal.dmg`, пишет `SHA256SUMS.txt`, генерирует заметки к релизу через `git-cliff` и публикует релиз на GitHub |
-| `.github/workflows/macos-release.yml` | Вручную (`workflow_dispatch`) | Поднимает версию и коммитит `release: cut macos-v...` в `main` |
+| `.github/workflows/tag-release.yml` | Push единого тега `v*` | Собирает `OutlineProxy-v<версия>-macOS-Universal.dmg` вместе с остальными платформами, пишет `SHA256SUMS.txt`, генерирует заметки к релизу через `git-cliff` и публикует общий релиз на GitHub |
+| `.github/workflows/release.yml` | Вручную (`workflow_dispatch`) | Поднимает единую CalVer-версию во всех манифестах workspace и коммитит `release: cut v...` в `main` |

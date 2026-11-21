@@ -16,7 +16,7 @@ TMP_DIR=""
 trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
 
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
-VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
+VERSION="${VERSION:-}"         # stable: 26.11.0 or v26.11.0 (or legacy ws-vX.Y.Z); nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
 ACTION="${ACTION:-install}"    # install | remove | purge
 NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
@@ -109,7 +109,7 @@ usage() {
 Использование:
   sudo ./install.sh
   sudo CHANNEL=nightly ./install.sh
-  sudo VERSION=v1.2.3 ./install.sh
+  sudo VERSION=v26.11.0 ./install.sh
   sudo ./install.sh --force
   sudo ./install.sh --remove | --uninstall
   sudo ./install.sh --purge
@@ -134,7 +134,7 @@ usage() {
 
 Основные переменные окружения:
   CHANNEL=stable|nightly    Канал релизов, по умолчанию stable
-  VERSION=...               stable: 1.2.3 или v1.2.3; nightly: nightly
+  VERSION=...               stable: 26.11.0 или v26.11.0; nightly: nightly
   FORCE=1                   Установить, даже если версия совпадает
   INSTALL_PATH=...          Куда установить бинарник
   CONFIG_DIR=...            Каталог конфигурации
@@ -231,11 +231,13 @@ normalize_version_tag() {
     if [[ -z "$v" ]]; then
       echo ""
     elif [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "${TAG_PREFIX}${v}"
+      echo "$v"
     elif [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "${TAG_PREFIX}v${v}"
+      echo "v${v}"
+    elif [[ "$v" =~ ^${TAG_PREFIX}v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$v"
     else
-      die "Для CHANNEL=stable VERSION должен быть вида 1.2.3 или v1.2.3"
+      die "Для CHANNEL=stable VERSION должен быть вида 26.11.0 или v26.11.0"
     fi
   else
     if [[ -z "$v" ]]; then
@@ -257,17 +259,7 @@ select_release_json() {
   else
     case "$CHANNEL" in
       stable)
-        # Monorepo: /releases/latest may point at the server binary's
-        # release, so list releases and pick the newest ${TAG_PREFIX}v* tag.
-        local releases_json stable_tag
-        releases_json="$(github_api_get "$(github_api_url "releases?per_page=30")")" \
-          || die "Не удалось получить список релизов из GitHub API"
-        stable_tag="$(printf '%s' "$releases_json" \
-          | grep -oE "\"tag_name\":[[:space:]]*\"${TAG_PREFIX}v[^\"]*\"" \
-          | head -n1 \
-          | sed -E "s/.*\"(${TAG_PREFIX}v[^\"]*)\"\$/\\1/")"
-        [[ -n "$stable_tag" ]] || die "Не найден stable-релиз с тегом ${TAG_PREFIX}v*"
-        api_path="releases/tags/${stable_tag}"
+        api_path="releases/latest"
         ;;
       nightly)
         api_path="releases/tags/${TAG_PREFIX}nightly"

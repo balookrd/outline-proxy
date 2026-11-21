@@ -35,6 +35,10 @@ on:
         required: false
         type: boolean
         default: false
+      publish_release:
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -122,6 +126,7 @@ jobs:
           retention-days: 1
 
   publish:
+    if: ${{ inputs.publish_release }}
     name: Publish Release
     runs-on: ubuntu-latest
     needs: build

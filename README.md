@@ -106,10 +106,10 @@ outline-proxy/
 ├── crates/                # shared crates (wire protocol, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # patched h3, sockudo-ws, quinn-proto, rustls, hyper (single copy, workspace-level)
 ├── .cargo/config.toml     # cross-build aliases (ss-* / ws-* / ui-*)
-├── .github/workflows/     # CI: lint/test gate, per-component release / nightly / tag pipelines
+├── .github/workflows/     # CI: lint/test gate, unified release / tag pipelines, per-component nightlies
 ├── AGENTS.md              # contributor guidelines + monorepo invariants
 ├── PATCHES.md             # what each vendored crate changes against upstream
-└── Cargo.toml             # workspace root: members, profiles, [patch.crates-io]
+└── Cargo.toml             # workspace root: members, version, profiles, [patch.crates-io]
 ```
 
 Per-component documentation lives next to each component:
@@ -166,31 +166,30 @@ Gradle/Kotlin app; build it from there, see [its README](android/README.md).
 
 ## Releases
 
-Each component is versioned and released independently through prefixed tags:
+All six deliverables share a single CalVer version (`vYY.M.PATCH`, e.g. `v26.11.0`)
+published under one unified GitHub Release (`Tag Release`):
 
-| Tag | Builds and publishes | Workflow |
-|---|---|---|
-| `ss-v<x.y.z>` | server | *Tag Release (server)* |
-| `ws-v<x.y.z>` | client | *Tag Release (client)* |
-| `ui-v<x.y.z>` | dashboard UI | *Tag Release (ui)* |
-| `android-v<x.y.z>` | Android app | *Tag Release (android)* |
-| `macos-v<x.y.z>` | macOS app | *Tag Release (macos)* |
-| `windows-v<x.y.z>` | Windows app | *Tag Release (windows)* |
+- `outline-ss-rust` (server, `x86_64` and `aarch64` musl)
+- `outline-ws-rust` (client, `x86_64` and `aarch64` musl)
+- `outline-ui` (dashboard UI, `x86_64` and `aarch64` musl)
+- Android app (`outline-proxy-<version>-arm64-v8a.apk`)
+- macOS app (`OutlineProxy-v<version>-macOS-Universal.dmg`)
+- Windows app (`OutlineProxy-v<version>-Windows-x86_64.zip`)
 
-Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` / `ui-nightly` /
-`android-nightly` / `macos-nightly` / `windows-nightly` prereleases. Each nightly
-workflow has a path filter, so only the affected component rebuilds; the Android,
-macOS and Windows filters also cover the client and the shared crates and vendored
-crates their native code links.
+Pushes to `main` still publish per-component rolling prereleases (`ss-nightly`,
+`ws-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`, `windows-nightly`).
+Each nightly workflow has a path filter, so only affected components rebuild;
+the Android, macOS and Windows filters also cover the client and the shared and
+vendored crates their native code links.
 
-The manual *Release (server|client|ui|android|macos|windows)* workflows take a
-`MAJOR.MINOR` series, compute the next patch version from the existing tags,
-write it into the component's version file (`bins/*/Cargo.toml` for the three
-binaries, `android/rust/Cargo.toml` for Android, `macos/Resources/Info.plist`
-for macOS, `bins/outline-windows/tauri.conf.json` and `bins/outline-windows/Cargo.toml`
-for Windows), push a `release: cut <tag>` commit to `main` and print the
-`git tag -s <tag>` command to run locally. Pushing that signed tag starts the
-matching *Tag Release* workflow.
+The manual *Release* workflow takes an optional `YY.M` series (defaulting to the
+current UTC month), computes the next patch version from existing `vYY.M.*`
+tags, writes it to `[workspace.package]` in the root `Cargo.toml`, both
+`Cargo.lock` files, `android/rust/Cargo.toml`, `bins/outline-windows/tauri.conf.json`,
+and `macos/Resources/Info.plist`, pushes a `release: cut v<version>` commit to
+`main`, and prints the `git tag -s v<version>` command to run locally. Pushing that
+signed tag starts *Tag Release*, which builds all six platforms in parallel and
+publishes the unified release as `latest`.
 
 ### Installing the Android app
 

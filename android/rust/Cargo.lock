@@ -1390,7 +1390,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "outline-android"
-version = "1.9.1"
+version = "1.9.2"
 dependencies = [
  "clap",
  "libc",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "outline-metrics"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "parking_lot 0.13.0",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "outline-net"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "hashbrown 0.17.1",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "outline-routing"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "outline-transport"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "outline-tun"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "outline-uplink"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "outline-wire"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "shadowsocks-crypto"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "socks5-proto"
-version = "0.1.0"
+version = "1.9.2"
 dependencies = [
  "blake3",
  "outline-wire",

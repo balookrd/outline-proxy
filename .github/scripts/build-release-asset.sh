@@ -12,7 +12,11 @@ profile="$2"
 flavor="$3"
 output_dir="$4"
 binary_name="outline-ws-rust"
-version="${VERSION:-$(python3 -c 'import re, pathlib; text = pathlib.Path("bins/outline-ws-rust/Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from bins/outline-ws-rust/Cargo.toml")))' )}"
+version="${VERSION:-$(python3 -c 'import pathlib, re
+text = pathlib.Path("Cargo.toml").read_text()
+sec = re.search(r"(?ms)^\[workspace\.package\]\n(.*?)(?=^\[|\Z)", text)
+match = sec and re.search(r"^version = \"([^\"]+)\"$", sec.group(1), flags=re.M)
+print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read workspace.package.version from Cargo.toml")))' )}"
 
 case "$flavor" in
   server)

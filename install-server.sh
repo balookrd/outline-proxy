@@ -59,7 +59,7 @@ Usage:
 Режимы установки:
   CHANNEL=stable    установить последний stable release (по умолчанию)
   CHANNEL=nightly   установить rolling nightly prerelease
-  VERSION=v1.2.3    установить конкретный stable tag
+  VERSION=v26.11.0  установить конкретный stable tag
 
 Режимы удаления:
   --remove          остановить и отключить сервис, удалить unit, бинарь и
@@ -72,7 +72,7 @@ Usage:
   ./install.sh --help
   sudo ./install.sh
   sudo CHANNEL=nightly ./install.sh
-  sudo VERSION=v1.2.3 ./install.sh
+  sudo VERSION=v26.11.0 ./install.sh
   sudo ./install.sh --remove
   sudo ./install.sh --purge
 
@@ -300,23 +300,22 @@ resolve_release() {
   local api_path release_json asset_pattern
 
   if [[ -n "$VERSION" ]]; then
-    [[ "$VERSION" == ${TAG_PREFIX}v* ]] || die "VERSION должен быть в формате ${TAG_PREFIX}v1.2.3"
     [[ "$CHANNEL" == "stable" ]] || die "Нельзя одновременно задавать VERSION и CHANNEL=${CHANNEL}. Используй либо stable по VERSION, либо CHANNEL=nightly."
-    api_path="releases/tags/${VERSION}"
+    local tag
+    if [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      tag="$VERSION"
+    elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      tag="v${VERSION}"
+    elif [[ "$VERSION" =~ ^${TAG_PREFIX}v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      tag="$VERSION"
+    else
+      die "VERSION должен быть в формате v26.11.0 или 26.11.0"
+    fi
+    api_path="releases/tags/${tag}"
   else
     case "$CHANNEL" in
       stable)
-        # Monorepo: /releases/latest may point at the client binary's
-        # release, so list releases and pick the newest ${TAG_PREFIX}v* tag.
-        local releases_json stable_tag
-        releases_json="$(github_api_get "$(github_api_url "releases?per_page=30")")" \
-          || die "Не удалось получить список релизов из GitHub API"
-        stable_tag="$(printf '%s' "$releases_json" \
-          | grep -oE "\"tag_name\":[[:space:]]*\"${TAG_PREFIX}v[^\"]*\"" \
-          | head -n1 \
-          | sed -E "s/.*\"(${TAG_PREFIX}v[^\"]*)\"\$/\\1/")"
-        [[ -n "$stable_tag" ]] || die "Не найден stable-релиз с тегом ${TAG_PREFIX}v*"
-        api_path="releases/tags/${stable_tag}"
+        api_path="releases/latest"
         ;;
       nightly)
         api_path="releases/tags/${TAG_PREFIX}nightly"
@@ -605,8 +604,8 @@ show_summary() {
   echo "Release: ${RELEASE_TAG}"
   if [[ "$CHANNEL" == "nightly" && -n "$RELEASE_COMMIT" ]]; then
     echo "Commit  : ${RELEASE_COMMIT}"
-  elif [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "${RELEASE_TAG#v}" ]]; then
-    echo "Обновлено: ${INSTALLED_VERSION} → ${RELEASE_TAG#v}"
+  elif [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$(strip_v "$RELEASE_TAG")" ]]; then
+    echo "Обновлено: ${INSTALLED_VERSION} → $(strip_v "$RELEASE_TAG")"
   fi
   echo "Binary : ${INSTALL_BIN_PATH}"
   echo "Service: ${SERVICE_PATH}"

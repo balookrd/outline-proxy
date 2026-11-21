@@ -105,10 +105,10 @@ outline-proxy/
 ├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # пропатченные h3, sockudo-ws, quinn-proto, rustls, hyper (одна копия, на уровне workspace)
 ├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-* / ui-*)
-├── .github/workflows/     # CI: lint/test-гейт, release / nightly / tag пайплайны по компонентам
+├── .github/workflows/     # CI: lint/test-гейт, единый release / tag пайплайн, nightly по компонентам
 ├── AGENTS.md              # правила для контрибьюторов + монорепо-инварианты
 ├── PATCHES.md             # что меняет каждый vendored-крейт относительно upstream
-└── Cargo.toml             # корень workspace: members, профили, [patch.crates-io]
+└── Cargo.toml             # корень workspace: members, версия, профили, [patch.crates-io]
 ```
 
 Документация по каждому компоненту лежит рядом с ним:
@@ -164,31 +164,30 @@ Android-клиент живёт в [`android/`](android/) как отдельн�
 
 ## Релизы
 
-Каждый компонент версионируется и релизится независимо через префиксные теги:
+Все шесть продуктов делят единую версию CalVer (`vYY.M.PATCH`, например
+`v26.11.0`) и публикуются в одном общем GitHub Release (*Tag Release*):
 
-| Тег | Что собирает и публикует | Workflow |
-|---|---|---|
-| `ss-v<x.y.z>` | сервер | *Tag Release (server)* |
-| `ws-v<x.y.z>` | клиент | *Tag Release (client)* |
-| `ui-v<x.y.z>` | dashboard-UI | *Tag Release (ui)* |
-| `android-v<x.y.z>` | Android-приложение | *Tag Release (android)* |
-| `macos-v<x.y.z>` | приложение macOS | *Tag Release (macos)* |
-| `windows-v<x.y.z>` | приложение Windows | *Tag Release (windows)* |
+- `outline-ss-rust` (сервер, `x86_64` и `aarch64` musl)
+- `outline-ws-rust` (клиент, `x86_64` и `aarch64` musl)
+- `outline-ui` (dashboard-UI, `x86_64` и `aarch64` musl)
+- Android-приложение (`outline-proxy-<версия>-arm64-v8a.apk`)
+- приложение macOS (`OutlineProxy-v<версия>-macOS-Universal.dmg`)
+- приложение Windows (`OutlineProxy-v<версия>-Windows-x86_64.zip`)
 
-Push'и в `main` публикуют скользящие предрелизы `ss-nightly` / `ws-nightly` /
-`ui-nightly` / `android-nightly` / `macos-nightly` / `windows-nightly`. У каждого
-nightly-workflow есть path-фильтр, поэтому пересобирается только затронутый
-компонент; фильтры Android, macOS и Windows дополнительно покрывают клиент, общие и
-vendored-крейты, которые линкует их код.
+Push'и в `main` по-прежнему публикуют скользящие предрелизы по компонентам
+(`ss-nightly`, `ws-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`,
+`windows-nightly`). У каждого nightly-workflow есть path-фильтр, поэтому
+пересобираются только затронутые компоненты; фильтры Android, macOS и Windows
+дополнительно покрывают клиент, общие и vendored-крейты, которые линкует их код.
 
-Ручные workflow *Release (server|client|ui|android|macos|windows)* принимают серию
-`MAJOR.MINOR`, вычисляют следующую patch-версию по существующим тегам,
-записывают её в файл версии компонента (`bins/*/Cargo.toml` для трёх бинарей,
-`android/rust/Cargo.toml` для Android, `macos/Resources/Info.plist` для macOS,
-`bins/outline-windows/tauri.conf.json` и `bins/outline-windows/Cargo.toml` для Windows),
-пушат в `main` коммит `release: cut <tag>` и печатают команду `git tag -s <tag>`
-для локального запуска. Push этого подписанного тега запускает соответствующий
-*Tag Release*.
+Ручной workflow *Release* принимает необязательную серию `YY.M` (по умолчанию
+текущий месяц UTC), вычисляет следующую patch-версию по существующим тегам
+`vYY.M.*`, обновляет `[workspace.package]` в корневом `Cargo.toml`, оба
+`Cargo.lock`, `android/rust/Cargo.toml`, `bins/outline-windows/tauri.conf.json`
+и `macos/Resources/Info.plist`, пушит в `main` коммит `release: cut v<версия>`
+и печатает команду `git tag -s v<версия>` для локального запуска. Push этого
+подписанного тега запускает *Tag Release*, который параллельно собирает все
+шесть платформ и публикует единый релиз как `latest`.
 
 ### Установка Android-приложения
 

@@ -255,8 +255,8 @@ ingress entry in
 Cluster nodes are aarch64 (NanoPi R5C), hence the target and `--platform`.
 
 The release binary embeds the built SPA, so build the frontend first and ask the
-Rust build for the result explicitly. `<version>` below is `version` from
-`bins/outline-ui/Cargo.toml`; set the same tag in the `image:` field of
+Rust build for the result explicitly. `<version>` below is `[workspace.package].version`
+from the root `Cargo.toml`; set the same tag in the `image:` field of
 `outline-ui.yaml` before `kubectl apply`.
 
 ```bash

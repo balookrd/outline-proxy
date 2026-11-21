@@ -976,7 +976,7 @@ Install modes:
 
 - Default: the latest stable server release for the host architecture
 - `CHANNEL=nightly`: the rolling nightly prerelease
-- `VERSION=v1.2.3`: a specific stable tag
+- `VERSION=v26.11.0`: a specific stable tag
 
 Examples:
 
@@ -984,7 +984,7 @@ Examples:
 ./install-server.sh --help
 sudo ./install-server.sh
 sudo CHANNEL=nightly ./install-server.sh
-sudo VERSION=v1.2.3 ./install-server.sh
+sudo VERSION=v26.11.0 ./install-server.sh
 sudo ./install-server.sh --remove
 sudo ./install-server.sh --purge
 ```

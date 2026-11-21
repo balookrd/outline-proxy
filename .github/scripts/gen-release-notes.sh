@@ -2,11 +2,11 @@
 # Generate a GitHub release body for one component from Conventional Commits.
 #
 #   gen-release-notes.sh <component> <tag> <output-file>
-#     component : ss | ws | ui | android | macos | windows
-#     tag       : ss-v1.9.0 (release) or ss-nightly (rolling)
+#     component : all | ss | ws | ui | android | macos | windows
+#     tag       : v26.11.0 (unified release) or <comp>-nightly (rolling)
 #     output    : path to write the markdown body to
 #
-# All per-component knowledge (include-path, tag prefix) lives here so the four
+# All per-component knowledge (include-path, tag prefix) lives here so the
 # reusable workflows stay identical. Requires git-cliff on PATH and a checkout
 # with full history + tags (fetch-depth: 0, fetch-tags: true).
 set -euo pipefail
@@ -44,37 +44,71 @@ case "$component" in
     prefix="windows"
     paths=(bins/outline-windows bins/outline-ws-rust crates vendor)
     ;;
+  all)
+    prefix=""
+    paths=()
+    ;;
   *)
     echo "unknown component: $component" >&2
     exit 2
     ;;
 esac
 
-# Rolling tag (e.g. ss-nightly) is anything not shaped like <prefix>-vX.Y.Z.
-rolling=false
-if [[ ! "$tag" =~ ^${prefix}-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  rolling=true
-fi
-
-if [[ "$rolling" == "true" ]]; then
-  # Rolling: diff from the newest stable tag of this component up to HEAD.
-  prev="$(git tag -l "${prefix}-v*" --sort=-v:refname | head -n1)"
-  end_ref="HEAD"
-  compare_to="$(git rev-parse HEAD)"
-else
-  # Release: previous stable tag is the greatest <prefix>-v* strictly LESS than
-  # the current one by semver (not just "the greatest other tag"). Insert the
-  # tag into the sorted list and take the line before it. bash 3.2-safe: no
-  # `mapfile` (macOS ships bash 3.2), plain awk instead.
-  prev="$( { git tag -l "${prefix}-v*" | grep -vx "$tag"; printf '%s\n' "$tag"; } \
-            | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
+if [[ "$component" == "all" ]]; then
+  if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "expected CalVer tag vYY.M.PATCH for component 'all', got: $tag" >&2
+    exit 2
+  fi
+  rolling=false
+  # Only consider CalVer tags (two+ digit major, e.g. v26.11.0) so historical
+  # pre-split v1.0.0..v1.4.4 tags are never treated as the previous release.
+  calver_tags="$(git tag -l 'v[0-9][0-9].*' | grep -E '^v[0-9]{2,}\.[0-9]+\.[0-9]+$' || true)"
+  prev="$( { printf '%s\n' "$calver_tags" | grep -vx "$tag" || true; printf '%s\n' "$tag"; } \
+            | grep -v '^$' | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
+  if [[ -z "$prev" ]]; then
+    # First CalVer release: anchor at the newest historical per-component stable tag.
+    prev="$(git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
+      | grep -E '^(ss|ws|ui|android|macos|windows)-v[0-9]+\.[0-9]+\.[0-9]+$' \
+      | head -n1 || true)"
+  fi
   end_ref="$tag"
   compare_to="$tag"
+  tag_pattern='^v[0-9]{2,}\.'
+else
+  # Rolling tag (e.g. ss-nightly) is anything not shaped like <prefix>-vX.Y.Z.
+  rolling=false
+  if [[ ! "$tag" =~ ^${prefix}-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    rolling=true
+  fi
+
+  if [[ "$rolling" == "true" ]]; then
+    # Rolling: diff from the newest unified CalVer tag up to HEAD; fall back to
+    # the newest historical per-component stable tag before the first CalVer cut.
+    prev="$(git tag -l 'v[0-9][0-9].*' | grep -E '^v[0-9]{2,}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+    if [[ -n "$prev" ]]; then
+      tag_pattern='^v[0-9]{2,}\.'
+    else
+      prev="$(git tag -l "${prefix}-v*" --sort=-v:refname | head -n1 || true)"
+      tag_pattern="^${prefix}-v"
+    fi
+    end_ref="HEAD"
+    compare_to="$(git rev-parse HEAD)"
+  else
+    # Release: previous stable tag is the greatest <prefix>-v* strictly LESS than
+    # the current one by semver (not just "the greatest other tag"). Insert the
+    # tag into the sorted list and take the line before it. bash 3.2-safe: no
+    # `mapfile` (macOS ships bash 3.2), plain awk instead.
+    prev="$( { git tag -l "${prefix}-v*" | grep -vx "$tag"; printf '%s\n' "$tag"; } \
+              | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
+    end_ref="$tag"
+    compare_to="$tag"
+    tag_pattern="^${prefix}-v"
+  fi
 fi
 
 if [[ -n "$prev" ]]; then
   range="${prev}..${end_ref}"
-else
+elif [[ "${#paths[@]}" -gt 0 ]]; then
   # First release of this component (or rolling before any stable tags exist):
   # in a monorepo, span from the commit introducing this component's primary
   # directory up to end_ref. Using the repo's root commit would erroneously pull
@@ -87,11 +121,14 @@ else
     root="$(git rev-list --max-parents=0 "$end_ref" 2>/dev/null | tail -1)"
     range="${root}..${end_ref}"
   fi
+else
+  root="$(git rev-list --max-parents=0 "$end_ref" 2>/dev/null | tail -1)"
+  range="${root}..${end_ref}"
 fi
 
-# Assemble --include-path flags.
+# Assemble --include-path flags (empty for `all`, i.e. whole-repo notes).
 include_args=()
-for p in "${paths[@]}"; do
+for p in "${paths[@]+"${paths[@]}"}"; do
   include_args+=(--include-path "${p}/**")
 done
 
@@ -99,8 +136,8 @@ done
 # fall through to the fallback body instead of failing the release.
 body=""
 if body="$(git cliff "$range" \
-      --tag-pattern "^${prefix}-v" \
-      "${include_args[@]}" \
+      --tag-pattern "$tag_pattern" \
+      ${include_args[@]+"${include_args[@]}"} \
       --tag "$tag" \
       --config "$config" \
       --strip all 2>/dev/null)"; then

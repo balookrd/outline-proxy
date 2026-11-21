@@ -77,8 +77,9 @@ Shadowsocks AEAD, WebSocket, HTTP/3, padding, failover): приложение з
   GitHub API (`https://api.github.com/repos/balookrd/outline-proxy/releases/tags/windows-nightly`).
   Сверяет хэш коммита артефакта `OutlineProxy-x86_64-<commit>.zip` с хэшем запущенного
   бинарника (с поддержкой префиксного сопоставления и отсечением суффикса `-dirty`).
-- **`release`**: опрашивает GitHub Releases с тегами `windows-v*`. Находит наивысшую
-  семантическую версию и целевой архив `OutlineProxy-v<ver>-Windows-x86_64.zip`.
+- **`release`**: запрашивает `/releases/latest` в GitHub API
+  (`https://api.github.com/repos/balookrd/outline-proxy/releases/latest`), проверяет
+  единый CalVer-тег `v*` и скачивает целевой архив `OutlineProxy-v<ver>-Windows-x86_64.zip`.
 
 ### Сверка контрольной суммы по `SHA256SUMS.txt`
 Для защиты от повреждения данных или подмены файлов перед установкой выполняется

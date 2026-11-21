@@ -10,7 +10,6 @@ import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -26,19 +25,28 @@ import java.net.URL
  * Downloads folder and they tap it themselves.
  *
  * Channels come from [BuildConfig.CHANNEL] and are identified differently
- * because they are versioned differently: a release is a tag (`android-v1.1.3`)
- * and compares by version, while every nightly shares the rolling
- * `android-nightly` tag and is identified only by the commit baked into its
- * asset name.
+ * because they are versioned differently: stable releases use the unified
+ * repository CalVer tag (`v26.11.0`, resolved via `/releases/latest`) and
+ * compare by version, while every nightly shares the rolling `android-nightly`
+ * tag and is identified only by the commit baked into its asset name.
  */
 object UpdateChecker {
     private const val TAG = "UpdateChecker"
     private const val REPO = "balookrd/outline-proxy"
     private const val NIGHTLY_TAG = "android-nightly"
-    private const val RELEASE_TAG_PREFIX = "android-v"
+    private const val RELEASE_TAG_PREFIX = "v"
     private const val ASSET_SUFFIX = "-arm64-v8a.apk"
     private const val CONNECT_TIMEOUT_MS = 10_000
     private const val READ_TIMEOUT_MS = 15_000
+
+    internal data class ReleaseAsset(val name: String, val downloadUrl: String)
+
+    internal data class ReleaseMeta(
+        val tagName: String,
+        val draft: Boolean,
+        val body: String,
+        val assets: List<ReleaseAsset>,
+    )
 
     /** What a check found. */
     sealed interface Result {
@@ -96,35 +104,48 @@ object UpdateChecker {
     }
 
     /**
-     * Releases carry their version in the tag, so the newest `android-v*` tag
-     * wins — `/releases/latest` is no help here, since the repository also
-     * publishes server and client releases and the newest of *those* would be
-     * reported instead.
+     * Stable releases share one unified CalVer tag (`v26.11.0`) published as the
+     * repository's `/releases/latest`.
      */
     private fun checkRelease(): Result {
-        val releases = JSONArray(get("https://api.github.com/repos/$REPO/releases?per_page=30"))
-        var best: JSONObject? = null
-        var bestVersion: List<Int> = emptyList()
-        for (i in 0 until releases.length()) {
-            val release = releases.getJSONObject(i)
-            val tag = release.optString("tag_name")
-            if (!tag.startsWith(RELEASE_TAG_PREFIX) || release.optBoolean("draft")) continue
-            val version = versionParts(tag.removePrefix(RELEASE_TAG_PREFIX))
-            if (compareVersions(version, bestVersion) > 0) {
-                best = release
-                bestVersion = version
-            }
+        val release = JSONObject(get("https://api.github.com/repos/$REPO/releases/latest"))
+        return evaluateRelease(releaseMeta(release), BuildConfig.VERSION_NAME)
+    }
+
+    internal fun evaluateRelease(release: ReleaseMeta, currentVersion: String): Result {
+        val tag = release.tagName
+        if (release.draft || !tag.startsWith(RELEASE_TAG_PREFIX) || tag.length <= RELEASE_TAG_PREFIX.length || !tag[RELEASE_TAG_PREFIX.length].isDigit()) {
+            return Result.Failed("no ${RELEASE_TAG_PREFIX}* release published yet")
         }
-        val release = best ?: return Result.Failed("no $RELEASE_TAG_PREFIX* release published yet")
-        if (compareVersions(bestVersion, versionParts(BuildConfig.VERSION_NAME)) <= 0) {
+        val remoteVersion = tag.removePrefix(RELEASE_TAG_PREFIX)
+        if (compareVersions(versionParts(remoteVersion), versionParts(currentVersion)) <= 0) {
             return Result.UpToDate
         }
-        val asset = apkAsset(release) ?: return Result.Failed("no APK in ${release.optString("tag_name")}")
+        val asset = release.assets.firstOrNull { it.name.endsWith(ASSET_SUFFIX) }
+            ?: return Result.Failed("no APK in $tag")
         return Result.Available(
-            "v${release.optString("tag_name").removePrefix(RELEASE_TAG_PREFIX)}",
-            asset.getString("name"),
-            asset.getString("browser_download_url"),
-            release.optString("body"),
+            tag,
+            asset.name,
+            asset.downloadUrl,
+            release.body,
+        )
+    }
+
+    private fun releaseMeta(release: JSONObject): ReleaseMeta {
+        val assetsJson = release.optJSONArray("assets")
+        val assets = buildList {
+            if (assetsJson != null) {
+                for (i in 0 until assetsJson.length()) {
+                    val asset = assetsJson.getJSONObject(i)
+                    add(ReleaseAsset(asset.optString("name"), asset.optString("browser_download_url")))
+                }
+            }
+        }
+        return ReleaseMeta(
+            tagName = release.optString("tag_name"),
+            draft = release.optBoolean("draft"),
+            body = release.optString("body"),
+            assets = assets,
         )
     }
 
