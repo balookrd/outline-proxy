@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "outline-windows"
-version = "1.0.0"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
