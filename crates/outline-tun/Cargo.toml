@@ -12,7 +12,7 @@ metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
 # Passthrough that enables the QUIC endpoint / TLS plumbing in the lower
 # crates (required by the HTTP/3 carrier). The raw-QUIC forward carrier was
 # removed, so this crate no longer has any `quic`-gated code of its own; the
-# feature is retained because `outline-ws-rust`'s `h3` feature forwards to it.
+# feature is retained because `outline-client`'s `h3` feature forwards to it.
 quic = ["outline-transport/quic", "outline-uplink/quic"]
 
 [dependencies]

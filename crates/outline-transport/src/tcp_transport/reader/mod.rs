@@ -50,7 +50,7 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
     /// Protocol v1 (server echoed `X-Outline-Resume-Ack-Prefix: 1`). When
     /// `true`, the very first decrypted SS-AEAD payload is treated as
     /// the 14-byte control frame defined in
-    /// `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol;
+    /// `bins/outline-server/docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol;
     /// `read_chunk` parses it transparently, stores the result in
     /// [`Self::up_acked`], and then continues to the first real data
     /// chunk so callers never observe the protocol bytes.
@@ -84,7 +84,7 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
     /// caller. `read_chunk` does NOT auto-intercept the v2 frame —
     /// the orchestrator is required to drive
     /// `consume_downlink_replay_with_timeout` before resuming the
-    /// relay loop. See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+    /// relay loop. See `bins/outline-server/docs/SESSION-RESUMPTION.md`
     /// § Symmetric Downlink Replay (v2).
     expect_downlink_replay: bool,
 }

@@ -1,6 +1,6 @@
 //! Shared wire-protocol primitives for the Outline server/client pair.
 //!
-//! Both `outline-ss-rust` (server) and `outline-ws-rust` (client) speak the
+//! Both `outline-server` (server) and `outline-client` (client) speak the
 //! same Shadowsocks AEAD / SS2022 / VLESS wire formats. This crate owns the
 //! format-level vocabulary — cipher identifiers, target addresses, header
 //! layouts, protocol constants — as pure parsing/encoding logic with no

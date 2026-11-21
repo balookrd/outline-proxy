@@ -79,7 +79,7 @@ fn xhttp_alpn_h1_picks_xhttp_h1_mode() {
 fn xhttp_alpn_first_token_wins_for_comma_lists() {
     // Mirrors `ws_alpn_first_token_wins_for_comma_lists` — pins the
     // first-token-wins rule for the XHTTP carrier so an `alpn=h3,h2`
-    // URI emitted by `outline-ss-rust v1.4.x+` resolves to
+    // URI emitted by `outline-server v1.4.x+` resolves to
     // `XhttpH3` (with the h3→h2 inline fallback on the dial path
     // taking care of UDP-blocked clients). Both single-token shapes
     // are already covered above; this test specifically guards the

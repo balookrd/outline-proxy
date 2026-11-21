@@ -215,7 +215,7 @@ fn the_default_coefficient_leaves_base_latency_untouched() {
     let config = crate::tests::lb();
     // `lb()` is a hand-written test fixture local to this crate, not the
     // shipped default — the actual default lives in the config loader,
-    // `bins/outline-ws-rust/src/config/load/balancing.rs`
+    // `bins/outline-client/src/config/load/balancing.rs`
     // (`loss_latency_penalty_k.unwrap_or(0.0)`), which this crate cannot
     // import (it is a dependency of that binary, not the reverse). This
     // assertion pins the fixture to the value the loader defaults to, so

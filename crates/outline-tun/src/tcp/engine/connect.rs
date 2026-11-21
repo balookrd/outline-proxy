@@ -279,7 +279,7 @@ async fn connect_tcp_uplink(
     // path falls back to the global `[padding] enabled` default, so a padded
     // per-uplink dials plain and the padded server path drops it while the
     // (correctly scoped) probe stays green. Mirrors the SOCKS path in
-    // `outline-ws-rust`'s `proxy/tcp/failover.rs::connect_tcp_uplink`.
+    // `outline-client`'s `proxy/tcp/failover.rs::connect_tcp_uplink`.
     let (writer, reader, session_id) = outline_uplink::dial::with_uplink_padding_scope(
         &candidate.uplink,
         connect_tcp_uplink_inner(uplinks, candidate, target),

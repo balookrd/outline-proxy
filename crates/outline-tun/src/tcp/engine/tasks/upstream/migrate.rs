@@ -6,7 +6,7 @@
 //! transport at once — but the *upstream sockets* are not gone: the server parks
 //! each one in its orphan registry under the Session ID it minted for that flow
 //! and holds it for 30 s
-//! (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`). This module re-dials a
+//! (`bins/outline-server/docs/SESSION-RESUMPTION.md`). This module re-dials a
 //! fresh carrier, presents the flow's own id, has the parked upstream
 //! re-attached, closes the byte gap in both directions, and lets the read loop
 //! carry on — so the application never sees the disconnect.

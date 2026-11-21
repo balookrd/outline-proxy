@@ -1033,7 +1033,7 @@ pub struct LoadBalancingConfig {
     /// and `tcp_mid_session_retry_budget > 0`).
     ///
     /// Default: `true`. When the wire-protocol partner is known to
-    /// only support v1.x (older `outline-ss-rust`) the operator can
+    /// only support v1.x (older `outline-server`) the operator can
     /// flip this to `false` to suppress the v2 advertise without
     /// disabling v1.x retry. See `docs/SESSION-RESUMPTION.md` (server
     /// repo) § Symmetric Downlink Replay (v2).

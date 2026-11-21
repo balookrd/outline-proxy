@@ -3381,6 +3381,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-client"
+version = "26.11.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "blake3",
+ "bytes",
+ "clap",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "libmimalloc-sys",
+ "lru",
+ "mimalloc",
+ "outline-metrics",
+ "outline-net",
+ "outline-routing",
+ "outline-transport",
+ "outline-tun",
+ "outline-uplink",
+ "outline-wire",
+ "parking_lot 0.13.0",
+ "rand 0.10.3",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "shadowsocks-crypto",
+ "socket2 0.6.5",
+ "socks5-proto",
+ "tempfile",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "toml 1.2.1+spec-1.1.0",
+ "toml_edit 0.25.19+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "webpki-roots 1.0.11",
+]
+
+[[package]]
 name = "outline-metrics"
 version = "26.11.0"
 dependencies = [
@@ -3416,7 +3464,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "outline-ss-rust"
+name = "outline-server"
 version = "26.11.0"
 dependencies = [
  "aes",
@@ -3660,54 +3708,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "zeroize",
-]
-
-[[package]]
-name = "outline-ws-rust"
-version = "26.11.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "blake3",
- "bytes",
- "clap",
- "futures-util",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "libmimalloc-sys",
- "lru",
- "mimalloc",
- "outline-metrics",
- "outline-net",
- "outline-routing",
- "outline-transport",
- "outline-tun",
- "outline-uplink",
- "outline-wire",
- "parking_lot 0.13.0",
- "rand 0.10.3",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "shadowsocks-crypto",
- "socket2 0.6.5",
- "socks5-proto",
- "tempfile",
- "tikv-jemalloc-ctl",
- "tikv-jemallocator",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "toml 1.2.1+spec-1.1.0",
- "toml_edit 0.25.19+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "url",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]

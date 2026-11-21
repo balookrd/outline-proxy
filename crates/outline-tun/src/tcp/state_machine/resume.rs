@@ -4,7 +4,7 @@
 //! many flows). When that carrier dies, every flow on it dies with it — even
 //! though the server still holds each flow's upstream socket parked under the
 //! Session ID it minted for that flow (see
-//! `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`). Re-attaching the parked
+//! `bins/outline-server/docs/SESSION-RESUMPTION.md`). Re-attaching the parked
 //! upstream on a fresh carrier is byte-exact only if the client can answer two
 //! questions at redial time:
 //!
@@ -19,7 +19,7 @@
 //! migration) and the upstream pump (which must not fight it) — in step. The
 //! migration itself lives in `engine/tasks/upstream/migrate.rs`. Mirrors the
 //! accounting the SOCKS5 pinned relay already does inline
-//! (`bins/outline-ws-rust/src/proxy/tcp/connect/pinned_relay.rs`).
+//! (`bins/outline-client/src/proxy/tcp/connect/pinned_relay.rs`).
 
 use std::time::{Duration, Instant};
 
@@ -57,7 +57,7 @@ pub(in crate::tcp) const TUN_TCP_MIGRATION_MAX_ATTEMPTS: u8 = 2;
 /// still start another.
 ///
 /// The server parks an orphaned upstream for 30 s
-/// (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`), so an attempt starting
+/// (`bins/outline-server/docs/SESSION-RESUMPTION.md`), so an attempt starting
 /// later than this can only ever miss — and a miss costs a wasted dial plus the
 /// wait for a control frame that will never come, while the application sits
 /// there. Give up and tear down honestly instead.

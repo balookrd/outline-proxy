@@ -107,7 +107,7 @@ struct WsVlessUdpDialer {
     /// `shared_resume`, else the uplink name. `None` disables VLESS-UDP resume
     /// entirely (no id is presented or stored) — used by test muxes that never
     /// set a scope. On a real dial the cached id for `<scope>#<target>` is
-    /// presented as `X-Outline-Resume` so a feature-enabled outline-ss-rust
+    /// presented as `X-Outline-Resume` so a feature-enabled outline-server
     /// server (or its home shard, after a mesh relay) re-attaches the parked
     /// `Arc<UdpSocket>` instead of binding a fresh source port.
     resume_scope: Option<String>,

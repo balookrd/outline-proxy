@@ -1,0 +1,371 @@
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
+
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use clap::Parser;
+use outline_wire::cluster::ShardId;
+
+use super::{
+    cli::ConfigArgs,
+    control::resolve_control_config,
+    endpoint::EndpointConfig,
+    fallback::HttpFallbackConfig,
+    file::{
+        ClusterSection, FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config,
+    },
+    resolved::{ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig, SessionResumptionConfig},
+    sni::{SniFallbackConfig, TlsCertEntry},
+    user_entry::CipherKind,
+};
+
+/// Only one mode remains: the binary serves. Access-key generation moved to
+/// `ops/access-keys` (2026-08-11), and with it the `[access_keys]` keys that
+/// used to switch the process into a one-shot generator.
+pub enum AppMode {
+    Serve(Config),
+}
+
+impl AppMode {
+    pub fn load() -> Result<Self> {
+        let args = ConfigArgs::parse();
+        let config_path = args.config.clone().or_else(default_config_path_if_exists);
+        let file = if let Some(path) = &config_path {
+            load_file_config(path)?
+        } else {
+            FileConfig::default()
+        };
+
+        Ok(AppMode::Serve(resolve(args, file, config_path)?))
+    }
+}
+
+/// Resolves CLI args + a parsed config file into a validated [`Config`].
+/// Split out of [`AppMode::load`] so tests can drive the exact same
+/// merge/defaulting/validation logic from an in-memory TOML string via
+/// [`parse`], without touching argv or disk.
+fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> Result<Config> {
+    let mut tuning = args
+        .tuning_profile
+        .or(file.tuning_profile)
+        .unwrap_or_default()
+        .preset();
+    if let Some(overrides) = file.tuning.as_ref() {
+        tuning.apply_overrides(overrides);
+    }
+
+    let control = resolve_control_config(&args, &file)?;
+
+    let server = file.server.unwrap_or_default();
+    let server_h3 = server.h3.unwrap_or_default();
+    let metrics = file.metrics.unwrap_or_default();
+    let outbound = file.outbound.unwrap_or_default();
+    let http_root = file.http_root.unwrap_or_default();
+    // `[access_keys]` is parsed and ignored. The section still lives in
+    // every deployed config and feeds ops/access-keys, and the config
+    // structs are `deny_unknown_fields`, so refusing it here would fail
+    // those configs at startup.
+    let _ = file.access_keys;
+    let shadowsocks = file.shadowsocks.unwrap_or_default();
+
+    // Multi-cert arrays. The h3 array only inherits from the TCP
+    // listener's array when the h3 table omits `certs` entirely —
+    // an explicitly empty `certs = []` opts out of inheritance.
+    let tls_certs = parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
+    let h3_certs = match parse_tls_cert_array(server_h3.certs, "server.h3.certs")? {
+        Some(list) => list,
+        None => tls_certs.clone(),
+    };
+
+    // Default cert pair. CLI flag wins over file; on the h3 side, an
+    // unset h3 cert/key inherits the TCP listener's pair (via either
+    // `[server].cert_path`/`tls_cert_path` or `--tls-cert-path`).
+    let tls_cert_path = args.tls_cert_path.clone().or(server.cert_path);
+    let tls_key_path = args.tls_key_path.clone().or(server.key_path);
+    let h3_cert_path = args
+        .h3_cert_path
+        .or(server_h3.cert_path)
+        .or_else(|| tls_cert_path.clone());
+    let h3_key_path = args
+        .h3_key_path
+        .or(server_h3.key_path)
+        .or_else(|| tls_key_path.clone());
+
+    // Carrier endpoints: the single source of the paths the config exposes.
+    // `padding.padded_paths` below is derived from this same list, so resolve
+    // it once, ahead of the `Config` literal, and feed both fields from it.
+    let resolved_endpoints: Vec<EndpointConfig> = file
+        .endpoints
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| EndpointConfig {
+            path: e.path,
+            kind: e.kind,
+            padded: e.padded,
+        })
+        .collect();
+
+    let padding = {
+        let mut p = PaddingConfig::from_section(file.padding.unwrap_or_default());
+        p.padded_paths = resolved_endpoints
+            .iter()
+            .filter(|e| e.padded)
+            .map(|e| e.path.clone())
+            .collect();
+        p
+    };
+
+    let config = Config {
+        config_path,
+        control,
+        listen: args.listen.or(server.listen),
+        tls_cert_path,
+        tls_key_path,
+        tls_certs,
+        max_connections_per_ip: server.max_connections_per_ip,
+        h3_listen: args.h3_listen.or(server_h3.listen),
+        h3_cert_path,
+        h3_key_path,
+        h3_certs,
+        h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
+        h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
+        h3_mtu_first_probe: resolve_h3_mtu_first_probe(server_h3.mtu_first_probe)?,
+        h3_udp_datagrams: server_h3.udp_datagrams.unwrap_or(true),
+        metrics_listen: args.metrics_listen.or(metrics.listen),
+        metrics_path: args
+            .metrics_path
+            .or(metrics.path)
+            .unwrap_or_else(|| "/metrics".to_owned()),
+        prefer_ipv4_upstream: args.prefer_ipv4_upstream.or(outbound.prefer_ipv4).unwrap_or(false),
+        outbound_ipv6_prefix: match args
+            .outbound_ipv6_prefix
+            .as_deref()
+            .or(outbound.ipv6_prefix.as_deref())
+        {
+            Some(s) => Some(
+                s.parse::<crate::outbound::Ipv6Prefix>()
+                    .map_err(|e| anyhow::anyhow!("invalid outbound.ipv6_prefix: {e}"))?,
+            ),
+            None => None,
+        },
+        outbound_ipv6_interface: args.outbound_ipv6_interface.clone().or(outbound.ipv6_interface),
+        outbound_ipv6_prefix_interface: args
+            .outbound_ipv6_prefix_interface
+            .clone()
+            .or(outbound.ipv6_prefix_interface),
+        outbound_ipv6_refresh_secs: args
+            .outbound_ipv6_refresh_secs
+            .or(outbound.ipv6_refresh_secs)
+            .unwrap_or(30),
+        outbound_ipv6_sticky: args.outbound_ipv6_sticky.or(outbound.ipv6_sticky).unwrap_or(true),
+        outbound_ipv6_sticky_ttl_secs: args
+            .outbound_ipv6_sticky_ttl_secs
+            .or(outbound.ipv6_sticky_ttl_secs)
+            .unwrap_or(1800),
+        outbound_block_private_ips: args
+            .outbound_block_private_ips
+            .or(outbound.block_private_ips)
+            .unwrap_or(false),
+        outbound_allowed_subnets: outbound.allowed_subnets.unwrap_or_default(),
+        http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
+        http_root_realm: args
+            .http_root_realm
+            .or(http_root.realm)
+            .unwrap_or_else(default_http_root_realm),
+        users: if args.users.is_empty() {
+            file.users.unwrap_or_default()
+        } else {
+            args.users
+        },
+        method: args
+            .method
+            .or(shadowsocks.method)
+            .unwrap_or(CipherKind::Chacha20IetfPoly1305),
+        tuning,
+        session_resumption: SessionResumptionConfig::from_section(
+            file.session_resumption.unwrap_or_default(),
+        ),
+        padding,
+        http_fallback: HttpFallbackConfig::from_section(file.http_fallback.unwrap_or_default())?,
+        sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
+        cluster: resolve_cluster(file.cluster)?,
+        endpoints: resolved_endpoints,
+    };
+    config.validate()?;
+
+    Ok(config)
+}
+
+/// Resolves a complete TOML document straight into a validated
+/// [`Config`], bypassing argv/env entirely — every [`ConfigArgs`] field
+/// defaults to empty/`None`, so the TOML text alone drives the result.
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
+pub(crate) fn parse_and_validate(toml_str: &str) -> Result<Config> {
+    let file: FileConfig = toml::from_str(toml_str).context("parsing TOML into FileConfig")?;
+    let args = ConfigArgs::parse_from(["outline-server"]);
+    resolve(args, file, None)
+}
+
+#[cfg(test)]
+pub(super) fn parse(toml_str: &str) -> Result<Config> {
+    parse_and_validate(toml_str)
+}
+
+fn parse_tls_cert_array(
+    raw: Option<Vec<TlsCertSection>>,
+    label: &str,
+) -> Result<Option<Vec<TlsCertEntry>>> {
+    let Some(list) = raw else { return Ok(None) };
+    let mut out = Vec::with_capacity(list.len());
+    for (idx, entry) in list.into_iter().enumerate() {
+        out.push(TlsCertEntry::from_section(entry, &format!("{label}[{idx}]"))?);
+    }
+    Ok(Some(out))
+}
+
+pub fn default_http_root_realm() -> String {
+    "Authorization required".to_owned()
+}
+
+/// Resolve the `[cluster]` section into runtime config. Returns `None` (no
+/// cluster) when the section is absent or `enabled` is not `true`. Fails fast
+/// on a missing/invalid shard, PSK, listen address or peer entry so a
+/// misconfiguration aborts startup rather than silently degrading.
+fn resolve_cluster(section: Option<ClusterSection>) -> Result<Option<ClusterConfig>> {
+    let Some(section) = section else { return Ok(None) };
+    if !section.enabled.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let shard_raw = section
+        .shard_id
+        .context("cluster.shard_id is required when cluster.enabled")?;
+    let shard = ShardId::new(shard_raw)
+        .ok_or_else(|| anyhow!("cluster.shard_id must be < 16, got {shard_raw}"))?;
+
+    let psk_b64 = section
+        .cluster_psk
+        .context("cluster.cluster_psk is required when cluster.enabled")?;
+    let psk = STANDARD
+        .decode(psk_b64.trim())
+        .context("cluster.cluster_psk must be valid base64")?;
+    if psk.is_empty() {
+        bail!("cluster.cluster_psk must not be empty");
+    }
+
+    let mesh_listen = section
+        .mesh_listen
+        .context("cluster.mesh_listen is required when cluster.enabled")?
+        .parse()
+        .context("cluster.mesh_listen must be an IP:port socket address")?;
+
+    let budget_ms = section.mesh_relay_budget_ms.unwrap_or(4000).max(1);
+    let mesh_relay_budget = Duration::from_millis(budget_ms);
+
+    let mut peers = HashMap::new();
+    for (idx, peer) in section.peers.unwrap_or_default().into_iter().enumerate() {
+        let peer_shard = ShardId::new(peer.shard).ok_or_else(|| {
+            anyhow!("cluster.peers[{idx}].shard must be < 16, got {}", peer.shard)
+        })?;
+        // Our own shard is served locally, never relayed to.
+        if peer_shard == shard {
+            continue;
+        }
+        let addr = peer.addr.parse().with_context(|| {
+            format!("cluster.peers[{idx}].addr must be an IP:port socket address")
+        })?;
+        if peers.insert(peer_shard, addr).is_some() {
+            bail!("duplicate cluster.peers entry for shard {}", peer.shard);
+        }
+    }
+
+    Ok(Some(ClusterConfig {
+        shard,
+        psk: ClusterPsk::from_bytes(psk),
+        mesh_listen,
+        mesh_relay_budget,
+        peers,
+    }))
+}
+
+#[cfg(test)]
+#[path = "tests/loader.rs"]
+mod tests;
+
+/// Smallest datagram QUIC itself allows (RFC 9000 §14): anything below this
+/// cannot carry an Initial packet, and quinn silently clamps up to it.
+pub(crate) const H3_MIN_INITIAL_MTU: u16 = 1200;
+/// Ceiling for a pinned value. Matches the MTU-discovery upper bound used on
+/// an unpinned host, so the two paths cannot disagree about what is reachable.
+pub(crate) const H3_MAX_INITIAL_MTU: u16 = 1452;
+
+/// Validate `[server.h3].initial_mtu`.
+///
+/// The value is a UDP payload size, so the operator computes it as
+/// `path MTU - 28` (IPv4) or `- 48` (IPv6). Getting it wrong in the safe
+/// direction only costs throughput; getting it wrong upward is what the
+/// default already does on a small-MTU host, so the bounds are checked rather
+/// than clamped — a typo should be loud at startup, not a silent slowdown
+/// discovered months later in a packet capture.
+fn resolve_h3_initial_mtu(input: Option<u16>) -> Result<Option<u16>> {
+    let Some(value) = input else {
+        return Ok(None);
+    };
+    if !(H3_MIN_INITIAL_MTU..=H3_MAX_INITIAL_MTU).contains(&value) {
+        anyhow::bail!(
+            "server.h3.initial_mtu must be between {H3_MIN_INITIAL_MTU} and \
+             {H3_MAX_INITIAL_MTU} bytes (got {value}); it is a UDP payload size, \
+             i.e. the path MTU minus 28 (IPv4) or 48 (IPv6)"
+        );
+    }
+    Ok(Some(value))
+}
+
+/// Validate `[server.h3].mtu_first_probe` (same bounds and units as `initial_mtu`).
+fn resolve_h3_mtu_first_probe(input: Option<u16>) -> Result<Option<u16>> {
+    let Some(value) = input else {
+        return Ok(None);
+    };
+    if !(H3_MIN_INITIAL_MTU..=H3_MAX_INITIAL_MTU).contains(&value) {
+        anyhow::bail!(
+            "server.h3.mtu_first_probe must be between {H3_MIN_INITIAL_MTU} and \
+             {H3_MAX_INITIAL_MTU} bytes (got {value}); it is a UDP payload size"
+        );
+    }
+    Ok(Some(value))
+}
+
+fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {
+    let Some(raw) = input else {
+        return Ok(vec![H3Alpn::H3]);
+    };
+    if raw.is_empty() {
+        anyhow::bail!("server.h3.alpn must list at least one protocol");
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for entry in raw {
+        match H3Alpn::parse(entry) {
+            Some(alpn) => {
+                if !seen.insert(alpn) {
+                    anyhow::bail!("server.h3.alpn contains duplicate entry {entry:?}");
+                }
+                out.push(alpn);
+            },
+            // Raw-QUIC ALPNs (`vless`/`ss` and their `-mtu` siblings) were
+            // removed. A legacy config that still lists one is not fatal —
+            // warn and skip so an otherwise-valid config still starts.
+            None => tracing::warn!(
+                "ignoring unsupported server.h3.alpn entry {entry:?}; only \"h3\" is supported"
+            ),
+        }
+    }
+    if out.is_empty() {
+        tracing::warn!("server.h3.alpn listed no supported protocols; defaulting to [\"h3\"]");
+        out.push(H3Alpn::H3);
+    }
+    Ok(out)
+}

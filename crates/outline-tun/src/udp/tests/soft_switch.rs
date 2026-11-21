@@ -4,7 +4,7 @@
 //!
 //! Not bytes. A parked UDP session keeps no back-buffer — the kernel receive
 //! buffer fills and overflow drops, because UDP is loss-tolerant by design
-//! (`bins/outline-ss-rust/src/server/resumption/parked.rs`). What a resume hit
+//! (`bins/outline-server/src/server/resumption/parked.rs`). What a resume hit
 //! preserves is the **session**: the server re-points the parked NAT entries at
 //! the new carrier, so the exit keeps the same source port and the peer's NAT
 //! binding survives. These tests therefore assert on *which Session ID reaches

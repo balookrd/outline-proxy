@@ -51,7 +51,7 @@ async fn xhttp_h2_carrier_is_not_h3() {
 /// same gate. `cargo check -p outline-transport --all-targets` without `h3`
 /// used to fail here: this module compiled unconditionally
 /// (`xhttp/mod.rs`), and the workspace gate only passed because
-/// `outline-ws-rust` unifies the `h3` feature back in for every other crate
+/// `outline-client` unifies the `h3` feature back in for every other crate
 /// in the graph.
 #[cfg(feature = "h3")]
 mod quic_ownership {

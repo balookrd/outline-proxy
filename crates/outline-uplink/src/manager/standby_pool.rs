@@ -305,7 +305,7 @@ impl RefillGate {
     ///
     /// Gated on `test-helpers` too, not just `cfg(test)`: it backs
     /// `UplinkManager::refill_spawned_count_for_test`, which is exposed to
-    /// dependent crates' own test builds (`outline-tun`, `outline-ws-rust`)
+    /// dependent crates' own test builds (`outline-tun`, `outline-client`)
     /// through that feature rather than through this crate's own `cargo test`.
     #[cfg(any(test, feature = "test-helpers"))]
     pub(crate) fn spawned(&self) -> u64 {

@@ -18,7 +18,7 @@ quic = [
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "dep:sockudo-ws", "sockudo-ws/http3", "outline-wire/h3-datagram"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
-# (notably `outline-ss-rust/tests`) can pin a self-signed root for an
+# (notably `outline-server/tests`) can pin a self-signed root for an
 # in-process server. Production builds leave this off; the symbol is
 # absent from the public ABI and dials use the system webpki list.
 test-tls = []

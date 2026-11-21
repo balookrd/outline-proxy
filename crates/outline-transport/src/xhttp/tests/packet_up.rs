@@ -98,7 +98,7 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     .await?;
     // The mock server does not echo `X-Outline-Session`, so the
     // first dial should report no resume token. A follow-up test
-    // exercises the populated path against an actual outline-ss-rust
+    // exercises the populated path against an actual outline-server
     // server in the integration suite.
     assert!(issued.is_none());
 

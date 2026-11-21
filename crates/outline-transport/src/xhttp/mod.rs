@@ -1,6 +1,6 @@
 //! Client-side XHTTP packet-up transport.
 //!
-//! Mirror image of the server's `outline-ss-rust` module of the same
+//! Mirror image of the server's `outline-server` module of the same
 //! name. Multiplexes a long-lived GET (downlink) and a sequence of
 //! short POSTs (uplink) over a single shared HTTP/2 connection. The
 //! GET and POST share the same URL `<base>/<session-id>`, where

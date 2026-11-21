@@ -9,7 +9,7 @@
 //! webpki root store and no-client-auth setup.
 //!
 //! A test-only override slot lives below: cross-repo integration
-//! tests (`outline-ss-rust/tests`) generate a self-signed cert for
+//! tests (`outline-server/tests`) generate a self-signed cert for
 //! an in-process server, install it via [`install_test_tls_root`],
 //! and every subsequent `build_client_config` call (XHTTP h2/h3,
 //! WS h2/h3) trusts that root instead of the
@@ -197,7 +197,7 @@ static TEST_TLS_OVERRIDE_ROOTS: RwLock<Option<Arc<RootCertStore>>> = RwLock::new
 /// Subsequent [`build_client_config`] calls trust only that root.
 ///
 /// Intended exclusively for cross-repo integration tests in
-/// `outline-ss-rust` (and any future fixture that brings up a
+/// `outline-server` (and any future fixture that brings up a
 /// self-signed in-process server). Gated behind the `test-tls` Cargo
 /// feature; production builds omit the symbol entirely so dials always
 /// fall back to the system webpki list.

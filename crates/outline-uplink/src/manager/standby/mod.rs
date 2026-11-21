@@ -285,7 +285,7 @@ impl UplinkManager {
     /// Used by same-uplink recovery paths that present this session's own
     /// Session ID before chunk 0 has been acknowledged — the warm-standby
     /// stale-socket retry and the chunk-0 RST retry (`connect/retry.rs` in
-    /// `outline-ws-rust`). Neither owns a replay ring at that point in the
+    /// `outline-client`). Neither owns a replay ring at that point in the
     /// session, so — unlike [`Self::connect_tcp_ws_migrate_with_ack_prefix_on_wire`]
     /// — no Ack-Prefix / Symmetric Replay capability is requested and the
     /// wire's mode-downgrade cap is honoured rather than bypassed: this redial
@@ -389,7 +389,7 @@ impl UplinkManager {
     /// dies for every flow riding it at once, so the cap is just as likely to
     /// arrive from a sibling flow, the standby refill loop or the probe loop —
     /// which is why the SOCKS mid-session retry
-    /// (`redial_for_mid_session_retry` in `outline-ws-rust`) dials through here
+    /// (`redial_for_mid_session_retry` in `outline-client`) dials through here
     /// too, even though it reports its own runtime failure only after its relay
     /// loop has given up.
     ///

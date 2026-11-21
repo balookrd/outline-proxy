@@ -26,7 +26,7 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         registry,
         IntGaugeVec,
         "outline_ws_build_info",
-        "Build info for outline-ws-rust.",
+        "Build info for outline-client.",
         ["version"]
     );
     let start_time_seconds = register_scalar!(

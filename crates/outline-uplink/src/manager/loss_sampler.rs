@@ -234,7 +234,7 @@ impl UplinkManager {
     pub fn spawn_loss_sampler_loop(&self) {
         let interval = self.inner.load_balancing.loss_sample_interval;
         // `loss_sample_interval_secs = 0` is the documented off switch (see
-        // `bins/outline-ws-rust/src/config/load/balancing.rs` and
+        // `bins/outline-client/src/config/load/balancing.rs` and
         // `UPLINK-CONFIGURATIONS.md`): carriers still register probes and the
         // registry still tracks them, but nothing ever differences the
         // counters or publishes a verdict. Not spawning the loop at all

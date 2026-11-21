@@ -58,7 +58,7 @@ mod tests;
 /// shutdown, because the TUN device and its config are fixed at startup —
 /// the control-plane `/control/apply` path hot-swaps only uplink groups, and
 /// changing `[tun]` (like `listen` / `routing` / `metrics`) requires a full
-/// process restart (see `outline-ws-rust` `http::control::apply`). The engine
+/// process restart (see `outline-client` `http::control::apply`). The engine
 /// is therefore created exactly once per process and the OS tears the fd and
 /// tasks down on exit. The per-engine cleanup/maintenance loops in
 /// `tcp::engine` and `udp` intentionally share this lifetime (unlike the

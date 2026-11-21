@@ -24,6 +24,8 @@ use crate::types::{TransportKind, UplinkManager};
 /// BLAKE3 derive-key context. Bump the version suffix only for a deliberate,
 /// fleet-wide reshuffle: changing it makes every node compute a new order, and
 /// nodes on mixed builds disagree until all of them are updated.
+/// Frozen compatibility constant — keep `"outline-ws-rust ..."` verbatim even
+/// after the crate/binary rename to `outline-client`.
 const SYNC_SEED_CONTEXT: &str = "outline-ws-rust reselect-sync seed v1";
 
 /// One firing of the wall-clock schedule: the local calendar day it belongs

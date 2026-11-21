@@ -2,7 +2,7 @@
 // `vendor/sockudo-ws`) — client side.  Every API whose shape or behaviour
 // exists only in the patched copies is reached through here, so a rebase of
 // the vendored crates onto a new upstream starts at this file plus its
-// server-side twin (`bins/outline-ss-rust/src/server/h3/vendored.rs`).  The
+// server-side twin (`bins/outline-server/src/server/h3/vendored.rs`).  The
 // patches themselves are documented in the root PATCHES.md.
 //
 // Patched surface funneled through this module:
