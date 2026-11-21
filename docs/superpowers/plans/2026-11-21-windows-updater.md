@@ -165,12 +165,12 @@
 - Модификация: `scripts/package-windows.sh`
 - Модификация: `.github/workflows/_windows-release-build.yml`
 
-- [ ] **Шаг 1: Экспортировать `OUTLINE_BUILD_COMMIT` и `OUTLINE_BUILD_CHANNEL` в `scripts/package-windows.sh` и CI**
+- [x] **Шаг 1: Экспортировать `OUTLINE_BUILD_COMMIT` и `OUTLINE_BUILD_CHANNEL` в `scripts/package-windows.sh` и CI**
   - В `package-windows.sh` брать короткий хэш git коммита и передавать в сборку.
   - В `_windows-release-build.yml` передавать `OUTLINE_BUILD_COMMIT="${{ github.sha }}"` и `OUTLINE_BUILD_CHANNEL="nightly"`.
-- [ ] **Шаг 2: Проверить локальный сухой прогон сборки (`--check-only`)**
+- [x] **Шаг 2: Проверить локальный сухой прогон сборки (`--check-only`)**
   Команда: `./scripts/package-windows.sh --check-only`
-- [ ] **Шаг 3: Закоммитить изменения**
+- [x] **Шаг 3: Закоммитить изменения**
   Команда: `git add scripts/package-windows.sh .github/workflows/_windows-release-build.yml && git commit -m "ci(windows): propagate build commit and channel into Windows app compilation"`
 
 ---
