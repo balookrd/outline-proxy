@@ -1,4 +1,4 @@
-# Android JNI/UniFFI wrapper around the outline-ws-rust client.
+# Android JNI/UniFFI wrapper around the outline-client client.
 #
 # Standalone workspace (detached from the monorepo root workspace) so that a
 # plain `cargo build` at the repo root does not try to build the Android-only
@@ -35,10 +35,10 @@ name = "outline_android"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-# The ws-rust client, minus VM/server-only features (no mimalloc/metrics/
+# The outline-client crate, minus VM/server-only features (no mimalloc/metrics/
 # dashboard/desktop-tun). The `h3` feature pulls the QUIC + HTTP/3 carrier
 # stack (quinn + aws-lc-rs QUIC) so xhttp_h3 / ws_h3 uplinks work.
-outline-ws-rust = { path = "../../bins/outline-ws-rust", default-features = false, features = ["h3", "tun"] }
+outline-client = { path = "../../bins/outline-client", default-features = false, features = ["h3", "tun"] }
 
 uniffi = { version = "0.32", features = ["tokio", "cli"] }
 tokio = { version = "1.44", features = ["rt-multi-thread", "sync", "time"] }

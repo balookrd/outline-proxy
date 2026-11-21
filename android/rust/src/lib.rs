@@ -1,14 +1,14 @@
-//! Android (JNI/UniFFI) wrapper around the `outline-ws-rust` client.
+//! Android (JNI/UniFFI) wrapper around the `outline-client` client.
 //!
 //! Exposes a tiny lifecycle API (`start` / `stop` / `is_running`) that the
 //! Kotlin `VpnService` drives. `start` writes the supplied TOML to the app's
-//! working directory and boots the full ws-rust client — the native
+//! working directory and boots the full `outline-client` — the native
 //! `outline-tun` engine attached to the `VpnService` TUN fd, plus the
 //! WS/TLS/VLESS/SS uplink stack with padding and failover. No SOCKS5 listener
 //! and no tun2proxy bridge: the TUN fd is driven natively via
 //! `RunOptions.tun_fd`.
 //!
-//! Loop avoidance: the uplink sockets ws-rust opens must NOT re-enter the
+//! Loop avoidance: the uplink sockets `outline-client` opens must NOT re-enter the
 //! tunnel. The Kotlin side excludes this app's own package from the VPN
 //! (`addDisallowedApplication`), so every socket this process creates bypasses
 //! the TUN automatically — no per-socket `VpnService.protect` needed.
@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use clap::Parser;
-use outline_ws_rust::RunOptions;
+use outline_client::RunOptions;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -39,7 +39,7 @@ pub enum VpnError {
 }
 
 /// A running client instance: the dedicated runtime and the join handle of the
-/// ws-rust client task (SOCKS5 is off — the native TUN engine carries traffic).
+/// `outline-client` task (SOCKS5 is off — the native TUN engine carries traffic).
 struct Engine {
     runtime: Runtime,
     client_task: JoinHandle<()>,
@@ -95,7 +95,7 @@ fn init_logging() {
 
 /// Start the client with the native TUN engine bound to `tun_fd`.
 ///
-/// * `config_toml` — full ws-rust client config. MUST contain a `[tun]` section
+/// * `config_toml` — full `outline-client` config. MUST contain a `[tun]` section
 ///   with a placeholder `path` (e.g. `path = "vpn"`) so the loader activates
 ///   TUN; the fd itself is injected here, not via the TOML.
 /// * `work_dir` — an app-private writable directory (e.g. `Context.filesDir`).
@@ -119,7 +119,7 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
             if let Some(dead) = guard.take() {
                 dead.runtime.shutdown_background();
             }
-            outline_ws_rust::clear_active_registry();
+            outline_client::clear_active_registry();
         },
         None => {},
     }
@@ -128,7 +128,7 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     // stale now.
     *acquire_last_error() = None;
 
-    outline_ws_rust::init_rustls_crypto_provider()
+    outline_client::init_rustls_crypto_provider()
         .map_err(|e| VpnError::Runtime { msg: format!("crypto provider: {e:#}") })?;
 
     let cfg_path = PathBuf::from(&work_dir).join("config.toml");
@@ -139,8 +139,8 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     }
 
     let cfg_arg = cfg_path.to_string_lossy().into_owned();
-    let client_args = match outline_ws_rust::config::Args::try_parse_from([
-        "outline-ws-rust",
+    let client_args = match outline_client::config::Args::try_parse_from([
+        "outline-client",
         "--config",
         &cfg_arg,
     ]) {
@@ -167,12 +167,12 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     info!(
         tun_fd,
         %cfg_arg,
-        "starting outline-ws-rust client with native TUN"
+        "starting outline-client with native TUN"
     );
 
     let opts = RunOptions { tun_fd: Some(tun_fd) };
     let client_task = runtime.spawn(async move {
-        if let Err(e) = outline_ws_rust::run_with_options(client_args, opts).await {
+        if let Err(e) = outline_client::run_with_options(client_args, opts).await {
             let msg = format!("{e:#}");
             error!("client exited with error: {msg}");
             // Record the reason so the UI can surface it; the task ending is
@@ -194,7 +194,7 @@ pub fn stop() -> Result<(), VpnError> {
         Some(engine) => {
             // Aborting the task skips `run_with_config`'s own cleanup, so drop
             // the published registry handle here too.
-            outline_ws_rust::clear_active_registry();
+            outline_client::clear_active_registry();
             engine.client_task.abort();
             engine.runtime.shutdown_timeout(Duration::from_secs(2));
             info!("client stopped");
@@ -230,7 +230,7 @@ pub fn is_running() -> bool {
 /// clamped.
 #[uniffi::export]
 pub fn set_dial_timeout_secs(secs: Option<u32>) {
-    outline_ws_rust::set_dial_timeout(secs.map(|s| Duration::from_secs(u64::from(s))));
+    outline_client::set_dial_timeout(secs.map(|s| Duration::from_secs(u64::from(s))));
 }
 
 /// The reason the most recent connect attempt failed, or `None` if the last
@@ -286,7 +286,7 @@ pub fn tunnel_status() -> Option<TunnelStatus> {
     // The FFI thread is not a Tokio worker, so `block_on` is legal here.
     // The ENGINE lock is deliberately released before `block_on` to avoid
     // blocking lifecycle operations (such as `stop` or `is_running`).
-    let status = handle.block_on(outline_ws_rust::active_carriers())?;
+    let status = handle.block_on(outline_client::active_carriers())?;
     // Saturating: a latency past u32::MAX ms is a broken measurement, and the
     // UI only ever compares it against a "this is slow" threshold anyway.
     let to_millis = |d: Option<std::time::Duration>| {

@@ -590,7 +590,7 @@ class OutlineVpnService : VpnService() {
                 val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(tomlWithTcpOnly))
                 start(powerOptimizedToml, filesDir.absolutePath, tun.fd)
                 isTunnelActive = true
-                Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
+                Log.i(TAG, "outline-client started with native TUN (fd=${tun.fd})")
                 state.clearFailures()
                 // Capture the session baseline once, together with the connect time —
                 // a reconnect that keeps the session must not restart the counters.
@@ -679,7 +679,7 @@ class OutlineVpnService : VpnService() {
     /**
      * Track the network the (excluded) uplink sockets should ride, and follow
      * Wi-Fi ⇄ cellular handovers. When the underlying network changes,
-     * in-flight uplink connections break and the ws-rust failover layer re-dials
+     * in-flight uplink connections break and the outline-client failover layer re-dials
      * over the new path.
      *
      * Two traps this deliberately avoids:

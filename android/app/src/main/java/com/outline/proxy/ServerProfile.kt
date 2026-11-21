@@ -5,11 +5,11 @@ import org.json.JSONObject
 import java.util.UUID
 
 /**
- * A saved server profile. Structured fields are rendered into a ws-rust client
+ * A saved server profile. Structured fields are rendered into an outline-client
  * TOML config by [toToml]. Two transports are supported:
  *
  *  - `vless`: paste a standard `vless://UUID@host:port?...#name` share link;
- *    ws-rust expands it at load time.
+ *    outline-client expands it at load time.
  *  - `ss`   : Shadowsocks-over-WS/XHTTP — carrier URL + mode + cipher + password.
  *
  * `rawTomlOverride`, when non-blank, is used verbatim instead of the generated
