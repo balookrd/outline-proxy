@@ -1,6 +1,6 @@
 # Тестовый стенд Windows (dockurr/windows)
 
-Автоматизированный тестовый стенд для сборки, отладки и E2E-верификации Windows-клиента `OutlineProxy` (`bins/outline-windows`) и сетевого ядра `outline-ws-rust.exe` на базе аппаратного гипервизора KVM и Docker на домашнем NAS UGREEN DXP4800 Plus (`198.18.1.105`).
+Автоматизированный тестовый стенд для сборки, отладки и E2E-верификации Windows-клиента `OutlineProxy` (`bins/outline-windows`) и сетевого ядра `outline-client.exe` на базе аппаратного гипервизора KVM и Docker на домашнем NAS UGREEN DXP4800 Plus (`198.18.1.105`).
 
 ---
 
@@ -19,7 +19,7 @@
 - **Общий каталог (Shared directory)**:
   - На хосте NAS: `/volume1/docker/windows/shared`.
   - Внутри Windows VM: `\\host.lan\Data\`.
-  - Установленное приложение: `C:\OutlineProxy\` (`OutlineProxy.exe`, `outline-ws-rust.exe`, `wintun.dll`).
+  - Установленное приложение: `C:\OutlineProxy\` (`OutlineProxy.exe`, `outline-client.exe`, `wintun.dll`).
 
 ---
 

@@ -5,7 +5,7 @@ Russian version: [README.ru.md](README.ru.md).
 Native desktop client for Windows (x86_64 / amd64) living in the system tray.
 The client implements a clean separation of concerns architecture:
 - **GUI Shell (Frontend & IPC)**: Tauri v2 + Svelte 5 + Tailwind CSS (minimal memory footprint, native rendering via WebView2).
-- **Network Core (Data Plane)**: High-performance `outline-ws-rust.exe` service (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
+- **Network Core (Data Plane)**: High-performance `outline-client.exe` service (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
 - **L3 VPN Adapter**: Battle-tested Wintun 0.14.1 network driver (`wintun.dll`), providing a lightweight virtual TUN interface without background service bloat.
 
 ---
@@ -26,7 +26,7 @@ flowchart TD
         UAC["UAC Launcher (ShellExecuteExW runas)"]
     end
 
-    subgraph DataPlane ["Data Plane (outline-ws-rust.exe)"]
+    subgraph DataPlane ["Data Plane (outline-client.exe)"]
         SocksMode["SOCKS5 Ingress (127.0.0.1:1080)"]
         TunMode["TUN Ingress (Wintun adapter: OutlineProxy)"]
         Uplink["Uplink Dialers (VLESS / Shadowsocks over WS / H3 / TCP)"]
@@ -62,7 +62,7 @@ flowchart TD
 ## Operating Modes
 
 ### 1. SOCKS5 (System Proxy)
-- **Mechanism**: The GUI launches `outline-ws-rust.exe` in the current user context listening on `127.0.0.1:1080`.
+- **Mechanism**: The GUI launches `outline-client.exe` in the current user context listening on `127.0.0.1:1080`.
 - **OS Integration**: The application invokes Windows WinINet API functions (`InternetSetOptionW` with `INTERNET_OPTION_SETTINGS_CHANGED` and `INTERNET_OPTION_REFRESH`), configuring `127.0.0.1:1080` as the HTTP/HTTPS/SOCKS proxy for the current user session.
 - **Characteristics**:
   - Leaves network adapters and routing tables untouched.
@@ -70,7 +70,7 @@ flowchart TD
   - Automatically reverted on application exit or manual disconnect.
 
 ### 2. TUN (Full L3 VPN Adapter)
-- **Mechanism**: The `outline-ws-rust.exe` core is launched with elevated administrator privileges via `ShellExecuteExW` with the `runas` verb.
+- **Mechanism**: The `outline-client.exe` core is launched with elevated administrator privileges via `ShellExecuteExW` with the `runas` verb.
 - **Network Driver**: The core loads `wintun.dll` located in the application directory and registers an L3 virtual network adapter named `OutlineProxy`.
 - **Routing**:
   - Direct host routes to upstream proxy servers are established via the physical gateway to prevent routing loops.
@@ -100,7 +100,7 @@ The repository includes an automated build and packaging script: `scripts/packag
    ```
    The script performs:
    - Verification and download of the official `wintun-0.14.1.zip` archive with SHA256 verification (`07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`) and extracts `wintun.dll`.
-   - Release build of `outline-ws-rust.exe` for target `x86_64-pc-windows-msvc`.
+   - Release build of `outline-client.exe` for target `x86_64-pc-windows-msvc`.
    - Production build of the Svelte 5 / Vite frontend (`pnpm build`).
    - Release build of `OutlineProxy.exe` for `x86_64-pc-windows-msvc`.
    - Packaging of all binaries into `dist/windows/OutlineProxy-x86_64.zip`.
@@ -127,7 +127,7 @@ The repository includes an automated build and packaging script: `scripts/packag
    cd ..\..
 
    # 2. Build network core
-   cargo build -p outline-ws-rust --release --target x86_64-pc-windows-msvc
+   cargo build -p outline-client --release --target x86_64-pc-windows-msvc
 
    # 3. Build GUI shell
    cargo build -p outline-windows --release --target x86_64-pc-windows-msvc
@@ -152,7 +152,7 @@ A test Windows Virtual Machine is hosted on the NAS `.105` server (`198.18.1.105
 3. Copy the resulting `dist/windows/OutlineProxy-x86_64.zip` to the VM (via RDP clipboard, shared SMB folder, or SFTP).
 4. Extract the archive into a dedicated directory, e.g., `C:\OutlineProxy\`. Verify the contents:
    - `OutlineProxy.exe`
-   - `outline-ws-rust.exe`
+   - `outline-client.exe`
    - `wintun.dll`
 
 ### 2. Testing SOCKS5 Mode
@@ -202,11 +202,11 @@ A test Windows Virtual Machine is hosted on the NAS `.105` server (`198.18.1.105
 User data and active configurations are stored in the user profile:
 - Directory: `%APPDATA%\OutlineProxy\` (e.g., `C:\Users\<Username>\AppData\Roaming\OutlineProxy\`).
 - `profiles.json`: Saved server profiles, subscription URLs, and preferences.
-- `active_config.toml`: Dynamically generated configuration passed to `outline-ws-rust.exe`.
+- `active_config.toml`: Dynamically generated configuration passed to `outline-client.exe`.
 
 ### Real-time Log Viewer
 1. Click the **"Logs"** tab in the client window.
-2. The log view displays stdout and stderr from the `outline-ws-rust.exe` process in real time.
+2. The log view displays stdout and stderr from the `outline-client.exe` process in real time.
 3. Level filters (`ALL`, `ERROR`, `WARN`, `INFO`, `DEBUG`) and keyword search are available.
 4. The **"Copy"** button exports all retained logs to the clipboard for troubleshooting.
 
@@ -214,5 +214,5 @@ User data and active configurations are stored in the user profile:
 To inspect low-level network events, run the core directly from PowerShell with verbose logging:
 ```powershell
 $env:RUST_LOG="trace"
-.\outline-ws-rust.exe --config "$env:APPDATA\OutlineProxy\active_config.toml"
+.\outline-client.exe --config "$env:APPDATA\OutlineProxy\active_config.toml"
 ```

@@ -159,7 +159,7 @@
       version = 'h1';
     }
 
-    // Determine submode carrier: xhttp, ws, or match family (ignoring substring 'ws' in 'outline-ws-rust')
+    // Determine submode carrier: xhttp, ws, or match family (matching explicit carrier markers for outline-client)
     let subMode = family;
     const xhttpMatches = [
       fullConfig.indexOf('type=xhttp'),

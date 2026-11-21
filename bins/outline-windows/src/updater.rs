@@ -352,11 +352,11 @@ impl UpdateInstaller {
         Ok(())
     }
 
-    pub fn launch_updater(
+    pub fn build_update_script(
         staging_dir: &Path,
         target_exe: &Path,
         current_pid: u32,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let target_dir = target_exe
             .parent()
             .ok_or_else(|| "Target executable has no parent directory".to_string())?;
@@ -365,7 +365,7 @@ impl UpdateInstaller {
         let target_dir_str = target_dir.to_str().ok_or("Target dir has non-UTF8 path")?;
         let target_exe_str = target_exe.to_str().ok_or("Target exe has non-UTF8 path")?;
 
-        let script_content = format!(
+        Ok(format!(
             "@echo off\r\n\
             setlocal DisableDelayedExpansion\r\n\
             set TARGET_PID={current_pid}\r\n\
@@ -387,11 +387,21 @@ impl UpdateInstaller {
                 copy /Y \"%STAGING_DIR%\\*.*\" \"%TARGET_DIR%\\\" >NUL\r\n\
             )\r\n\
             \r\n\
+            if exist \"%TARGET_DIR%\\outline-ws-rust.exe\" del /F /Q \"%TARGET_DIR%\\outline-ws-rust.exe\" >NUL 2>&1\r\n\
+            \r\n\
             start \"\" \"%TARGET_EXE%\"\r\n\
             \r\n\
             rmdir /S /Q \"%STAGING_DIR%\" >NUL 2>&1\r\n\
             (goto) 2>nul & del \"%~f0\"\r\n"
-        );
+        ))
+    }
+
+    pub fn launch_updater(
+        staging_dir: &Path,
+        target_exe: &Path,
+        current_pid: u32,
+    ) -> Result<(), String> {
+        let script_content = Self::build_update_script(staging_dir, target_exe, current_pid)?;
 
         let script_path = std::env::temp_dir().join(format!("outline_update_{current_pid}.cmd"));
         std::fs::write(&script_path, script_content)
@@ -665,5 +675,25 @@ ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb *OutlineProxy-v
     fn test_to_hex() {
         let bytes = [0xde, 0xad, 0xbe, 0xef];
         assert_eq!(to_hex(&bytes), "deadbeef");
+    }
+
+    #[test]
+    fn test_build_update_script_removes_legacy_binary() {
+        let staging = Path::new("C:\\Temp\\outline-staging");
+        let target_exe = Path::new("C:\\OutlineProxy\\OutlineProxy.exe");
+        let script = UpdateInstaller::build_update_script(staging, target_exe, 4242)
+            .expect("script generation should succeed");
+
+        let copy_cmd = "copy /Y \"%STAGING_DIR%\\*.*\" \"%TARGET_DIR%\\\" >NUL";
+        let cleanup_cmd = "if exist \"%TARGET_DIR%\\outline-ws-rust.exe\" del /F /Q \"%TARGET_DIR%\\outline-ws-rust.exe\" >NUL 2>&1";
+        let start_cmd = "start \"\" \"%TARGET_EXE%\"";
+
+        let copy_pos = script.find(copy_cmd).expect("copy fallback present");
+        let cleanup_pos = script.find(cleanup_cmd).expect("legacy binary cleanup present");
+        let start_pos = script.find(start_cmd).expect("restart command present");
+
+        assert!(copy_pos < cleanup_pos, "cleanup must run after copy");
+        assert!(cleanup_pos < start_pos, "cleanup must run before restarting app");
+        assert!(script.contains("set TARGET_PID=4242\r\n"));
     }
 }

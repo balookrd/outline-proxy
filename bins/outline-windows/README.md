@@ -3,7 +3,7 @@
 Russian version: [README.ru.md](README.ru.md).
 
 Native desktop client for Windows 10/11 (x86_64) built with Tauri v2 and Svelte 5.
-Runs on top of the high-performance `outline-ws-rust` proxy engine (VLESS,
+Runs on top of the high-performance `outline-client` proxy engine (VLESS,
 Shadowsocks AEAD, WebSocket, HTTP/3, padding, failover): the application launches
 the engine as a managed child process and orchestrates system proxy settings,
 profiles, subscriptions, and routing around it.
@@ -20,16 +20,16 @@ The application is structured as a modular system:
   server profiles list, real-time log viewer, and settings dialogs.
 - **Application Backend (Tauri v2 + Rust Edition 2024)**:
   - `process_controller.rs` — lifecycle management, child process monitoring, and
-    graceful shutdown of `outline-ws-rust.exe`.
+    graceful shutdown of `outline-client.exe`.
   - `profile_store.rs` — persistent storage for server profiles, settings, and
     subscriptions in `%APPDATA%\su.beerloga.outline.windows` (JSON manifest).
-  - `traffic_monitor.rs` — polls the built-in control API of `outline-ws-rust`
+  - `traffic_monitor.rs` — polls the built-in control API of `outline-client`
     to display downlink/uplink speeds and total transferred data in real time.
   - `tray.rs` — Windows notification area (System Tray) integration: tray icon
     and context menu for quick connection, profile switching, mode selection, and exit.
   - `updater.rs` / `version.rs` — in-app update checker and installer with
     checksum verification.
-- **Proxy Engine (`outline-ws-rust.exe`)**: the compiled client engine from the
+- **Proxy Engine (`outline-client.exe`)**: the compiled client engine from the
   monorepo workspace.
 - **Operating Modes**:
   - **SOCKS5 (System Proxy)**: engine listens on `127.0.0.1:1080`, and the app
@@ -136,14 +136,14 @@ Full release build:
 ./scripts/package-windows.sh
 ```
 
-Build only the proxy engine (`outline-ws-rust.exe`) and Wintun driver (skip GUI):
+Build only the proxy engine (`outline-client.exe`) and Wintun driver (skip GUI):
 ```bash
 ./scripts/package-windows.sh --skip-ui
 ```
 
 The packaging script:
 1. Builds frontend assets via `pnpm build` (`bins/outline-windows/dist`).
-2. Compiles `outline-ws-rust` for `x86_64-pc-windows-msvc`.
+2. Compiles `outline-client` for `x86_64-pc-windows-msvc`.
 3. Compiles the `outline-windows` GUI wrapper for `x86_64-pc-windows-msvc`.
 4. Downloads and validates the official Wintun `0.14.1` driver against its known SHA-256 hash.
 5. Produces `OutlineProxy-x86_64.zip` and `SHA256SUMS.txt` in `dist/windows/`.

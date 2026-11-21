@@ -1,6 +1,6 @@
 # Windows Test Bench (dockurr/windows)
 
-Automated test bench for building, debugging, and E2E verification of the `OutlineProxy` Windows client (`bins/outline-windows`) and network core `outline-ws-rust.exe`, running under KVM virtualization and Docker on a home UGREEN DXP4800 Plus NAS (`198.18.1.105`).
+Automated test bench for building, debugging, and E2E verification of the `OutlineProxy` Windows client (`bins/outline-windows`) and network core `outline-client.exe`, running under KVM virtualization and Docker on a home UGREEN DXP4800 Plus NAS (`198.18.1.105`).
 
 ---
 
@@ -19,7 +19,7 @@ Automated test bench for building, debugging, and E2E verification of the `Outli
 - **Shared Directory**:
   - Host NAS path: `/volume1/docker/windows/shared`.
   - Guest Windows path: `\\host.lan\Data\`.
-  - Installed application path: `C:\OutlineProxy\` (`OutlineProxy.exe`, `outline-ws-rust.exe`, `wintun.dll`).
+  - Installed application path: `C:\OutlineProxy\` (`OutlineProxy.exe`, `outline-client.exe`, `wintun.dll`).
 
 ---
 
