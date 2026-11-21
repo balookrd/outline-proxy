@@ -206,26 +206,27 @@ impl UpdateInstaller {
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-        let expected_sha256 = if let Some(ref checksums_url) = update.checksums_url {
-            let resp = client
-                .get(checksums_url)
-                .send()
-                .await
-                .map_err(|e| format!("Failed to fetch checksums: {e}"))?;
-            if !resp.status().is_success() {
-                return Err(format!("Failed to fetch checksums: HTTP {}", resp.status()));
-            }
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| format!("Failed to read checksums body: {e}"))?;
-            let hash = parse_checksums(&text, &update.asset_name).ok_or_else(|| {
-                format!("Checksum for {} not found in SHA256SUMS.txt", update.asset_name)
-            })?;
-            Some(hash)
-        } else {
-            None
-        };
+        // Fetch and parse SHA256SUMS.txt - mandatory security check
+        let checksums_url = update.checksums_url.as_deref().ok_or_else(|| {
+            "В релизе отсутствует SHA256SUMS.txt — установка непроверенной сборки заблокирована"
+                .to_string()
+        })?;
+
+        let resp = client
+            .get(checksums_url)
+            .send()
+            .await
+            .map_err(|e| format!("Не удалось скачать SHA256SUMS.txt: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Ошибка загрузки SHA256SUMS.txt (HTTP {})", resp.status()));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Не удалось прочитать SHA256SUMS.txt: {e}"))?;
+        let expected_sha256 = parse_checksums(&text, &update.asset_name).ok_or_else(|| {
+            format!("В SHA256SUMS.txt не найдена контрольная сумма для {}", update.asset_name)
+        })?;
 
         let mut resp = client
             .get(&update.download_url)
@@ -251,34 +252,39 @@ impl UpdateInstaller {
         let mut downloaded_bytes = 0u64;
 
         use std::io::Write;
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| format!("Download stream error: {e}"))?
-        {
-            context.update(&chunk);
-            writer
-                .write_all(&chunk)
-                .map_err(|e| format!("Failed to write to file: {e}"))?;
-            downloaded_bytes += chunk.len() as u64;
-            on_progress(downloaded_bytes, total_bytes);
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    context.update(&chunk);
+                    if let Err(e) = writer.write_all(&chunk) {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        return Err(format!("Failed to write to file: {e}"));
+                    }
+                    downloaded_bytes += chunk.len() as u64;
+                    on_progress(downloaded_bytes, total_bytes);
+                },
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(format!("Download stream error: {e}"));
+                },
+            }
         }
 
-        writer
-            .flush()
-            .map_err(|e| format!("Failed to flush downloaded file: {e}"))?;
+        if let Err(e) = writer.flush() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("Failed to flush downloaded file: {e}"));
+        }
         drop(writer);
 
         let digest = context.finish();
         let calculated_hash = to_hex(digest.as_ref());
 
-        if let Some(expected) = expected_sha256
-            && !calculated_hash.eq_ignore_ascii_case(&expected)
-        {
+        if !calculated_hash.eq_ignore_ascii_case(&expected_sha256) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(format!(
-                "Checksum mismatch for {}: expected {}, got {}",
-                update.asset_name, expected, calculated_hash
+                "Контрольная сумма SHA-256 не совпала для {}: ожидалось {}, получено {}",
+                update.asset_name, expected_sha256, calculated_hash
             ));
         }
 
@@ -305,9 +311,12 @@ impl UpdateInstaller {
                 .map_err(|e| format!("Failed to read zip entry #{i}: {e}"))?;
 
             // ZIP-SLIP PROTECTION: enclosed_name ensures the path is relative and doesn't escape root
-            let enclosed_name = zip_file
-                .enclosed_name()
-                .ok_or_else(|| format!("Zip slip path traversal detected: {}", zip_file.name()))?;
+            let enclosed_name = zip_file.enclosed_name().ok_or_else(|| {
+                format!(
+                    "Zip slip path traversal detected: {}",
+                    zip_file.name().ok().as_deref().unwrap_or("unknown")
+                )
+            })?;
 
             let dest_path = staging_dir.join(enclosed_name);
 
@@ -357,7 +366,7 @@ impl UpdateInstaller {
 
         let script_content = format!(
             "@echo off\r\n\
-            setlocal enabledelayedexpansion\r\n\
+            setlocal DisableDelayedExpansion\r\n\
             set TARGET_PID={current_pid}\r\n\
             set STAGING_DIR={staging_str}\r\n\
             set TARGET_DIR={target_dir_str}\r\n\
