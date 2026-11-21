@@ -183,12 +183,12 @@
 - Модификация: `CHANGELOG.md`
 - Модификация: `CHANGELOG.ru.md`
 
-- [ ] **Шаг 1: Обновить документацию на обоих языках**
+- [x] **Шаг 1: Обновить документацию на обоих языках**
   - Описать механизм проверки обновлений по клику на футер и автоматического обновления.
   - Описать формат артефактов и сверку SHA256 по `SHA256SUMS.txt`.
-- [ ] **Шаг 2: Запустить локальный гейт проверок монорепо**
+- [x] **Шаг 2: Запустить локальный гейт проверок монорепо**
   - `cargo fmt --check -p outline-windows`
   - `cargo clippy -p outline-windows --no-deps -- -D warnings`
   - `cargo test -p outline-windows`
-- [ ] **Шаг 3: Закоммитить изменения**
+- [x] **Шаг 3: Закоммитить изменения**
   Команда: `git add bins/outline-windows/ CHANGELOG.md CHANGELOG.ru.md && git commit -m "docs(windows): document in-app updater and footer interaction"`
