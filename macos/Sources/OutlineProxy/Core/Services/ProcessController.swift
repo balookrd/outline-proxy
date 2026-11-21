@@ -45,7 +45,8 @@ public final class ProcessController: @unchecked Sendable {
     public func locateBinary() -> URL? {
         #if DEBUG
         // 1. Environment variable (debug builds only)
-        if let envPath = ProcessInfo.processInfo.environment["OUTLINE_WS_BIN"] {
+        if let envPath = ProcessInfo.processInfo.environment["OUTLINE_CLIENT_BIN"]
+            ?? ProcessInfo.processInfo.environment["OUTLINE_WS_BIN"] {
             let url = URL(fileURLWithPath: envPath)
             if FileManager.default.isExecutableFile(atPath: url.path) {
                 return url

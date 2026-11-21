@@ -138,7 +138,7 @@ PMTUD и TUN GSO.
 ```bash
 # весь workspace
 cargo build --release
-cargo test --workspace --exclude sockudo-ws
+cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 
 # один бинарь
 cargo build --release -p outline-server

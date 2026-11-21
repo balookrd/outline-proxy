@@ -90,7 +90,7 @@ pub(crate) struct ConfigFile {
     /// Defaults to the config file path with extension replaced by
     /// `.state.toml` (e.g. `config.toml` → `config.state.toml`).
     /// Set to a writable location when the config directory is read-only
-    /// (e.g. `/var/lib/outline-ws/state.toml`).
+    /// (e.g. `/var/lib/outline-client/state.toml`).
     pub(super) state_path: Option<PathBuf>,
     /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
     /// All fields optional; unset ones inherit compile-time defaults.

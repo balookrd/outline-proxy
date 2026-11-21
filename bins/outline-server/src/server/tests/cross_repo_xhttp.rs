@@ -1,7 +1,7 @@
 //! Cross-repo end-to-end XHTTP integration tests.
 //!
-//! Drives the real `outline-client` client crate (sibling repo,
-//! pulled in as a dev-dep with a relative-path entry) against the
+//! Drives the real `outline-client` client crate (workspace member,
+//! pulled in as a dev-dep) against the
 //! real `outline-server` server in a single tokio process. A
 //! local TCP echo upstream stands in for the VLESS target, and the
 //! client's `connect_websocket_with_resume` is the public entry —

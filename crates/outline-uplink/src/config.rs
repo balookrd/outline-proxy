@@ -1035,8 +1035,8 @@ pub struct LoadBalancingConfig {
     /// Default: `true`. When the wire-protocol partner is known to
     /// only support v1.x (older `outline-server`) the operator can
     /// flip this to `false` to suppress the v2 advertise without
-    /// disabling v1.x retry. See `docs/SESSION-RESUMPTION.md` (server
-    /// repo) § Symmetric Downlink Replay (v2).
+    /// disabling v1.x retry. See `docs/SESSION-RESUMPTION.md`
+    /// § Symmetric Downlink Replay (v2).
     pub tcp_symmetric_replay_enabled: bool,
     /// Hard cap on the v2 `replay_len` the client will accept from
     /// the server. Replies above this drop the session per spec —
