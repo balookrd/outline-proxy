@@ -2,7 +2,7 @@
 # Generate a GitHub release body for one component from Conventional Commits.
 #
 #   gen-release-notes.sh <component> <tag> <output-file>
-#     component : all | ss | ws | ui | android | macos | windows
+#     component : all | server | client | ui | android | macos | windows
 #     tag       : v26.11.0 (unified release) or <comp>-nightly (rolling)
 #     output    : path to write the markdown body to
 #
@@ -20,13 +20,13 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 config="${repo_root}/cliff.toml"
 
 case "$component" in
-  ss)
-    prefix="ss"
-    paths=(bins/outline-ss-rust crates/outline-net crates/outline-wire crates/outline-transport vendor)
+  server)
+    prefix="server"
+    paths=(bins/outline-server crates/outline-net crates/outline-wire crates/outline-transport vendor)
     ;;
-  ws)
-    prefix="ws"
-    paths=(bins/outline-ws-rust crates vendor)
+  client)
+    prefix="client"
+    paths=(bins/outline-client crates vendor)
     ;;
   ui)
     prefix="ui"
@@ -38,11 +38,11 @@ case "$component" in
     ;;
   macos)
     prefix="macos"
-    paths=(macos bins/outline-ws-rust crates vendor)
+    paths=(macos bins/outline-client crates vendor)
     ;;
   windows)
     prefix="windows"
-    paths=(bins/outline-windows bins/outline-ws-rust crates vendor)
+    paths=(bins/outline-windows bins/outline-client crates vendor)
     ;;
   all)
     prefix=""
@@ -75,7 +75,7 @@ if [[ "$component" == "all" ]]; then
   compare_to="$tag"
   tag_pattern='^v[0-9]{2,}\.'
 else
-  # Rolling tag (e.g. ss-nightly) is anything not shaped like <prefix>-vX.Y.Z.
+  # Rolling tag (e.g. server-nightly) is anything not shaped like <prefix>-vX.Y.Z.
   rolling=false
   if [[ ! "$tag" =~ ^${prefix}-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     rolling=true

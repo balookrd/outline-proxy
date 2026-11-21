@@ -14,17 +14,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build_ss:
+  build_server:
     name: Build server
-    uses: ./.github/workflows/_ss-release-build.yml
+    uses: ./.github/workflows/_server-release-build.yml
     with:
       tag: ${{ github.ref_name }}
       rolling_tag: false
       publish_release: false
 
-  build_ws:
+  build_client:
     name: Build client
-    uses: ./.github/workflows/_ws-release-build.yml
+    uses: ./.github/workflows/_client-release-build.yml
     with:
       tag: ${{ github.ref_name }}
       rolling_tag: false
@@ -67,8 +67,8 @@ jobs:
     name: Publish unified release
     runs-on: ubuntu-latest
     needs:
-      - build_ss
-      - build_ws
+      - build_server
+      - build_client
       - build_ui
       - build_android
       - build_macos
@@ -90,13 +90,13 @@ jobs:
           set -euo pipefail
           ls -la dist
           shopt -s nullglob
-          ss=(dist/outline-ss-rust-*.tar.gz)
-          ws=(dist/outline-ws-rust-*.tar.gz)
+          server=(dist/outline-server-*.tar.gz)
+          client=(dist/outline-client-*.tar.gz)
           ui=(dist/outline-ui-*.tar.gz)
           apk=(dist/outline-proxy-*.apk)
           dmg=(dist/OutlineProxy-*-macOS-Universal.dmg)
           win=(dist/OutlineProxy-*-Windows-x86_64.zip)
-          for group in ss ws ui apk dmg win; do
+          for group in server client ui apk dmg win; do
             eval "count=\${#${group}[@]}"
             if [[ "$count" -eq 0 ]]; then
               echo "missing expected release assets for group: ${group}" >&2

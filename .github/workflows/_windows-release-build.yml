@@ -1,7 +1,7 @@
 name: Release Build (windows)
 
 # Reusable build+publish workflow for the Windows app and ZIP distribution package.
-# Compiles outline-ws-rust.exe and OutlineProxy.exe (MSVC), fetches verified
+# Compiles outline-client.exe and OutlineProxy.exe (MSVC), fetches verified
 # Wintun driver (wintun.dll), packages into OutlineProxy-x86_64.zip, computes
 # checksums, and publishes to GitHub Releases.
 
