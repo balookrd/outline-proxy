@@ -96,15 +96,15 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
     case "${ARCH}" in
         universal)
             echo "--> Сборка Rust-движка (aarch64 + x86_64)..."
-            cargo build -p outline-ws-rust --release --target aarch64-apple-darwin
-            cargo build -p outline-ws-rust --release --target x86_64-apple-darwin
+            cargo build -p outline-client --release --target aarch64-apple-darwin
+            cargo build -p outline-client --release --target x86_64-apple-darwin
             
             mkdir -p "${REPO_ROOT}/target/universal/release"
             lipo -create \
-                "${REPO_ROOT}/target/aarch64-apple-darwin/release/outline-ws-rust" \
-                "${REPO_ROOT}/target/x86_64-apple-darwin/release/outline-ws-rust" \
-                -output "${REPO_ROOT}/target/universal/release/outline-ws-rust"
-            RUST_BIN="${REPO_ROOT}/target/universal/release/outline-ws-rust"
+                "${REPO_ROOT}/target/aarch64-apple-darwin/release/outline-client" \
+                "${REPO_ROOT}/target/x86_64-apple-darwin/release/outline-client" \
+                -output "${REPO_ROOT}/target/universal/release/outline-client"
+            RUST_BIN="${REPO_ROOT}/target/universal/release/outline-client"
 
             echo "--> Сборка Swift GUI (arm64 + x86_64)..."
             cd "${MACOS_DIR}"
@@ -128,8 +128,8 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
 
         aarch64|arm64)
             echo "--> Сборка Rust-движка (aarch64-apple-darwin)..."
-            cargo build -p outline-ws-rust --release --target aarch64-apple-darwin
-            RUST_BIN="${REPO_ROOT}/target/aarch64-apple-darwin/release/outline-ws-rust"
+            cargo build -p outline-client --release --target aarch64-apple-darwin
+            RUST_BIN="${REPO_ROOT}/target/aarch64-apple-darwin/release/outline-client"
 
             echo "--> Сборка Swift GUI (arm64)..."
             cd "${MACOS_DIR}"
@@ -140,8 +140,8 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
 
         x86_64)
             echo "--> Сборка Rust-движка (x86_64-apple-darwin)..."
-            cargo build -p outline-ws-rust --release --target x86_64-apple-darwin
-            RUST_BIN="${REPO_ROOT}/target/x86_64-apple-darwin/release/outline-ws-rust"
+            cargo build -p outline-client --release --target x86_64-apple-darwin
+            RUST_BIN="${REPO_ROOT}/target/x86_64-apple-darwin/release/outline-client"
 
             echo "--> Сборка Swift GUI (x86_64)..."
             cd "${MACOS_DIR}"
@@ -151,8 +151,8 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
 
         native|*)
             echo "--> Нативная сборка Rust-движка под хост..."
-            cargo build -p outline-ws-rust --release
-            RUST_BIN="${REPO_ROOT}/target/release/outline-ws-rust"
+            cargo build -p outline-client --release
+            RUST_BIN="${REPO_ROOT}/target/release/outline-client"
 
             echo "--> Нативная сборка Swift GUI под хост..."
             cd "${MACOS_DIR}"
@@ -216,7 +216,7 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
     /usr/libexec/PlistBuddy -c "Add :OutlineBuildDate string ${BUILD_DATE}" "${PLIST}"
 
     cp "${SWIFT_BIN}" "${APP_BUNDLE}/Contents/MacOS/OutlineProxy"
-    cp "${RUST_BIN}" "${APP_BUNDLE}/Contents/Resources/outline-ws-rust"
+    cp "${RUST_BIN}" "${APP_BUNDLE}/Contents/Resources/outline-client"
     cp "${MACOS_DIR}/Resources/tun-runner.sh" "${APP_BUNDLE}/Contents/Resources/tun-runner.sh"
 
     cp "${MACOS_DIR}/Resources/"*.png "${APP_BUNDLE}/Contents/Resources/" 2>/dev/null || true
@@ -225,7 +225,7 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
     fi
 
     chmod +x "${APP_BUNDLE}/Contents/MacOS/OutlineProxy"
-    chmod +x "${APP_BUNDLE}/Contents/Resources/outline-ws-rust"
+    chmod +x "${APP_BUNDLE}/Contents/Resources/outline-client"
     chmod +x "${APP_BUNDLE}/Contents/Resources/tun-runner.sh"
 
     # Ad-hoc подпись бандла

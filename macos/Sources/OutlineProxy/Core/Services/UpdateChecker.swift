@@ -171,7 +171,7 @@ public enum UpdateChecker {
 /// Network access for the updater.
 ///
 /// Deliberately bypasses the system proxy: in SOCKS5 mode the app points the
-/// system proxy at its own `outline-ws-rust`, and an update download must not
+/// system proxy at its own `outline-client`, and an update download must not
 /// depend on the very link the user may be updating to fix. (TUN mode routes
 /// at L3 and cannot be bypassed from here.)
 enum UpdateNetwork {

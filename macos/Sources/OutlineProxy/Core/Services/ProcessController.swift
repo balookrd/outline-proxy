@@ -1,6 +1,6 @@
 import Foundation
 
-/// Manages the background `outline-ws-rust` process lifecycle in both SOCKS5 and TUN modes.
+/// Manages the background `outline-client` process lifecycle in both SOCKS5 and TUN modes.
 public final class ProcessController: @unchecked Sendable {
     public static let shared = ProcessController()
 
@@ -41,7 +41,7 @@ public final class ProcessController: @unchecked Sendable {
         return logBuffer
     }
 
-    /// Locates the `outline-ws-rust` binary executable.
+    /// Locates the `outline-client` binary executable.
     public func locateBinary() -> URL? {
         #if DEBUG
         // 1. Environment variable (debug builds only)
@@ -54,14 +54,14 @@ public final class ProcessController: @unchecked Sendable {
         #endif
 
         // 2. App Bundle Resources (when packaged)
-        if let resURL = Bundle.main.resourceURL?.appendingPathComponent("outline-ws-rust"),
+        if let resURL = Bundle.main.resourceURL?.appendingPathComponent("outline-client"),
            FileManager.default.isExecutableFile(atPath: resURL.path) {
             return resURL
         }
 
         // 3. Next to executable
         let exeDir = Bundle.main.bundleURL.deletingLastPathComponent()
-        let nextToExe = exeDir.appendingPathComponent("outline-ws-rust")
+        let nextToExe = exeDir.appendingPathComponent("outline-client")
         if FileManager.default.isExecutableFile(atPath: nextToExe.path) {
             return nextToExe
         }
@@ -75,12 +75,12 @@ public final class ProcessController: @unchecked Sendable {
         #if DEBUG
         // 5. Cargo target directories during local development
         let possiblePaths = [
-            FileManager.default.currentDirectoryPath + "/target/release/outline-ws-rust",
-            FileManager.default.currentDirectoryPath + "/target/debug/outline-ws-rust",
-            FileManager.default.currentDirectoryPath + "/../target/release/outline-ws-rust",
-            FileManager.default.currentDirectoryPath + "/../target/debug/outline-ws-rust",
-            "/usr/local/bin/outline-ws-rust",
-            "/opt/homebrew/bin/outline-ws-rust"
+            FileManager.default.currentDirectoryPath + "/target/release/outline-client",
+            FileManager.default.currentDirectoryPath + "/target/debug/outline-client",
+            FileManager.default.currentDirectoryPath + "/../target/release/outline-client",
+            FileManager.default.currentDirectoryPath + "/../target/debug/outline-client",
+            "/usr/local/bin/outline-client",
+            "/opt/homebrew/bin/outline-client"
         ]
 
         for p in possiblePaths {
@@ -140,7 +140,7 @@ public final class ProcessController: @unchecked Sendable {
         return nil
     }
 
-    /// Starts `outline-ws-rust` with the provided config content and mode.
+    /// Starts `outline-client` with the provided config content and mode.
     public func start(
         withConfigToml toml: String,
         mode: ProxyMode = .socks5,
@@ -157,7 +157,7 @@ public final class ProcessController: @unchecked Sendable {
         }
 
         guard let binURL = locateBinary() else {
-            let err = "Не найден бинарник outline-ws-rust. Запустите сборку ядра через cargo build -p outline-ws-rust."
+            let err = "Не найден бинарник outline-client. Запустите сборку ядра через cargo build -p outline-client."
             state = .error(err)
             stateLock.unlock()
             appendLog("[ERROR] \(err)")
@@ -226,7 +226,7 @@ public final class ProcessController: @unchecked Sendable {
             let currentState = self.state
             self.stateLock.unlock()
 
-            self.appendLog("[INFO] outline-ws-rust (SOCKS5) завершён (код: \(status), причина: \(reason.rawValue))")
+            self.appendLog("[INFO] outline-client (SOCKS5) завершён (код: \(status), причина: \(reason.rawValue))")
             self.onStateChanged?(currentState)
         }
 
@@ -239,7 +239,7 @@ public final class ProcessController: @unchecked Sendable {
             self.state = .running(pid: pid)
             stateLock.unlock()
 
-            appendLog("[INFO] Запущен outline-ws-rust в режиме SOCKS5 (PID: \(pid))")
+            appendLog("[INFO] Запущен outline-client в режиме SOCKS5 (PID: \(pid))")
             onStateChanged?(.running(pid: pid))
         } catch {
             stateLock.lock()
@@ -314,7 +314,7 @@ public final class ProcessController: @unchecked Sendable {
             self.state = .running(pid: pid)
             stateLock.unlock()
 
-            appendLog("[INFO] Запущен outline-ws-rust в режиме TUN (PID: \(pid), utun активен)")
+            appendLog("[INFO] Запущен outline-client в режиме TUN (PID: \(pid), utun активен)")
             onStateChanged?(.running(pid: pid))
 
             // Start log and liveness polling
@@ -370,7 +370,7 @@ public final class ProcessController: @unchecked Sendable {
                     let newState = self.state
                     self.stateLock.unlock()
 
-                    self.appendLog("[INFO] outline-ws-rust (TUN) завершил работу.")
+                    self.appendLog("[INFO] outline-client (TUN) завершил работу.")
                     self.onStateChanged?(newState)
                 }
             } else if !FileManager.default.fileExists(atPath: pidFile.path) {
@@ -409,7 +409,7 @@ public final class ProcessController: @unchecked Sendable {
                 state = .stopped
                 process = nil
                 stateLock.unlock()
-                appendLog("[INFO] outline-ws-rust (SOCKS5) уже остановлен.")
+                appendLog("[INFO] outline-client (SOCKS5) уже остановлен.")
                 onStateChanged?(.stopped)
                 return
             }
@@ -418,7 +418,7 @@ public final class ProcessController: @unchecked Sendable {
             stateLock.unlock()
             onStateChanged?(.stopping)
 
-            appendLog("[INFO] Остановка outline-ws-rust (SOCKS5)...")
+            appendLog("[INFO] Остановка outline-client (SOCKS5)...")
             proc.terminate()
 
             let deadline = Date().addingTimeInterval(timeout)
@@ -435,7 +435,7 @@ public final class ProcessController: @unchecked Sendable {
             self.state = .stopped
             stateLock.unlock()
 
-            appendLog("[INFO] outline-ws-rust (SOCKS5) остановлен.")
+            appendLog("[INFO] outline-client (SOCKS5) остановлен.")
             onStateChanged?(.stopped)
 
         case .tun:
@@ -466,7 +466,7 @@ public final class ProcessController: @unchecked Sendable {
         }
     }
 
-    /// Stops the running `outline-ws-rust` process gracefully in either mode.
+    /// Stops the running `outline-client` process gracefully in either mode.
     public func stop() {
         DispatchQueue.global().async { [weak self] in
             self?.stopSync()

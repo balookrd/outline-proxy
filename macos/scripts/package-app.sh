@@ -25,9 +25,9 @@ done
 echo "=== Сборка Outline Proxy для macOS ==="
 
 # 1. Сборка Rust-ядра
-echo "==> [1/4] Компиляция outline-ws-rust (release)..."
+echo "==> [1/4] Компиляция outline-client (release)..."
 cd "${REPO_ROOT}"
-cargo build -p outline-ws-rust --release
+cargo build -p outline-client --release
 
 # 2. Сборка Swift приложения
 echo "==> [2/4] Компиляция Swift-приложения (release)..."
@@ -36,7 +36,7 @@ swift build -c release
 
 # Определение путей к собранным бинарникам
 SWIFT_BIN="${MACOS_DIR}/.build/release/OutlineProxy"
-RUST_BIN="${REPO_ROOT}/target/release/outline-ws-rust"
+RUST_BIN="${REPO_ROOT}/target/release/outline-client"
 
 if [[ ! -f "${SWIFT_BIN}" ]]; then
     echo "Ошибка: не найден бинарник Swift: ${SWIFT_BIN}" >&2
@@ -93,7 +93,7 @@ BUILD_DATE="$(date -u +'%Y-%m-%d')"
 /usr/libexec/PlistBuddy -c "Add :OutlineBuildDate string ${BUILD_DATE}" "${PLIST}"
 
 cp "${SWIFT_BIN}" "${APP_BUNDLE}/Contents/MacOS/OutlineProxy"
-cp "${RUST_BIN}" "${APP_BUNDLE}/Contents/Resources/outline-ws-rust"
+cp "${RUST_BIN}" "${APP_BUNDLE}/Contents/Resources/outline-client"
 cp "${MACOS_DIR}/Resources/tun-runner.sh" "${APP_BUNDLE}/Contents/Resources/tun-runner.sh"
 
 # Скопировать иконки и графические ассеты интерфейса (логотипы, кольцо, карта мира)
@@ -103,7 +103,7 @@ if [[ -f "${MACOS_DIR}/Resources/AppIcon.icns" ]]; then
 fi
 
 chmod +x "${APP_BUNDLE}/Contents/MacOS/OutlineProxy"
-chmod +x "${APP_BUNDLE}/Contents/Resources/outline-ws-rust"
+chmod +x "${APP_BUNDLE}/Contents/Resources/outline-client"
 chmod +x "${APP_BUNDLE}/Contents/Resources/tun-runner.sh"
 
 # 4. Ad-hoc подпись (работает на любом Mac без платного Developer ID)
