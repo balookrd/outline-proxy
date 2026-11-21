@@ -5,6 +5,10 @@ import type {
   ProcessState,
   ConnectionStatusResponse,
   AppSettings,
+  AppVersionInfo,
+  UpdateInfo,
+  UpdateCheckResult,
+  UpdateProgressEvent,
 } from './types';
 
 /**
@@ -145,5 +149,37 @@ export async function onNavigate(
     if (event.payload === 'settings' || event.payload === 'logs') {
       handler(event.payload);
     }
+  });
+}
+
+/**
+ * Fetch the current desktop application version and build metadata.
+ */
+export async function getAppVersion(): Promise<AppVersionInfo> {
+  return invoke<AppVersionInfo>('get_app_version');
+}
+
+/**
+ * Check remote releases for available application updates.
+ */
+export async function checkForUpdates(): Promise<UpdateCheckResult> {
+  return invoke<UpdateCheckResult>('check_for_updates');
+}
+
+/**
+ * Download, verify, stage, and launch installation of an update.
+ */
+export async function installUpdate(update: UpdateInfo): Promise<void> {
+  return invoke<void>('install_update', { update });
+}
+
+/**
+ * Listen for update download and verification progress events.
+ */
+export function onUpdateProgress(
+  callback: (payload: UpdateProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<UpdateProgressEvent>('update-progress', (event) => {
+    callback(event.payload);
   });
 }

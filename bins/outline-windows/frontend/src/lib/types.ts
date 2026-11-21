@@ -60,6 +60,49 @@ export interface AppSettings {
   socksPort: number;
   autostart: boolean;
   startMinimized: boolean;
+  reconnectAfterUpdate?: boolean;
+}
+
+/**
+ * Version and build metadata of the desktop application.
+ */
+export interface AppVersionInfo {
+  version: string;
+  commit: string;
+  channel: string;
+  displayString: string;
+  display_string?: string;
+}
+
+/**
+ * Metadata for an available application update.
+ */
+export interface UpdateInfo {
+  label: string;
+  assetName: string;
+  asset_name?: string;
+  downloadUrl: string;
+  download_url?: string;
+  checksumsUrl?: string | null;
+  checksums_url?: string | null;
+  notes: string;
+  commit: string;
+}
+
+/**
+ * Result of checking for updates against remote GitHub releases.
+ */
+export type UpdateCheckResult =
+  | { status: 'upToDate' }
+  | { status: 'available'; update: UpdateInfo };
+
+/**
+ * Progress payload emitted during download and extraction.
+ */
+export interface UpdateProgressEvent {
+  downloaded: number;
+  total: number;
+  percent: number;
 }
 
 /**
