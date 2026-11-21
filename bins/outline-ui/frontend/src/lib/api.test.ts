@@ -66,4 +66,45 @@ describe('mutating calls always carry a JSON content-type', () => {
     await api.unblockUser('beelink102', 'u1');
     expect((fetch as any).mock.calls[2][1].headers['content-type']).toBe('application/json');
   });
+
+  it('getMeta and cluster routes hit expected paths and carry headers on mutations', async () => {
+    await api.getMeta();
+    expect((fetch as any).mock.calls[0][0]).toBe('/api/meta');
+
+    await api.getClusterConfig('cloud');
+    expect((fetch as any).mock.calls[1][0]).toBe('/ss/dashboard/api/clusters/cloud/config');
+
+    await api.createClusterUser('cloud', { id: 'alice', enabled: true, password: 'pw' });
+    const [url, init] = (fetch as any).mock.calls[2];
+    expect(url).toBe('/ss/dashboard/api/clusters/cloud/users');
+    expect(init.method).toBe('POST');
+    expect(init.headers['content-type']).toBe('application/json');
+
+    await api.deleteClusterUser('cloud', 'alice');
+    expect((fetch as any).mock.calls[3][0]).toBe('/ss/dashboard/api/clusters/cloud/users/alice');
+    expect((fetch as any).mock.calls[3][1].method).toBe('DELETE');
+    expect((fetch as any).mock.calls[3][1].headers['content-type']).toBe('application/json');
+
+    await api.regenerateClusterAccessKeys('cloud', { prune: true });
+    expect((fetch as any).mock.calls[4][0]).toBe('/ss/dashboard/api/clusters/cloud/access-keys/regenerate');
+    expect((fetch as any).mock.calls[4][1].headers['content-type']).toBe('application/json');
+
+    await api.getClusterUserAccessKeys('cloud', 'alice', ['relay-a.fleet.example']);
+    expect((fetch as any).mock.calls[5][0]).toBe(
+      '/ss/dashboard/api/clusters/cloud/users/alice/access-keys?nodes=relay-a.fleet.example',
+    );
+  });
+
+  it('throws ApiError preserving HTTP status and parsed JSON body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'disabled', results: [] }), { status: 409 })),
+    );
+    await expect(api.getUserAccessKeys('relay-a', 'alice')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 409,
+      message: 'disabled',
+      body: { error: 'disabled', results: [] },
+    });
+  });
 });

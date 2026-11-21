@@ -338,3 +338,24 @@ fn server_h3_rejects_unknown_key_next_to_udp_datagrams() {
     let toml = "[server.h3]\nudp_datagrams = true\nudp_datagram = true\n";
     assert!(toml::from_str::<FileConfig>(toml).is_err());
 }
+
+#[test]
+fn access_keys_parses_nodes_and_rejects_unknown_fields() {
+    let cfg: FileConfig = toml::from_str(
+        r#"
+[access_keys]
+public_host = "edge.fleet.example"
+nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]
+"#,
+    )
+    .unwrap();
+    let ak = cfg.access_keys.unwrap();
+    assert_eq!(ak.public_host.as_deref(), Some("edge.fleet.example"));
+    assert_eq!(
+        ak.nodes.as_deref(),
+        Some(&["relay-a.fleet.example".to_string(), "relay-b.fleet.example".to_string()][..])
+    );
+
+    let err = toml::from_str::<FileConfig>("[access_keys]\nunknown_key = true\n").unwrap_err();
+    assert!(err.to_string().contains("unknown field"));
+}

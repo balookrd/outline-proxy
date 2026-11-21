@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
 use clap::Parser;
@@ -45,11 +46,13 @@ fn build_app(config: &UiConfig) -> Router {
     let ss_state = ss::SsState {
         backend,
         instances: Arc::from(config.ss.clone()),
+        clusters: Arc::from(config.ss_clusters.clone()),
         refresh_ms,
     };
 
     let router =
         Router::new()
+            .route("/api/meta", get(api_meta))
             .route(
                 "/ui-assets/{*path}",
                 get(|axum::extract::Path(p): axum::extract::Path<String>| async move {
@@ -73,12 +76,25 @@ fn build_app(config: &UiConfig) -> Router {
     router.layer(middleware::from_fn(security_headers))
 }
 
+async fn api_meta() -> Response {
+    assets::json_response(
+        axum::http::StatusCode::OK,
+        &serde_json::json!({
+            "name": "outline-ui",
+            "version": env!("CARGO_PKG_VERSION"),
+        }),
+    )
+}
+
 async fn security_headers(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> axum::response::Response {
     let path = request.uri().path();
-    let is_api = path.starts_with("/ss/dashboard/api/") || path.starts_with("/ws/dashboard/api/");
+    let is_api = path == "/api/meta"
+        || path.starts_with("/api/")
+        || path.starts_with("/ss/dashboard/api/")
+        || path.starts_with("/ws/dashboard/api/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -129,9 +145,11 @@ async fn main() -> Result<()> {
     // was told to do, and an operator debugging a 403 or a stalled page wants to
     // see the timeouts and allowed hosts it actually loaded.
     info!(
+        version = env!("CARGO_PKG_VERSION"),
         listen = %config.listen,
         ws_instances = config.ws.len(),
         ss_instances = config.ss.len(),
+        ss_clusters = config.ss_clusters.len(),
         request_timeout_secs = config.request_timeout_secs,
         refresh_interval_secs = config.refresh_interval_secs,
         allowed_hosts = config.allowed_hosts.len(),

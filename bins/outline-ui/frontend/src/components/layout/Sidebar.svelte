@@ -1,5 +1,6 @@
 <script lang="ts">
   import { route, section, go } from '../../lib/router.svelte';
+  import { meta } from '../../lib/meta.svelte';
 
   const current = $derived(section(route.path));
   const clusterActive = $derived(route.path.startsWith('/ss/cluster'));
@@ -122,5 +123,8 @@
     Settings
   </div>
 
-  <div class="foot">outline-ui</div>
+  <div class="foot">
+    <span>outline-ui</span>
+    {#if meta.version}<span class="ver mono">v{meta.version}</span>{/if}
+  </div>
 </nav>

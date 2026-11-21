@@ -142,11 +142,116 @@ fn debug_output_hides_every_token() {
             name: "node-a".to_owned(),
             control_url: "http://10.0.0.1:9191".to_owned(),
             token: "s3cr3t-instance-token".to_owned(),
+            public_host: None,
+            mesh_addr: None,
         }],
         ss: Vec::new(),
+        ss_clusters: Vec::new(),
     };
     let rendered = format!("{config:?}");
     assert!(!rendered.contains("s3cr3t-ui-token"), "listener token leaked: {rendered}");
     assert!(!rendered.contains("s3cr3t-instance-token"), "instance token leaked: {rendered}");
     assert!(rendered.contains("node-a"), "instance name missing: {rendered}");
+}
+
+#[test]
+fn loads_ss_clusters_and_validates_membership() {
+    let (_dir, path) = write_config(
+        r#"
+[server]
+listen = "0.0.0.0:9000"
+token_file = "__UI_TOKEN_FILE__"
+
+[[ss.instances]]
+name = "relay-a"
+control_url = "https://relay-a.fleet.example/rust-ss-exporter"
+token_file = "__INST_TOKEN_FILE__"
+public_host = "relay-a.fleet.example"
+mesh_addr = "198.51.100.10:9443"
+
+[[ss.instances]]
+name = "relay-b"
+control_url = "https://relay-b.fleet.example/rust-ss-exporter"
+token_file = "__INST_TOKEN_FILE__"
+public_host = "relay-b.fleet.example"
+mesh_addr = "198.51.100.11:9443"
+
+[[ss.clusters]]
+name = "cloud"
+members = ["relay-a", "relay-b"]
+subscription_nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]
+"#,
+    );
+
+    let cfg = UiConfig::load(&path).expect("clusters config loads");
+    assert_eq!(cfg.ss[0].public_host.as_deref(), Some("relay-a.fleet.example"));
+    assert_eq!(cfg.ss[0].mesh_addr.as_deref(), Some("198.51.100.10:9443"));
+    assert_eq!(cfg.ss_clusters.len(), 1);
+    assert_eq!(cfg.ss_clusters[0].name, "cloud");
+    assert_eq!(cfg.ss_clusters[0].members, vec!["relay-a", "relay-b"]);
+    assert_eq!(
+        cfg.ss_clusters[0].subscription_nodes,
+        vec!["relay-a.fleet.example", "relay-b.fleet.example"]
+    );
+}
+
+#[test]
+fn rejects_invalid_ss_clusters() {
+    let (_dir, unknown_member) = write_config(
+        r#"
+[server]
+listen = "0.0.0.0:9000"
+token_file = "__UI_TOKEN_FILE__"
+
+[[ss.instances]]
+name = "relay-a"
+control_url = "http://127.0.0.1:9191"
+token_file = "__INST_TOKEN_FILE__"
+
+[[ss.clusters]]
+name = "cloud"
+members = ["relay-a", "missing"]
+"#,
+    );
+    assert!(UiConfig::load(&unknown_member).is_err());
+
+    let (_dir2, overlapping) = write_config(
+        r#"
+[server]
+listen = "0.0.0.0:9000"
+token_file = "__UI_TOKEN_FILE__"
+
+[[ss.instances]]
+name = "relay-a"
+control_url = "http://127.0.0.1:9191"
+token_file = "__INST_TOKEN_FILE__"
+
+[[ss.clusters]]
+name = "c1"
+members = ["relay-a"]
+
+[[ss.clusters]]
+name = "c2"
+members = ["relay-a"]
+"#,
+    );
+    assert!(UiConfig::load(&overlapping).is_err());
+
+    let (_dir3, slash_name) = write_config(
+        r#"
+[server]
+listen = "0.0.0.0:9000"
+token_file = "__UI_TOKEN_FILE__"
+
+[[ss.instances]]
+name = "relay-a"
+control_url = "http://127.0.0.1:9191"
+token_file = "__INST_TOKEN_FILE__"
+
+[[ss.clusters]]
+name = "bad/name"
+members = ["relay-a"]
+"#,
+    );
+    assert!(UiConfig::load(&slash_name).is_err());
 }

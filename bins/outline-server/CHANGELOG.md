@@ -14,6 +14,10 @@ This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorep
 
 ### Added
 
+- **Complete `/control/config` editing, credential fingerprints, and optional access-keys runner:**
+  - Extended `GET`/`PATCH /control/config` with `FieldPatch` clearing (`null`), full `[[endpoint]]` CRUD, `[shadowsocks].method`, `[http_root]`, `[access_keys]` (`public_host`, `public_scheme`, `url_base`, `file_extension`, `write_dir`, `nodes`), `[[server.certs]]` / `[[server.h3.certs]]`, all 23 `[tuning]` overrides, `psk_fingerprint` / `restart_pending` reporting, and live-apply detection (`requires_restart = false` when only `[access_keys]` changes).
+  - Added `password_fp` and `vless_id_fp` (12-hex BLAKE3 secret fingerprints) to `UserView` (`/control/users`) without exposing raw credentials.
+  - Added `[control].access_keys_generator`, `access_keys_python`, and `access_keys_timeout_secs`, plus `POST /control/access-keys/regenerate` (`--json-report`, `--prune` by default, redacting `write_dir` in error output) and `GET /control/users/{id}/access-keys` (`--links-json --user <id>`), invoking `ops/access-keys/generate_keys.py` directly via `tokio::process::Command` (no `/bin/sh`).
 - **In-memory per-IP rate limiting for `http_root_auth`.** Brute-force protection on `GET /` now maintains an in-memory thread-safe LRU cache of remote IP addresses (up to 1024 concurrent addresses) with a 300-second lockout window, shared across both TCP (axum) and HTTP/3 listeners. Failed attempts are counted as `max(cookie_attempts, server_attempts)`: after 3 failures from the same IP (even if cookies are dropped or reset), the server immediately returns `403 Forbidden` for 5 minutes. Successful authentication clears the IP's failure history.
 - **Server Caddy emulation (Stage 3): H3 SETTINGS, GREASE transport parameter ID and configurable per-IP TLS connection limit.**
   - New configuration option `[server].max_connections_per_ip` (default `None`, unlimited) limits concurrent active TCP connections from any single remote IP address on the TLS listener. Inbound connections exceeding the cap are immediately dropped on accept and logged with a warning.

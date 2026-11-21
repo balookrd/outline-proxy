@@ -5,6 +5,7 @@
 //! where to listen, how to authenticate a browser, and which control APIs to
 //! aggregate.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,7 @@ pub struct UiConfig {
     pub allowed_hosts: Vec<String>,
     pub ws: Vec<InstanceConfig>,
     pub ss: Vec<InstanceConfig>,
+    pub ss_clusters: Vec<ClusterConfig>,
 }
 
 #[derive(Clone)]
@@ -34,6 +36,15 @@ pub struct InstanceConfig {
     pub name: String,
     pub control_url: String,
     pub token: String,
+    pub public_host: Option<String>,
+    pub mesh_addr: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterConfig {
+    pub name: String,
+    pub members: Vec<String>,
+    pub subscription_nodes: Vec<String>,
 }
 
 // Both `Debug` impls are hand-written so a `{:?}` of the config can never put
@@ -48,6 +59,7 @@ impl std::fmt::Debug for UiConfig {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("ws", &self.ws)
             .field("ss", &self.ss)
+            .field("ss_clusters", &self.ss_clusters)
             .finish()
     }
 }
@@ -58,6 +70,8 @@ impl std::fmt::Debug for InstanceConfig {
             .field("name", &self.name)
             .field("control_url", &self.control_url)
             .field("token", &"<redacted>")
+            .field("public_host", &self.public_host)
+            .field("mesh_addr", &self.mesh_addr)
             .finish()
     }
 }
@@ -68,7 +82,7 @@ struct FileConfig {
     #[serde(default)]
     ws: TreeSection,
     #[serde(default)]
-    ss: TreeSection,
+    ss: SsTreeSection,
 }
 
 #[derive(Deserialize)]
@@ -88,12 +102,31 @@ struct TreeSection {
     instances: Vec<InstanceSection>,
 }
 
+#[derive(Deserialize, Default)]
+struct SsTreeSection {
+    #[serde(default)]
+    instances: Vec<InstanceSection>,
+    #[serde(default)]
+    clusters: Vec<ClusterSection>,
+}
+
 #[derive(Deserialize)]
 struct InstanceSection {
     name: String,
     control_url: String,
     token: Option<String>,
     token_file: Option<PathBuf>,
+    public_host: Option<String>,
+    mesh_addr: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ClusterSection {
+    name: String,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    subscription_nodes: Vec<String>,
 }
 
 /// Reads a secret from either the literal or the file form. Trailing whitespace
@@ -141,22 +174,45 @@ impl UiConfig {
                 )
             })?;
 
-        let convert = |tree: TreeSection, label: &str| -> Result<Vec<InstanceConfig>> {
-            tree.instances
+        let convert = |instances: Vec<InstanceSection>,
+                       label: &str|
+         -> Result<Vec<InstanceConfig>> {
+            let mut seen_names = HashSet::new();
+            instances
                 .into_iter()
                 .map(|i| {
-                    let what = format!("[[{label}.instances]] {}", i.name);
+                    let name = i.name.trim().to_string();
+                    if name.is_empty() {
+                        bail!("[[{label}.instances]]: name must not be empty");
+                    }
+                    if !seen_names.insert(name.clone()) {
+                        bail!("[[{label}.instances]]: duplicate instance name {name:?}");
+                    }
+                    let what = format!("[[{label}.instances]] {name}");
                     let token = resolve_secret(i.token, i.token_file, &what)?.ok_or_else(|| {
                         anyhow::anyhow!("{what}: token or token_file is required")
                     })?;
+                    let normalize_opt = |raw: Option<String>| -> Option<String> {
+                        raw.and_then(|s| {
+                            let t = s.trim().to_string();
+                            (!t.is_empty()).then_some(t)
+                        })
+                    };
                     Ok(InstanceConfig {
-                        name: i.name,
+                        name,
                         control_url: i.control_url,
                         token,
+                        public_host: normalize_opt(i.public_host),
+                        mesh_addr: normalize_opt(i.mesh_addr),
                     })
                 })
                 .collect()
         };
+
+        let ss_instances = convert(file.ss.instances, "ss")?;
+        let ss_instance_names: HashSet<&str> =
+            ss_instances.iter().map(|i| i.name.as_str()).collect();
+        let ss_clusters = parse_ss_clusters(file.ss.clusters, &ss_instance_names)?;
 
         Ok(Self {
             listen: file.server.listen,
@@ -170,10 +226,75 @@ impl UiConfig {
                 .refresh_interval_secs
                 .unwrap_or(DEFAULT_REFRESH_INTERVAL_SECS),
             allowed_hosts: file.server.allowed_hosts,
-            ws: convert(file.ws, "ws")?,
-            ss: convert(file.ss, "ss")?,
+            ws: convert(file.ws.instances, "ws")?,
+            ss: ss_instances,
+            ss_clusters,
         })
     }
+}
+
+fn parse_ss_clusters(
+    sections: Vec<ClusterSection>,
+    known_instances: &HashSet<&str>,
+) -> Result<Vec<ClusterConfig>> {
+    let mut cluster_names = HashSet::new();
+    let mut claimed_members = HashSet::new();
+    let mut out = Vec::with_capacity(sections.len());
+
+    for raw in sections {
+        let name = raw.name.trim().to_string();
+        if name.is_empty() {
+            bail!("[[ss.clusters]]: name must not be empty");
+        }
+        if name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '/' || c == '\\')
+        {
+            bail!("[[ss.clusters]] {name:?}: name must not contain whitespace or '/'");
+        }
+        if !cluster_names.insert(name.clone()) {
+            bail!("[[ss.clusters]]: duplicate cluster name {name:?}");
+        }
+        if raw.members.is_empty() {
+            bail!("[[ss.clusters]] {name:?}: members must not be empty");
+        }
+
+        let mut seen_in_cluster = HashSet::new();
+        let mut members = Vec::with_capacity(raw.members.len());
+        for member in raw.members {
+            let trimmed = member.trim().to_string();
+            if trimmed.is_empty() {
+                bail!("[[ss.clusters]] {name:?}: member name must not be empty");
+            }
+            if !known_instances.contains(trimmed.as_str()) {
+                bail!(
+                    "[[ss.clusters]] {name:?}: unknown member {trimmed:?} (not listed in [[ss.instances]])"
+                );
+            }
+            if !seen_in_cluster.insert(trimmed.clone()) {
+                bail!("[[ss.clusters]] {name:?}: duplicate member {trimmed:?}");
+            }
+            if !claimed_members.insert(trimmed.clone()) {
+                bail!(
+                    "[[ss.clusters]] {name:?}: instance {trimmed:?} already belongs to another cluster"
+                );
+            }
+            members.push(trimmed);
+        }
+
+        let mut subscription_nodes = Vec::with_capacity(raw.subscription_nodes.len());
+        for node in raw.subscription_nodes {
+            let trimmed = node.trim().to_string();
+            if trimmed.is_empty() {
+                bail!("[[ss.clusters]] {name:?}: subscription_nodes entries must not be empty");
+            }
+            subscription_nodes.push(trimmed);
+        }
+
+        out.push(ClusterConfig { name, members, subscription_nodes });
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ socket2 = { workspace = true }
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
 subtle = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal", "process"] }
 tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }
 tungstenite = { version = "0.29", default-features = false }
 toml = { workspace = true }

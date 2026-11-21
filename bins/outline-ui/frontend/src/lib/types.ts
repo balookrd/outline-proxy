@@ -1,23 +1,61 @@
-export interface Instance { name: string; }
-export interface InstancesResponse { instances: Instance[]; refresh_interval_secs: number; }
+export interface MetaResponse {
+  name: string;
+  version: string;
+}
+
+export interface Instance {
+  name: string;
+  public_host?: string;
+  mesh_addr?: string;
+  cluster?: string;
+}
+
+export interface ClusterSummary {
+  name: string;
+  source: 'config' | 'discovered';
+  members: string[];
+  subscription_nodes: string[];
+}
+
+export interface InstancesResponse {
+  instances: Instance[];
+  clusters?: ClusterSummary[];
+  refresh_interval_secs: number;
+}
+
+export interface SsTarget {
+  kind: 'cluster' | 'instance';
+  name: string;
+}
 
 // SS — a user is pure credentials since the endpoint-model refactor: it works
 // on every registered endpoint of its kind, so it no longer carries any
 // per-user carrier paths (the server rejects them with deny_unknown_fields).
 // The index signature keeps any extra fields the server may add.
 export interface User {
-  id: string; enabled: boolean;
-  password?: string | null; vless_id?: string | null; method?: string | null;
+  id: string;
+  enabled: boolean;
+  password?: string | null;
+  vless_id?: string | null;
+  method?: string | null;
   fwmark?: number | null;
   aliases?: Record<string, string | string[]> | null;
   // Always present on UserView (server/control/manager.rs) — never the raw
   // secret, just whether one is set. Drives the drawer's edit-mode
   // placeholder ("keep current password" vs "add Shadowsocks password").
-  has_password?: boolean; has_vless_id?: boolean;
-  created?: string; access_url?: string;
+  has_password?: boolean;
+  has_vless_id?: boolean;
+  password_fp?: string | null;
+  vless_id_fp?: string | null;
+  created?: string;
+  access_url?: string;
   [k: string]: unknown;
 }
-export type NewUser = Partial<User> & { id: string; enabled: boolean };
+export type NewUser = Partial<User> & {
+  id: string;
+  enabled: boolean;
+  rollback_on_error?: boolean;
+};
 export type PatchUser = Partial<User>;
 
 // SS — Server & Cluster Configuration
@@ -31,19 +69,50 @@ export interface ClusterConfig {
   shard_id: number | null;
   cluster_psk?: string | null;
   has_cluster_psk?: boolean;
+  psk_fingerprint?: string | null;
   mesh_listen: string | null;
   mesh_relay_budget_ms: number | null;
   peers: ClusterPeer[];
+}
+
+export interface TlsCertDto {
+  cert_path: string;
+  key_path: string;
+  sni?: string[] | null;
 }
 
 export interface ServerListenersConfig {
   listen: string | null;
   cert_path: string | null;
   key_path: string | null;
+  max_connections_per_ip?: number | null;
+  certs?: TlsCertDto[] | null;
   h3_listen: string | null;
   h3_cert_path: string | null;
   h3_key_path: string | null;
+  h3_certs?: TlsCertDto[] | null;
+  h3_alpn?: string[] | null;
   h3_initial_mtu?: number | null;
+  h3_mtu_first_probe?: number | null;
+  h3_udp_datagrams?: boolean | null;
+}
+
+export interface ShadowsocksConfigView {
+  method?: string | null;
+}
+
+export interface HttpRootConfigView {
+  auth?: boolean | null;
+  realm?: string | null;
+}
+
+export interface AccessKeysConfigView {
+  public_host?: string | null;
+  public_scheme?: string | null;
+  url_base?: string | null;
+  file_extension?: string | null;
+  write_dir?: string | null;
+  nodes?: string[] | null;
 }
 
 export interface SessionResumptionConfig {
@@ -63,6 +132,8 @@ export interface OutboundConfig {
   ipv6_refresh_secs?: number | null;
   ipv6_sticky: boolean | null;
   ipv6_sticky_ttl_secs: number | null;
+  block_private_ips?: boolean | null;
+  allowed_subnets?: string[] | null;
 }
 
 export interface ServerPaddingConfig {
@@ -104,8 +175,55 @@ export interface ServerSniFallbackConfig {
   backends?: SniBackendConfig[] | null;
 }
 
+export interface TuningOverridesConfig {
+  h2_stream_window_bytes?: number | null;
+  h2_connection_window_bytes?: number | null;
+  h2_max_send_buf_size?: number | null;
+  h3_stream_window_bytes?: number | null;
+  h3_connection_window_bytes?: number | null;
+  h3_max_concurrent_bidi_streams?: number | null;
+  h3_max_concurrent_uni_streams?: number | null;
+  h3_write_buffer_bytes?: number | null;
+  h3_max_backpressure_bytes?: number | null;
+  h3_udp_socket_buffer_bytes?: number | null;
+  client_active_ttl_secs?: number | null;
+  udp_nat_idle_timeout_secs?: number | null;
+  udp_nat_max_entries?: number | null;
+  udp_nat_max_entries_per_user?: number | null;
+  udp_max_concurrent_relay_tasks?: number | null;
+  udp_replay_max_sessions?: number | null;
+  udp_replay_max_sessions_per_user?: number | null;
+  tcp_handshake_replay_max_salts?: number | null;
+  xhttp_max_sessions?: number | null;
+  xhttp_max_sessions_per_ip?: number | null;
+  xhttp_max_concurrent_relay_tasks?: number | null;
+  dns_cache_max_entries?: number | null;
+  ws_data_channel_capacity?: number | null;
+}
+
+export interface MetricsConfigView {
+  listen?: string | null;
+  path?: string | null;
+}
+
+export interface ControlReadOnlyView {
+  listen?: string | null;
+  access_keys_enabled: boolean;
+}
+
+export type EndpointKind =
+  | 'ws_ss'
+  | 'ws_ss_tcp'
+  | 'ws_ss_udp'
+  | 'ws_vless'
+  | 'xhttp_ss'
+  | 'xhttp_ss_tcp'
+  | 'xhttp_ss_udp'
+  | 'xhttp_vless';
+
 export interface EndpointConfigItem {
   path: string;
+  kind?: EndpointKind;
   protocol: string;
   transport: string;
   padded: boolean;
@@ -113,32 +231,148 @@ export interface EndpointConfigItem {
 
 export interface ServerConfigResponse {
   config_path: string | null;
+  restart_pending?: boolean;
   cluster: ClusterConfig | null;
   server: ServerListenersConfig | null;
+  shadowsocks?: ShadowsocksConfigView | null;
+  http_root?: HttpRootConfigView | null;
+  access_keys?: AccessKeysConfigView | null;
   session_resumption: SessionResumptionConfig | null;
   outbound: OutboundConfig | null;
   padding?: ServerPaddingConfig | null;
   http_fallback?: ServerHttpFallbackConfig | null;
   sni_fallback?: ServerSniFallbackConfig | null;
   tuning_profile: string | null;
+  tuning?: TuningOverridesConfig | null;
+  metrics?: MetricsConfigView | null;
+  control?: ControlReadOnlyView | null;
   endpoints: EndpointConfigItem[];
 }
 
 export interface EndpointPatch {
   path: string;
+  kind?: EndpointKind;
   padded: boolean;
 }
 
 export interface ServerConfigPatch {
   cluster?: Partial<ClusterConfig> | null;
   server?: Partial<ServerListenersConfig> | null;
+  shadowsocks?: Partial<ShadowsocksConfigView> | null;
+  http_root?: Partial<HttpRootConfigView> | null;
+  access_keys?: Partial<AccessKeysConfigView> | null;
   session_resumption?: Partial<SessionResumptionConfig> | null;
   outbound?: Partial<OutboundConfig> | null;
   padding?: Partial<ServerPaddingConfig> | null;
   http_fallback?: Partial<ServerHttpFallbackConfig> | null;
   sni_fallback?: Partial<ServerSniFallbackConfig> | null;
   tuning_profile?: string | null;
+  tuning?: Partial<TuningOverridesConfig> | null;
   endpoints?: EndpointPatch[] | null;
+}
+
+export interface NodeActionResult {
+  instance: string;
+  ok: boolean;
+  status: number;
+  requires_restart?: boolean;
+  already_absent?: boolean;
+  rolled_back?: boolean;
+  error?: string;
+  data?: unknown;
+}
+
+export interface ClusterMutationResponse {
+  ok: boolean;
+  cluster?: string;
+  id?: string;
+  rolled_back?: boolean;
+  error?: string;
+  results: NodeActionResult[];
+}
+
+export interface ClusterConfigNode {
+  instance: string;
+  ok: boolean;
+  status: number;
+  config?: ServerConfigResponse;
+  error?: string;
+}
+
+export interface ClusterMeshHealth {
+  all_reachable: boolean;
+  psk_match: boolean;
+  shards_unique: boolean;
+  peers_symmetric: boolean;
+  restart_pending_nodes: string[];
+}
+
+export interface ClusterConfigResponse {
+  cluster: string;
+  source: 'config' | 'discovered';
+  members: string[];
+  subscription_nodes: string[];
+  nodes: ClusterConfigNode[];
+  drift: string[];
+  mesh_health: ClusterMeshHealth;
+}
+
+export interface ClusterUser extends User {
+  sync_status: 'synced' | 'partial' | 'drift' | 'unknown';
+  present_on: string[];
+  missing_on: string[];
+  diff_fields: string[];
+  per_node: Record<string, User>;
+}
+
+export interface ClusterUsersResponse {
+  cluster: string;
+  source: string;
+  members: string[];
+  total_nodes: number;
+  reachable_nodes: number;
+  node_errors: Array<{ instance: string; status: number; error: string }>;
+  users: ClusterUser[];
+}
+
+export interface RegenerateReport {
+  nodes?: string[];
+  written?: Array<{ user: string; files: string[] }>;
+  pruned?: string[];
+  warnings?: string[];
+}
+
+export interface ClusterRegenerateResponse {
+  ok: boolean;
+  cluster: string;
+  nodes?: string[] | null;
+  results: NodeActionResult[];
+}
+
+export interface UserAccessKeysBundle {
+  mode?: 'cluster' | 'per_node';
+  source_node?: string;
+  user: string;
+  enabled: boolean;
+  outline_url?: string | null;
+  happ_url?: string | null;
+  ws_url?: string | null;
+  txt_url?: string | null;
+  share_links?: string[];
+  artifacts?: {
+    conf?: string;
+    json?: string;
+    toml?: string;
+    txt?: string;
+  };
+  warnings?: string[];
+  nodes?: Array<{
+    instance: string;
+    ok: boolean;
+    status: number;
+    links?: UserAccessKeysBundle;
+    error?: string;
+  }>;
 }
 
 // WS — topology envelope from ws/api.rs InstanceView.

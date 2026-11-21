@@ -4,10 +4,13 @@ use tower::ServiceExt as _;
 
 use super::*;
 
+mod cluster;
+
 fn state() -> SsState {
     SsState {
         backend: std::sync::Arc::new(crate::backend::Backend::new(5)),
         instances: std::sync::Arc::from(Vec::new()),
+        clusters: std::sync::Arc::from(Vec::new()),
         refresh_ms: 5000,
     }
 }

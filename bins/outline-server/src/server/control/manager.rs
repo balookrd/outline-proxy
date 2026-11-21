@@ -64,10 +64,27 @@ pub(super) struct UserView {
     pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
     pub has_password: bool,
     pub has_vless_id: bool,
+    /// Irreversible BLAKE3 fingerprints of secrets for cluster drift checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_fp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vless_id_fp: Option<String>,
 }
 
 impl From<&UserEntry> for UserView {
     fn from(entry: &UserEntry) -> Self {
+        let password_fp = entry.password.as_deref().map(|pw| {
+            super::blake3_fingerprint(
+                b"outline-user-pw-fp\0",
+                &[entry.id.as_bytes(), pw.as_bytes()],
+            )
+        });
+        let vless_id_fp = entry.vless_id.as_deref().map(|id| {
+            super::blake3_fingerprint(
+                b"outline-user-vless-fp\0",
+                &[entry.id.as_bytes(), id.as_bytes()],
+            )
+        });
         Self {
             id: entry.id.clone(),
             enabled: entry.is_enabled(),
@@ -76,6 +93,8 @@ impl From<&UserEntry> for UserView {
             aliases: entry.aliases.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
+            password_fp,
+            vless_id_fp,
         }
     }
 }
@@ -378,11 +397,17 @@ impl UserPatch {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) enum FieldPatch<T> {
     #[default]
     Missing,
     Set(Option<T>),
+}
+
+impl<T> FieldPatch<T> {
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
 }
 
 impl<'de, T> Deserialize<'de> for FieldPatch<T>
@@ -396,6 +421,9 @@ where
         Option::deserialize(deserializer).map(Self::Set)
     }
 }
+
+#[cfg(test)]
+pub(super) use tests::manager_for;
 
 #[cfg(test)]
 #[path = "tests/manager.rs"]

@@ -8,6 +8,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      '/api': 'http://127.0.0.1:9500',
       '/ss/dashboard/api': 'http://127.0.0.1:9500',
       '/ws/dashboard/api': 'http://127.0.0.1:9500',
     },

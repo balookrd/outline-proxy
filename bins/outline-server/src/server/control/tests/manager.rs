@@ -14,7 +14,7 @@ pub(in crate::server::control) fn test_manager() -> UserManager {
     manager_for(sample_config("127.0.0.1:0".parse().unwrap()))
 }
 
-fn manager_for(config: Config) -> UserManager {
+pub(in crate::server::control) fn manager_for(config: Config) -> UserManager {
     // Mirror `services::build`: seed the published snapshots from the config's
     // enabled credentials fanned across its endpoints, through the same shared
     // builders the production startup path uses. The old empty-registry
@@ -389,4 +389,33 @@ async fn clustered_manager_rejects_overlong_user_id() {
         .await
         .expect_err("must reject overlong id in cluster");
     assert!(err.to_string().contains("exceeds MAX_USER_LEN"));
+}
+
+#[test]
+fn user_view_exposes_irreversible_secret_fingerprints() {
+    let entry_a = UserEntry {
+        id: "alice".into(),
+        password: Some("secret-1".into()),
+        fwmark: None,
+        method: None,
+        vless_id: Some("00000000-0000-0000-0000-000000000001".into()),
+        enabled: Some(true),
+        aliases: None,
+    };
+    let mut entry_b = entry_a.clone();
+    entry_b.password = Some("secret-2".into());
+
+    let view_a = UserView::from(&entry_a);
+    let view_a_again = UserView::from(&entry_a);
+    let view_b = UserView::from(&entry_b);
+
+    let pw_fp_a = view_a.password_fp.as_deref().expect("password_fp present");
+    let vl_fp_a = view_a.vless_id_fp.as_deref().expect("vless_id_fp present");
+    assert_eq!(pw_fp_a.len(), 12);
+    assert_eq!(vl_fp_a.len(), 12);
+    assert_eq!(view_a.password_fp, view_a_again.password_fp);
+    assert_ne!(view_a.password_fp, view_b.password_fp);
+    assert_eq!(view_a.vless_id_fp, view_b.vless_id_fp);
+    assert!(!pw_fp_a.contains("secret"));
+    assert!(!vl_fp_a.contains("00000000"));
 }

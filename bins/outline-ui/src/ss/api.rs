@@ -15,32 +15,69 @@ use serde_json::Value;
 use crate::assets::{json_error, json_response};
 
 use super::SsState;
+use super::cluster::{ClusterSummaryView, build_access_keys_path, parse_nodes_query};
 
 #[derive(Debug, Deserialize)]
 pub struct InstanceQuery {
     instance: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UserAccessKeysQuery {
+    instance: String,
+    #[serde(default)]
+    nodes: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct InstancesResponse {
     instances: Vec<InstanceView>,
+    clusters: Vec<ClusterSummaryView>,
     refresh_interval_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
 struct InstanceView {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mesh_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster: Option<String>,
 }
 
 pub async fn list_instances(State(state): State<SsState>) -> Response {
     // Only the display name reaches the browser. `control_url` is a server-side
     // routing detail (and, with per-instance tokens, a target worth not
     // advertising); the UI selects instances by name.
+    let mut membership: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for c in state.clusters.iter() {
+        for m in &c.members {
+            membership.insert(m.as_str(), c.name.as_str());
+        }
+    }
+
     let payload = InstancesResponse {
         instances: state
             .instances
             .iter()
-            .map(|server| InstanceView { name: server.name.clone() })
+            .map(|server| InstanceView {
+                name: server.name.clone(),
+                public_host: server.public_host.clone(),
+                mesh_addr: server.mesh_addr.clone(),
+                cluster: membership.get(server.name.as_str()).map(|s| (*s).to_owned()),
+            })
+            .collect(),
+        clusters: state
+            .clusters
+            .iter()
+            .map(|c| ClusterSummaryView {
+                name: c.name.clone(),
+                source: "config",
+                members: c.members.clone(),
+                subscription_nodes: c.subscription_nodes.clone(),
+            })
             .collect(),
         refresh_interval_secs: state.refresh_ms / 1000,
     };
@@ -137,7 +174,40 @@ pub async fn unblock_user(
     forward(&state, &query.instance, Method::POST, &path, None).await
 }
 
-fn is_valid_user_id(id: &str) -> bool {
+pub async fn regenerate_access_keys(
+    State(state): State<SsState>,
+    Query(query): Query<InstanceQuery>,
+    body: Bytes,
+) -> Response {
+    let payload = if body.is_empty() {
+        Bytes::from_static(b"{}")
+    } else {
+        body
+    };
+    forward(
+        &state,
+        &query.instance,
+        Method::POST,
+        "/control/access-keys/regenerate",
+        Some(payload),
+    )
+    .await
+}
+
+pub async fn get_user_access_keys(
+    State(state): State<SsState>,
+    Query(query): Query<UserAccessKeysQuery>,
+    Path(id): Path<String>,
+) -> Response {
+    if !is_valid_user_id(&id) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid user id");
+    }
+    let nodes = parse_nodes_query(query.nodes.as_deref());
+    let path = build_access_keys_path(&id, nodes.as_deref());
+    forward(&state, &query.instance, Method::GET, &path, None).await
+}
+
+pub(super) fn is_valid_user_id(id: &str) -> bool {
     let trimmed = id.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return false;
@@ -172,7 +242,7 @@ async fn forward(
 
 /// Percent-encodes everything outside the unreserved set, so a user id can never
 /// inject a path segment or a query into the control URL.
-fn encode_path_segment(value: &str) -> String {
+pub(super) fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         match byte {
@@ -188,7 +258,7 @@ fn encode_path_segment(value: &str) -> String {
 /// Control APIs answer JSON, but a proxy or a panic can put anything on the
 /// wire. Non-JSON is handed to the browser as `{"raw": "..."}` rather than
 /// turned into an error, so the operator sees what actually came back.
-fn parse_or_raw(body: &Bytes) -> Value {
+pub(super) fn parse_or_raw(body: &Bytes) -> Value {
     serde_json::from_slice(body)
         .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(body) }))
 }

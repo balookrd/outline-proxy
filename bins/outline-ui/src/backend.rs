@@ -60,6 +60,13 @@ pub struct Backend {
 }
 
 impl Backend {
+    pub fn clone_handle(&self) -> Self {
+        Self {
+            timeout: self.timeout,
+            tls: self.tls.clone(),
+        }
+    }
+
     pub fn new(timeout_secs: u64) -> Self {
         let mut roots = RootCertStore::empty();
         roots.extend(TLS_SERVER_ROOTS.iter().cloned());

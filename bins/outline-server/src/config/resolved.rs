@@ -159,7 +159,7 @@ pub struct Config {
 }
 
 /// The shared cluster secret, wrapped so it never appears in `Debug` output.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClusterPsk(Vec<u8>);
 
 impl ClusterPsk {
@@ -180,7 +180,7 @@ impl fmt::Debug for ClusterPsk {
 
 /// Resolved `[cluster]` config. The PSK stays raw here; the obfuscation key and
 /// the mesh-auth keypair are derived from it at startup.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterConfig {
     pub shard: ShardId,
     pub psk: ClusterPsk,
@@ -193,7 +193,7 @@ pub struct ClusterConfig {
 /// Public snapshot of the `[session_resumption]` config. Mirrors
 /// `SessionResumptionSection` but with all fields resolved to concrete
 /// values (defaults applied).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionResumptionConfig {
     pub enabled: bool,
     pub orphan_ttl_tcp_secs: u64,
@@ -425,5 +425,46 @@ impl Config {
 
     pub fn data_plane_listener_enabled(&self) -> bool {
         self.listen.is_some() || self.h3_enabled()
+    }
+
+    /// Returns `true` if any data-plane / runtime-restarted field differs from
+    /// `other` (ignoring `config_path`, `control`, and `users`, which are either
+    /// live-reloaded or belong to `[access_keys]`/`[control]`).
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    pub(crate) fn runtime_settings_differ(&self, other: &Self) -> bool {
+        self.listen != other.listen
+            || self.tls_cert_path != other.tls_cert_path
+            || self.tls_key_path != other.tls_key_path
+            || self.tls_certs != other.tls_certs
+            || self.max_connections_per_ip != other.max_connections_per_ip
+            || self.h3_listen != other.h3_listen
+            || self.h3_cert_path != other.h3_cert_path
+            || self.h3_key_path != other.h3_key_path
+            || self.h3_certs != other.h3_certs
+            || self.h3_alpn != other.h3_alpn
+            || self.h3_initial_mtu != other.h3_initial_mtu
+            || self.h3_mtu_first_probe != other.h3_mtu_first_probe
+            || self.h3_udp_datagrams != other.h3_udp_datagrams
+            || self.metrics_listen != other.metrics_listen
+            || self.metrics_path != other.metrics_path
+            || self.prefer_ipv4_upstream != other.prefer_ipv4_upstream
+            || self.outbound_ipv6_prefix != other.outbound_ipv6_prefix
+            || self.outbound_ipv6_interface != other.outbound_ipv6_interface
+            || self.outbound_ipv6_prefix_interface != other.outbound_ipv6_prefix_interface
+            || self.outbound_ipv6_refresh_secs != other.outbound_ipv6_refresh_secs
+            || self.outbound_ipv6_sticky != other.outbound_ipv6_sticky
+            || self.outbound_ipv6_sticky_ttl_secs != other.outbound_ipv6_sticky_ttl_secs
+            || self.outbound_block_private_ips != other.outbound_block_private_ips
+            || self.outbound_allowed_subnets != other.outbound_allowed_subnets
+            || self.http_root_auth != other.http_root_auth
+            || self.http_root_realm != other.http_root_realm
+            || self.method != other.method
+            || self.tuning != other.tuning
+            || self.session_resumption != other.session_resumption
+            || self.padding != other.padding
+            || self.http_fallback != other.http_fallback
+            || self.sni_fallback != other.sni_fallback
+            || self.cluster != other.cluster
+            || self.endpoints != other.endpoints
     }
 }

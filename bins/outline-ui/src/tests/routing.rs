@@ -13,6 +13,7 @@ fn config() -> crate::config::UiConfig {
         allowed_hosts: Vec::new(),
         ws: Vec::new(),
         ss: Vec::new(),
+        ss_clusters: Vec::new(),
     }
 }
 
@@ -239,7 +240,32 @@ async fn security_headers_present_on_all_responses() {
     assert_eq!(api_ws.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
     assert_eq!(api_ws.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
 
-    let api_ss = app.oneshot(authed("/ss/dashboard/api/instances")).await.unwrap();
+    let api_ss = app
+        .clone()
+        .oneshot(authed("/ss/dashboard/api/instances"))
+        .await
+        .unwrap();
     assert_eq!(api_ss.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
     assert_eq!(api_ss.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+
+    // 4. /api/meta returns crate version with Cache-Control: no-store and requires auth
+    let unauthed_meta = app
+        .clone()
+        .oneshot(
+            Request::get("/api/meta")
+                .header(header::HOST, "127.0.0.1:9000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthed_meta.status(), StatusCode::UNAUTHORIZED);
+
+    let meta = app.oneshot(authed("/api/meta")).await.unwrap();
+    assert_eq!(meta.status(), StatusCode::OK);
+    assert_eq!(meta.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
+    let body = axum::body::to_bytes(meta.into_body(), 16 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["name"], "outline-ui");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
 }

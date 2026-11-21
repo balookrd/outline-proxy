@@ -1,123 +1,240 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { getServerConfig, patchServerConfig } from '../../lib/api';
+  import {
+    ApiError,
+    getClusterConfig,
+    getServerConfig,
+    patchClusterConfig,
+    patchServerConfig,
+  } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
-  import type { ClusterConfig, ClusterPeer, ServerConfigResponse } from '../../lib/types';
-  import InstanceSelector from '../../components/layout/InstanceSelector.svelte';
+  import {
+    ssTargetState,
+    getClusterSummary,
+    getInstanceInfo,
+  } from '../../lib/ssTarget.svelte';
+  import { buildSymmetricPeers } from '../../lib/serverConfigForm';
+  import type {
+    ClusterConfig,
+    ClusterConfigResponse,
+    ClusterPeer,
+    NodeActionResult,
+    ServerConfigPatch,
+    ServerConfigResponse,
+    SsTarget,
+  } from '../../lib/types';
+  import SsTargetSelector from '../../components/layout/SsTargetSelector.svelte';
   import ErrorBanner from '../../components/layout/ErrorBanner.svelte';
+  import ConfirmDialog from '../../components/layout/ConfirmDialog.svelte';
+  import ClusterStatusStrip from './ClusterStatusStrip.svelte';
+  import PerNodeResultPanel from './PerNodeResultPanel.svelte';
 
-  let instance = $state('');
-  let refreshSecs = $state(10);
-  const refreshMs = $derived(Math.max(1000, refreshSecs * 1000));
+  const target = $derived(ssTargetState.target);
+  const isCluster = $derived(target?.kind === 'cluster');
+  const clusterSummary = $derived(
+    target?.kind === 'cluster' ? getClusterSummary(target.name) : null,
+  );
+  const refreshMs = $derived(Math.max(1000, ssTargetState.refreshSecs * 1000));
 
   let mutating = $state(false);
   let formDirty = $state(false);
+  let actionResults = $state<NodeActionResult[]>([]);
+  let actionTitle = $state('');
 
-  // Editable local form state
+  // Pending target switch confirmation
+  let pendingTarget = $state<SsTarget | null>(null);
+  let confirmSwitchOpen = $derived(pendingTarget !== null);
+  let rotatePskConfirmOpen = $state(false);
+
+  // Cluster mode form state
+  interface EditableMember {
+    name: string;
+    enabled: boolean;
+    shard_id: number;
+    mesh_listen: string;
+    mesh_addr: string;
+    psk_fingerprint: string | null;
+    restart_pending: boolean;
+    reachable: boolean;
+  }
+  let clusterMembersForm = $state<EditableMember[]>([]);
+  let clusterRelayBudgetMs = $state(4000);
+
+  // Standalone mode form state
   let enabled = $state(false);
-  let shardId = $state<number>(0);
+  let shardId = $state(0);
   let meshListen = $state('');
-  let relayBudgetMs = $state(1500);
+  let relayBudgetMs = $state(4000);
   let clusterPsk = $state('');
   let peers = $state<ClusterPeer[]>([]);
 
-  const configPoll = createPoll<ServerConfigResponse | null>(
-    () => (instance ? getServerConfig(instance) : Promise.resolve(null)),
+  type PollData =
+    | { kind: 'cluster'; payload: ClusterConfigResponse }
+    | { kind: 'single'; payload: ServerConfigResponse }
+    | null;
+
+  const configPoll = createPoll<PollData>(
+    async () => {
+      if (!target) return null;
+      if (target.kind === 'cluster') {
+        const payload = await getClusterConfig(target.name);
+        return { kind: 'cluster', payload };
+      }
+      const payload = await getServerConfig(target.name);
+      return { kind: 'single', payload };
+    },
     () => refreshMs,
   );
 
   $effect(() => {
-    void instance;
+    void target;
     formDirty = false;
+    actionResults = [];
     configPoll.start();
   });
   onDestroy(() => configPoll.stop());
 
-  const config = $derived(configPoll.data);
-  const clusterData = $derived(config?.cluster);
+  const clusterRes = $derived(
+    configPoll.data?.kind === 'cluster' ? configPoll.data.payload : null,
+  );
+  const singleRes = $derived(
+    configPoll.data?.kind === 'single' ? configPoll.data.payload : null,
+  );
 
-  const clusterStatus = $derived.by(() => {
-    if (!clusterData || !clusterData.enabled) return 'unconfigured';
-    if (clusterData.peers && clusterData.peers.length > 0) return 'active';
-    return 'standalone';
-  });
-
-  // Sync form from server if user hasn't made unsaved edits
   $effect(() => {
-    if (clusterData && !formDirty) {
-      enabled = clusterData.enabled;
-      shardId = clusterData.shard_id ?? 0;
-      meshListen = clusterData.mesh_listen ?? '';
-      relayBudgetMs = clusterData.mesh_relay_budget_ms ?? 1500;
-      clusterPsk = clusterData.cluster_psk ?? '';
-      peers = clusterData.peers ? clusterData.peers.map((p) => ({ ...p })) : [];
+    if (formDirty) return;
+    if (clusterRes) {
+      let budget = 4000;
+      clusterMembersForm = clusterRes.nodes.map((node, idx) => {
+        const cl = node.config?.cluster;
+        const info = getInstanceInfo(node.instance);
+        if (cl?.mesh_relay_budget_ms) budget = cl.mesh_relay_budget_ms;
+        return {
+          name: node.instance,
+          enabled: cl?.enabled ?? false,
+          shard_id: cl?.shard_id ?? idx,
+          mesh_listen: cl?.mesh_listen ?? '',
+          mesh_addr: info?.mesh_addr ?? cl?.mesh_listen ?? '',
+          psk_fingerprint: cl?.psk_fingerprint ?? null,
+          restart_pending: Boolean(node.config?.restart_pending),
+          reachable: node.ok,
+        };
+      });
+      clusterRelayBudgetMs = budget;
+    } else if (singleRes?.cluster) {
+      const c = singleRes.cluster;
+      enabled = c.enabled;
+      shardId = c.shard_id ?? 0;
+      meshListen = c.mesh_listen ?? '';
+      relayBudgetMs = c.mesh_relay_budget_ms ?? 4000;
+      clusterPsk = c.cluster_psk ?? '';
+      peers = c.peers ? c.peers.map((p) => ({ ...p })) : [];
     }
   });
 
-  function markDirty() {
-    formDirty = true;
-  }
-
-  function generateRandomPsk() {
+  function generateBase64Psk(): string {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
     let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    clusterPsk = btoa(binary);
-    markDirty();
-    toast('New 32-byte Base64 PSK generated.');
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
   }
 
-  async function copyPsk() {
-    if (!clusterPsk) return;
+  function onBeforeTargetChange(next: SsTarget): boolean {
+    if (!formDirty) return true;
+    pendingTarget = next;
+    return false;
+  }
+
+  function extractResults(e: unknown): NodeActionResult[] {
+    if (e instanceof ApiError && e.body && typeof e.body === 'object' && 'results' in e.body) {
+      const r = (e.body as { results?: unknown }).results;
+      if (Array.isArray(r)) return r as NodeActionResult[];
+    }
+    return [];
+  }
+
+  async function saveClusterTopology(newPsk?: string) {
+    if (!target || target.kind !== 'cluster') return;
+    const { peersByNode, error } = buildSymmetricPeers(
+      clusterMembersForm.map((m) => ({
+        name: m.name,
+        shard_id: m.shard_id,
+        mesh_addr: m.mesh_addr.trim() || m.mesh_listen.trim(),
+      })),
+    );
+    if (error) {
+      toast(error, 'error');
+      return;
+    }
+    for (const m of clusterMembersForm) {
+      if (m.enabled && !m.mesh_listen.trim()) {
+        toast(`${m.name}: mesh_listen address is required when mesh is enabled.`, 'error');
+        return;
+      }
+    }
+
+    mutating = true;
+    actionResults = [];
     try {
-      await navigator.clipboard.writeText(clusterPsk);
-      toast('Cluster PSK copied to clipboard.');
-    } catch {
-      toast('Failed to copy to clipboard', 'error');
+      const perNode: Record<string, ServerConfigPatch> = {};
+      for (const m of clusterMembersForm) {
+        perNode[m.name] = {
+          cluster: {
+            enabled: m.enabled,
+            shard_id: m.shard_id,
+            mesh_listen: m.mesh_listen.trim() || null,
+            mesh_relay_budget_ms: clusterRelayBudgetMs,
+            peers: peersByNode[m.name],
+            ...(newPsk ? { cluster_psk: newPsk } : {}),
+          },
+        };
+      }
+      const res = await patchClusterConfig(target.name, { per_node: perNode });
+      formDirty = false;
+      actionTitle = newPsk
+        ? `Rotated cluster PSK on ${target.name}`
+        : `Saved symmetric cluster topology on ${target.name}`;
+      actionResults = res.results;
+      toast(
+        newPsk
+          ? 'Cluster PSK rotated and saved. Restart nodes one at a time.'
+          : 'Cluster topology saved across nodes.',
+      );
+      await configPoll.refresh();
+    } catch (e) {
+      const results = extractResults(e);
+      if (results.length) {
+        actionTitle = `Cluster topology update failed on ${target.name}`;
+        actionResults = results;
+      }
+      toast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      mutating = false;
     }
   }
 
+  // Single-node helpers
   function addPeer() {
-    // Find next available shard ID between 0 and 15
-    const usedShards = new Set([shardId, ...peers.map((p) => p.shard)]);
-    let nextShard = 0;
-    while (nextShard < 16 && usedShards.has(nextShard)) {
-      nextShard++;
-    }
-    if (nextShard >= 16) {
+    const used = new Set([shardId, ...peers.map((p) => p.shard)]);
+    let next = 0;
+    while (next < 16 && used.has(next)) next++;
+    if (next >= 16) {
       toast('Maximum 16 shards in cluster (0..15).', 'error');
       return;
     }
-    peers = [...peers, { shard: nextShard, addr: '' }];
-    markDirty();
+    peers = [...peers, { shard: next, addr: '' }];
+    formDirty = true;
   }
 
   function removePeer(idx: number) {
     peers = peers.filter((_, i) => i !== idx);
-    markDirty();
+    formDirty = true;
   }
 
-  function updatePeerShard(idx: number, newShardStr: string) {
-    const val = parseInt(newShardStr, 10);
-    if (!isNaN(val)) {
-      peers[idx].shard = Math.max(0, Math.min(15, val));
-      markDirty();
-    }
-  }
-
-  function updatePeerAddr(idx: number, addr: string) {
-    peers[idx].addr = addr;
-    markDirty();
-  }
-
-  async function save() {
-    if (!instance) return;
-
-    // Validation
+  async function saveSingleNode() {
+    if (!target || target.kind !== 'instance') return;
     if (enabled) {
       if (shardId < 0 || shardId > 15) {
         toast('Local Shard ID must be between 0 and 15.', 'error');
@@ -127,24 +244,7 @@
         toast('Mesh listen address is required when cluster is enabled.', 'error');
         return;
       }
-      const peerShards = new Set<number>();
-      for (const p of peers) {
-        if (p.shard === shardId) {
-          toast(`Peer cannot share the same Shard ID (${p.shard}) as local node.`, 'error');
-          return;
-        }
-        if (peerShards.has(p.shard)) {
-          toast(`Duplicate peer Shard ID (${p.shard}). Each peer must have a unique shard.`, 'error');
-          return;
-        }
-        peerShards.add(p.shard);
-        if (!p.addr.trim()) {
-          toast(`Peer with Shard ID ${p.shard} is missing an address.`, 'error');
-          return;
-        }
-      }
     }
-
     mutating = true;
     try {
       const clusterPatch: Partial<ClusterConfig> = {
@@ -154,250 +254,306 @@
         mesh_relay_budget_ms: relayBudgetMs,
         peers: peers.filter((p) => p.addr.trim().length > 0),
       };
-
-      // Only send cluster_psk if not masked
       if (clusterPsk && !clusterPsk.includes('*')) {
         clusterPatch.cluster_psk = clusterPsk.trim();
       }
-
-      const res = await patchServerConfig(instance, { cluster: clusterPatch });
+      const res = await patchServerConfig(target.name, { cluster: clusterPatch });
       formDirty = false;
-      if (res.requires_restart) {
-        toast('Cluster configuration saved. Restart server to apply port / listener changes.');
-      } else {
-        toast('Cluster configuration saved.');
-      }
+      toast(
+        res.requires_restart
+          ? 'Cluster settings saved. Restart node to apply changes.'
+          : 'Cluster settings saved.',
+      );
       await configPoll.refresh();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast(msg, 'error');
+      toast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       mutating = false;
     }
   }
+
+  const singleStatus = $derived.by(() => {
+    if (!singleRes?.cluster || !singleRes.cluster.enabled) return 'unconfigured';
+    if (singleRes.cluster.peers?.length) return 'active';
+    return 'standalone';
+  });
 </script>
 
 <section class="view active">
   <div class="page-head">
     <div>
       <h1>Mesh Cluster</h1>
-      <p>Multi-node anycast cluster and shard relay configuration.</p>
+      <p>
+        {isCluster
+          ? `Multi-node anycast mesh health, shard assignment, and PSK management for ${target?.name}.`
+          : 'Anycast cluster shard and peer configuration.'}
+      </p>
     </div>
     <div class="toolbar">
-      <InstanceSelector base="/ss" bind:selected={instance} bind:refreshSecs={refreshSecs} />
-      <button class="btn primary sm" disabled={!instance || mutating || !formDirty} onclick={save}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-        Save changes
-      </button>
+      <SsTargetSelector onBeforeChange={onBeforeTargetChange} />
+      {#if isCluster}
+        <button
+          type="button"
+          class="btn sm"
+          disabled={!clusterRes || mutating}
+          onclick={() => (rotatePskConfirmOpen = true)}
+        >
+          Rotate PSK across cluster
+        </button>
+        <button
+          type="button"
+          class="btn primary sm"
+          disabled={!clusterRes || mutating}
+          onclick={() => saveClusterTopology()}
+        >
+          {formDirty ? 'Save symmetric topology' : 'Sync peers'}
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="btn primary sm"
+          disabled={!target || mutating || !formDirty}
+          onclick={saveSingleNode}
+        >
+          Save changes
+        </button>
+      {/if}
     </div>
   </div>
 
-  {#if !instance}
-    <div class="empty">Select a server to view and configure cluster settings.</div>
-  {:else}
+  {#if !target}
+    <div class="empty">Select a cluster or server to manage mesh topology.</div>
+  {:else if isCluster}
+    {#if clusterSummary && clusterRes}
+      <ClusterStatusStrip
+        cluster={clusterSummary}
+        reachableNodes={clusterRes.nodes.filter((n) => n.ok).length}
+        totalNodes={clusterRes.members.length}
+        restartPendingNodes={clusterRes.mesh_health.restart_pending_nodes}
+      />
+    {/if}
+
     <ErrorBanner message={configPoll.error} />
 
-    {#if clusterData}
-      <!-- Status & Topology Overview Card -->
+    {#if clusterRes}
       <div class="card" style="margin-bottom: var(--sp-4);">
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-2);">
-          <div>
-            <h3 style="margin: 0; font-size: 15px;">
-              Cluster Status
-              {#if clusterStatus === 'active'}
-                <span class="chip ok"><span class="d"></span>Active Mesh</span>
-              {:else if clusterStatus === 'standalone'}
-                <span class="chip warn"><span class="d"></span>Standalone Node</span>
-              {:else}
-                <span class="chip off"><span class="d"></span>Unconfigured</span>
-              {/if}
-            </h3>
-            <p class="desc" style="margin-top: 4px;">
-              Outline mesh allows anycast ingress: clients connect to any server, and requests are routed to the user's home shard over a secure authenticated QUIC mesh.
-            </p>
-          </div>
-          {#if formDirty}
-            <div class="chip warn">Unsaved changes</div>
+        <h2>Cluster Health</h2>
+        <div class="health-chips">
+          <span class="chip" class:ok={clusterRes.mesh_health.psk_match} class:bad={!clusterRes.mesh_health.psk_match}>
+            <span class="d"></span>
+            PSK: {clusterRes.mesh_health.psk_match ? 'Match' : 'Mismatch / Missing'}
+          </span>
+          <span class="chip" class:ok={clusterRes.mesh_health.shards_unique} class:bad={!clusterRes.mesh_health.shards_unique}>
+            <span class="d"></span>
+            Shards: {clusterRes.mesh_health.shards_unique ? 'Unique' : 'Conflict / Missing'}
+          </span>
+          <span class="chip" class:ok={clusterRes.mesh_health.peers_symmetric} class:warn={!clusterRes.mesh_health.peers_symmetric}>
+            <span class="d"></span>
+            Peers: {clusterRes.mesh_health.peers_symmetric ? 'Symmetric' : 'Incomplete / Asymmetric'}
+          </span>
+          {#if clusterRes.mesh_health.restart_pending_nodes.length}
+            <span class="chip warn">
+              Restart pending: {clusterRes.mesh_health.restart_pending_nodes.join(', ')}
+            </span>
+          {:else}
+            <span class="chip ok">All nodes synced with running config</span>
           {/if}
-        </div>
-
-        <div class="kpis" style="margin-top: var(--sp-3);">
-          <div class="kpi">
-            <div class="n">{clusterData.shard_id ?? 0}</div>
-            <div class="l">Current Shard ID</div>
-          </div>
-          <div class="kpi">
-            <div class="n">{clusterData.peers?.length ?? 0}</div>
-            <div class="l">Configured Peers</div>
-          </div>
-          <div class="kpi">
-            <div class="n">{clusterData.mesh_relay_budget_ms ?? 1500} ms</div>
-            <div class="l">Relay Budget</div>
-          </div>
         </div>
       </div>
 
-      <!-- Settings Grid -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--sp-4);">
-        <!-- Local Node Settings -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Local Node Configuration
-          </h3>
+      <PerNodeResultPanel
+        title={actionTitle}
+        results={actionResults}
+        onDismiss={() => (actionResults = [])}
+      />
 
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
+      <div class="panel" style="padding: var(--sp-4);">
+        <div class="section-head-row">
+          <div>
+            <h2>Cluster Members</h2>
+            <p class="desc">
+              Each node automatically receives peer entries for all other shards using their configured mesh addresses.
+            </p>
+          </div>
+          <div class="fieldrow" style="width: 170px;">
+            <label for="cluster-relay-budget">Relay budget (ms)</label>
+            <input
+              id="cluster-relay-budget"
+              type="number"
+              min="100"
+              max="30000"
+              class="field-mono"
+              bind:value={clusterRelayBudgetMs}
+              oninput={() => (formDirty = true)}
+            />
+          </div>
+        </div>
+
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div tabindex="0" role="region" aria-label="Cluster members table" class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Mesh</th>
+                <th>Shard ID</th>
+                <th>Mesh Listen</th>
+                <th>Peer Reach Addr</th>
+                <th>PSK fp / Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each clusterMembersForm as member (member.name)}
+                <tr>
+                  <td>
+                    <span class="mono" style="font-weight: 600;">{member.name}</span>
+                  </td>
+                  <td>
+                    <label class="switch">
+                      <input
+                        type="checkbox"
+                        aria-label={`Enable mesh on ${member.name}`}
+                        bind:checked={member.enabled}
+                        onchange={() => (formDirty = true)}
+                      />
+                    </label>
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      max="15"
+                      class="field-mono"
+                      aria-label={`Shard ID on ${member.name}`}
+                      style="width: 72px;"
+                      bind:value={member.shard_id}
+                      oninput={() => (formDirty = true)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      class="field-mono"
+                      aria-label={`Mesh listen on ${member.name}`}
+                      placeholder="[::]:9443"
+                      bind:value={member.mesh_listen}
+                      oninput={() => (formDirty = true)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      class="field-mono"
+                      aria-label={`Mesh peer address for ${member.name}`}
+                      placeholder="198.51.100.10:9443"
+                      bind:value={member.mesh_addr}
+                      oninput={() => (formDirty = true)}
+                    />
+                  </td>
+                  <td>
+                    <div class="key-chips">
+                      {#if !member.reachable}
+                        <span class="chip bad">unreachable</span>
+                      {:else if member.psk_fingerprint}
+                        <span class="chip info mono">{member.psk_fingerprint}</span>
+                      {:else}
+                        <span class="chip off">no PSK</span>
+                      {/if}
+                      {#if member.restart_pending}
+                        <span class="chip warn">restart</span>
+                      {/if}
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {/if}
+  {:else}
+    <ErrorBanner message={configPoll.error} />
+    {#if singleRes?.cluster}
+      <div class="card" style="margin-bottom: var(--sp-4);">
+        <div class="section-head-row">
+          <div>
+            <h2>
+              Node Status
+              {#if singleStatus === 'active'}
+                <span class="chip ok"><span class="d"></span>Active Mesh</span>
+              {:else if singleStatus === 'standalone'}
+                <span class="chip warn"><span class="d"></span>Standalone</span>
+              {:else}
+                <span class="chip off"><span class="d"></span>Disabled</span>
+              {/if}
+            </h2>
+            {#if singleRes.restart_pending}
+              <span class="chip warn">Restart pending to apply saved config</span>
+            {/if}
+          </div>
+          {#if singleRes.cluster.psk_fingerprint}
+            <span class="chip info mono">PSK fp: {singleRes.cluster.psk_fingerprint}</span>
+          {/if}
+        </div>
+        <div class="kpis" style="margin-top: var(--sp-3);">
+          <div class="kpi"><div class="n">{singleRes.cluster.shard_id ?? 0}</div><div class="l">Shard ID</div></div>
+          <div class="kpi"><div class="n">{singleRes.cluster.peers.length}</div><div class="l">Peers</div></div>
+          <div class="kpi"><div class="n">{singleRes.cluster.mesh_relay_budget_ms ?? 4000} ms</div><div class="l">Relay budget</div></div>
+        </div>
+      </div>
+
+      <div class="settings-two-col">
+        <div class="panel" style="padding: var(--sp-4);">
+          <h3>Local Mesh Configuration</h3>
+          <div class="stack-form">
             <div class="fieldrow">
               <label class="switch">
-                <input type="checkbox" bind:checked={enabled} onchange={markDirty} />
-                <span>Enable Mesh Cluster on this node</span>
+                <input type="checkbox" bind:checked={enabled} onchange={() => (formDirty = true)} />
+                <span>Enable Mesh Cluster</span>
               </label>
-              <span class="hint">When enabled, this node accepts cross-shard relay connections.</span>
             </div>
-
             <div class="fieldrow">
-              <label for="shard-id-input">Local Shard ID (0 .. 15)</label>
-              <input
-                id="shard-id-input"
-                type="number"
-                min="0"
-                max="15"
-                bind:value={shardId}
-                oninput={markDirty}
-                disabled={!enabled}
-                class="field-mono"
-              />
-              <span class="hint">Identifies this server's shard in the cluster. Users are assigned to shards.</span>
+              <label for="single-shard">Local Shard ID (0..15)</label>
+              <input id="single-shard" type="number" min="0" max="15" class="field-mono" bind:value={shardId} oninput={() => (formDirty = true)} disabled={!enabled} />
             </div>
-
             <div class="fieldrow">
-              <label for="mesh-listen-input">Mesh Listen Address</label>
-              <input
-                id="mesh-listen-input"
-                type="text"
-                placeholder="0.0.0.0:9443 or [::]:9443"
-                bind:value={meshListen}
-                oninput={markDirty}
-                disabled={!enabled}
-                class="field-mono"
-              />
-              <span class="hint">Address and UDP port for incoming inter-shard QUIC connections.</span>
+              <label for="single-mesh-listen">Mesh Listen Address</label>
+              <input id="single-mesh-listen" type="text" class="field-mono" bind:value={meshListen} oninput={() => (formDirty = true)} disabled={!enabled} placeholder="[::]:9443" />
             </div>
-
             <div class="fieldrow">
-              <label for="relay-budget-input">Relay Budget (ms)</label>
-              <input
-                id="relay-budget-input"
-                type="number"
-                min="100"
-                max="30000"
-                bind:value={relayBudgetMs}
-                oninput={markDirty}
-                disabled={!enabled}
-                class="field-mono"
-              />
-              <span class="hint">Maximum time allowed for a cross-shard relay connection attempt before fallback.</span>
+              <label for="single-budget">Relay Budget (ms)</label>
+              <input id="single-budget" type="number" min="100" max="30000" class="field-mono" bind:value={relayBudgetMs} oninput={() => (formDirty = true)} disabled={!enabled} />
             </div>
-
             <div class="fieldrow">
-              <label for="cluster-psk-input">Cluster Pre-Shared Key (PSK)</label>
+              <label for="single-psk">Cluster PSK</label>
               <div class="secret-row">
-                <input
-                  id="cluster-psk-input"
-                  type="text"
-                  placeholder="32-byte Base64 string"
-                  bind:value={clusterPsk}
-                  oninput={markDirty}
-                  disabled={!enabled}
-                  class="field-mono"
-                />
-                <button
-                  type="button"
-                  class="btn sm"
-                  title="Generate random 32-byte PSK"
-                  onclick={generateRandomPsk}
-                  disabled={!enabled}
-                >
-                  Generate
-                </button>
-                <button
-                  type="button"
-                  class="btn sm ghost"
-                  title="Copy PSK"
-                  onclick={copyPsk}
-                  disabled={!enabled || !clusterPsk}
-                >
-                  Copy
-                </button>
+                <input id="single-psk" type="text" class="field-mono" bind:value={clusterPsk} oninput={() => (formDirty = true)} disabled={!enabled} />
+                <button type="button" class="btn sm" disabled={!enabled} onclick={() => { clusterPsk = generateBase64Psk(); formDirty = true; }}>Generate</button>
               </div>
-              <span class="hint">Shared secret for all nodes in the mesh. Leave masked to keep current key.</span>
+              <span class="hint">Leave as ******** to preserve the current on-disk PSK.</span>
             </div>
           </div>
         </div>
 
-        <!-- Peers List -->
         <div class="panel" style="padding: var(--sp-4);">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-3);">
-            <h3 style="font-size: 14px; font-weight: 600; margin: 0;">
-              Remote Shards (Peers)
-            </h3>
-            <button
-              class="btn sm"
-              onclick={addPeer}
-              disabled={!enabled}
-              title="Add peer node"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-              Add Peer
-            </button>
+          <div class="section-head-row" style="margin-bottom: var(--sp-3);">
+            <h3>Remote Shards (Peers)</h3>
+            <button type="button" class="btn sm" disabled={!enabled} onclick={addPeer}>Add peer</button>
           </div>
-
           {#if peers.length === 0}
-            <div class="empty" style="padding: var(--sp-4);">
-              No remote peers configured. This node operates in standalone mode or awaits incoming connections only.
-            </div>
+            <div class="empty">No remote peers configured.</div>
           {:else}
             <table>
               <thead>
-                <tr>
-                  <th style="width: 90px;">Shard</th>
-                  <th>Peer Address</th>
-                  <th style="width: 50px; text-align: right;">Action</th>
-                </tr>
+                <tr><th>Shard</th><th>Address</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {#each peers as peer, idx}
+                {#each peers as peer, idx (idx)}
                   <tr>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        max="15"
-                        value={peer.shard}
-                        oninput={(e) => updatePeerShard(idx, (e.target as HTMLInputElement).value)}
-                        disabled={!enabled}
-                        class="field-mono"
-                        style="width: 70px; padding: 4px 6px;"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="text"
-                        placeholder="198.51.100.1:9443 or [2001:db8::1]:9443"
-                        value={peer.addr}
-                        oninput={(e) => updatePeerAddr(idx, (e.target as HTMLInputElement).value)}
-                        disabled={!enabled}
-                        class="field-mono"
-                        style="width: 100%; padding: 4px 6px;"
-                      />
-                    </td>
+                    <td><input type="number" min="0" max="15" class="field-mono" style="width: 72px;" bind:value={peer.shard} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
+                    <td><input type="text" class="field-mono" style="width: 100%;" bind:value={peer.addr} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
                     <td style="text-align: right;">
-                      <button
-                        class="iconbtn act-danger"
-                        title="Delete peer"
-                        disabled={!enabled}
-                        onclick={() => removePeer(idx)}
-                        aria-label={`Remove peer ${peer.shard}`}
-                      >
+                      <button type="button" class="iconbtn act-danger" aria-label={`Remove peer ${peer.shard}`} disabled={!enabled} onclick={() => removePeer(idx)}>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
                       </button>
                     </td>
@@ -411,3 +567,31 @@
     {/if}
   {/if}
 </section>
+
+<ConfirmDialog
+  open={rotatePskConfirmOpen}
+  title={`Rotate PSK across ${target?.name ?? 'cluster'}?`}
+  message="This generates a new 32-byte random Base64 PSK and writes it to every member node. Nodes must then be restarted carefully one at a time via systemd."
+  confirmLabel="Rotate PSK"
+  danger={true}
+  onconfirm={() => {
+    rotatePskConfirmOpen = false;
+    void saveClusterTopology(generateBase64Psk());
+  }}
+  oncancel={() => (rotatePskConfirmOpen = false)}
+/>
+
+<ConfirmDialog
+  open={confirmSwitchOpen}
+  title="Discard unsaved cluster changes?"
+  message="Switching targets will discard unsaved modifications to cluster members and peers."
+  confirmLabel="Discard"
+  danger={true}
+  onconfirm={() => {
+    const next = pendingTarget;
+    pendingTarget = null;
+    formDirty = false;
+    if (next) ssTargetState.target = next;
+  }}
+  oncancel={() => (pendingTarget = null)}
+/>

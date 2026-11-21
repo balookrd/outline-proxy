@@ -1,70 +1,118 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { listUsers, createUser, updateUser, deleteUser, blockUser, unblockUser, getDefaults } from '../../lib/api';
+  import {
+    ApiError,
+    listUsers, createUser, updateUser, deleteUser, blockUser, unblockUser, getDefaults,
+    listClusterUsers, getClusterDefaults, createClusterUser, updateClusterUser,
+    deleteClusterUser, blockClusterUser, unblockClusterUser,
+    regenerateAccessKeys, regenerateClusterAccessKeys,
+  } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
-  import type { User, NewUser, PatchUser, ServerDefaults } from '../../lib/types';
-  import InstanceSelector from '../../components/layout/InstanceSelector.svelte';
+  import { ssTargetState, getClusterSummary } from '../../lib/ssTarget.svelte';
+  import type {
+    ClusterUser,
+    ClusterUsersResponse,
+    NewUser,
+    NodeActionResult,
+    PatchUser,
+    ServerDefaults,
+    User,
+  } from '../../lib/types';
+  import SsTargetSelector from '../../components/layout/SsTargetSelector.svelte';
   import ErrorBanner from '../../components/layout/ErrorBanner.svelte';
+  import ConfirmDialog from '../../components/layout/ConfirmDialog.svelte';
   import UsersTable from './UsersTable.svelte';
   import UserDrawer from './UserDrawer.svelte';
+  import ClusterStatusStrip from './ClusterStatusStrip.svelte';
+  import PerNodeResultPanel from './PerNodeResultPanel.svelte';
+  import AccessKeysModal from './AccessKeysModal.svelte';
   import { cloneUserFields } from '../../lib/userForm';
   import type { UserFormFields } from '../../lib/userForm';
 
-  let instance = $state('');
-  let refreshSecs = $state(5);
+  const target = $derived(ssTargetState.target);
+  const isCluster = $derived(target?.kind === 'cluster');
+  const clusterSummary = $derived(
+    target?.kind === 'cluster' ? getClusterSummary(target.name) : null,
+  );
+  const refreshMs = $derived(Math.max(1000, ssTargetState.refreshSecs * 1000));
+
   let search = $state('');
+  let defaultMethod = $state('');
+  let actionResults = $state<NodeActionResult[]>([]);
+  let actionResultsTitle = $state('');
+  let regenerating = $state(false);
 
-  const refreshMs = $derived(Math.max(1000, refreshSecs * 1000));
+  // Links modal state
+  let linksModalOpen = $state(false);
+  let linksUserId = $state<string | null>(null);
+  let createdShowLinksBanner = $state<string | null>(null);
 
-  // No instance selected yet → resolve to an empty list without hitting the
-  // network (mirrors the old dashboard.html's loadUsers() guard).
-  const usersPoll = createPoll(
-    () => (instance ? listUsers(instance) : Promise.resolve<User[]>([])),
+  // Confirm delete dialog state
+  let confirmDeleteUser = $state<User | null>(null);
+  let confirmDeleteOpen = $derived(confirmDeleteUser !== null);
+
+  type PollData =
+    | { kind: 'single'; users: User[] }
+    | { kind: 'cluster'; payload: ClusterUsersResponse }
+    | null;
+
+  const usersPoll = createPoll<PollData>(
+    async () => {
+      if (!target) return null;
+      if (target.kind === 'cluster') {
+        const payload = await listClusterUsers(target.name);
+        return { kind: 'cluster', payload };
+      }
+      const users = await listUsers(target.name);
+      return { kind: 'single', users };
+    },
     () => refreshMs,
   );
 
-  // Start on mount, and restart (re-fetch now + reset the interval) whenever
-  // the selected instance changes, instead of waiting up to refreshMs for the
-  // next scheduled tick.
   $effect(() => {
-    void instance;
+    const t = target;
+    actionResults = [];
+    createdShowLinksBanner = null;
+    defaultMethod = '';
+    if (t) {
+      const fetchDefaults =
+        t.kind === 'cluster' ? getClusterDefaults(t.name) : getDefaults(t.name);
+      fetchDefaults
+        .then((d) => {
+          if (target?.kind === t.kind && target?.name === t.name) {
+            defaultMethod = d.method;
+          }
+        })
+        .catch(() => {});
+    }
     usersPoll.start();
   });
   onDestroy(() => usersPoll.stop());
 
-  const users = $derived(usersPoll.data ?? []);
+  const users = $derived.by<Array<User | ClusterUser>>(() => {
+    if (!usersPoll.data) return [];
+    return usersPoll.data.kind === 'cluster'
+      ? usersPoll.data.payload.users
+      : usersPoll.data.users;
+  });
 
-  // Drawer (create/edit). `editingUser` is a snapshot taken at the moment
-  // "Edit" is clicked, not a live binding into `users` — a background poll
-  // refresh while the drawer is open must not overwrite an in-progress edit.
+  const clusterPayload = $derived(
+    usersPoll.data?.kind === 'cluster' ? usersPoll.data.payload : null,
+  );
+
+  const pollError = $derived.by(() => {
+    if (usersPoll.error) return usersPoll.error;
+    if (clusterPayload?.node_errors?.length) {
+      return clusterPayload.node_errors.map((e) => `${e.instance}: ${e.error}`).join('; ');
+    }
+    return null;
+  });
+
   let drawerOpen = $state(false);
   let editingUser = $state<User | null>(null);
   let seedFields = $state<UserFormFields | null>(null);
   let seedNeedsPassword = $state(false);
-
-  // Stale-response guard for the drawer's open/close lifecycle. Plain `let`,
-  // NOT `$state` — it is bookkeeping only, nothing renders from it.
-  //
-  // Why this exists: openCloneDrawer is async (it awaits getDefaults()
-  // before writing seedFields/drawerOpen), and nothing disables the other
-  // row buttons while that fetch is in flight. So the operator can click
-  // Clone(A), then — before the fetch resolves — click Edit(B): editingUser
-  // becomes B and the drawer opens on B synchronously. When Clone(A)'s
-  // fetch then resolves, its continuation would (without this guard) still
-  // run `seedFields = cloneUserFields(A, defaults)`. UserDrawer's prefill
-  // $effect reads seedFields and assumes editingUser/seedFields stay stable
-  // for as long as `open` is true; a new seedFields identity re-triggers it
-  // while editingUser is still B, so it takes the edit branch and reassigns
-  // `fields = fieldsFromUser(B)` — silently discarding whatever the
-  // operator just typed — and refocuses the id input mid-edit. The same
-  // staleness lets two Clone clicks in flight seed the drawer from the
-  // wrong template if the older response lands last.
-  //
-  // Every function that opens or closes the drawer bumps this counter at
-  // entry. openCloneDrawer captures the value it saw at entry and re-checks
-  // it after the await: if a newer open/close has since run, this request
-  // has been superseded and must bail out untouched.
   let drawerGeneration = 0;
 
   function openCreateDrawer() {
@@ -82,27 +130,21 @@
     drawerOpen = true;
   }
   async function openCloneDrawer(user: User) {
+    if (!target) return;
     const generation = ++drawerGeneration;
-    // Snapshot the template into seed fields (fresh secrets, blank id/aliases);
-    // create-mode drawer (editingUser stays null) prefilled from it. The
-    // server's default method fills a template that carries none of its own —
-    // without it a default-method user would clone into a form whose password
-    // cannot be generated (the UI cannot pick a cipher it does not know).
     editingUser = null;
     seedNeedsPassword = Boolean(user.has_password);
     let defaults: ServerDefaults | null = null;
     try {
-      defaults = await getDefaults(instance);
+      defaults =
+        target.kind === 'cluster'
+          ? await getClusterDefaults(target.name)
+          : await getDefaults(target.name);
     } catch (e) {
-      // Only surface the toast if this request is still current — if a
-      // newer open/close superseded it, the operator already moved on and a
-      // toast about an abandoned clone would just be noise.
       if (generation === drawerGeneration) {
         toast(`Could not load server defaults: ${errorMessage(e)}`, 'error');
       }
     }
-    // Bail out without touching seedFields/drawerOpen if a newer open/close
-    // ran while this fetch was in flight — see drawerGeneration above.
     if (generation !== drawerGeneration) return;
     seedFields = cloneUserFields(user, defaults);
     drawerOpen = true;
@@ -115,34 +157,103 @@
     seedNeedsPassword = false;
   }
 
+  function openLinksModal(uid: string) {
+    linksUserId = uid;
+    linksModalOpen = true;
+  }
+
   function errorMessage(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
   }
 
-  // Mirrors dashboard.html's setBusy() — a page-wide button lock while any
-  // mutation is in flight, so a slow request can't be raced by a second
-  // click (e.g. double-delete). Narrower than the original (only the
-  // buttons below read it, not literally every <button> on the page) but
-  // same intent.
+  function extractResults(e: unknown): NodeActionResult[] {
+    if (e instanceof ApiError && e.body && typeof e.body === 'object' && 'results' in e.body) {
+      const r = (e.body as { results?: unknown }).results;
+      if (Array.isArray(r)) return r as NodeActionResult[];
+    }
+    return [];
+  }
+
   let mutating = $state(false);
 
-  // Passed to UserDrawer as `onsave`. The drawer already validated and built
-  // the payload (lib/userForm.ts); this does the actual API call, the
-  // success/error toast, and — on success — closes the drawer and refetches
-  // the list immediately instead of waiting for the next poll tick.
-  async function saveUser(payload: NewUser | PatchUser, editingId: string | null) {
-    mutating = true;
+  async function autoPruneSubscriptions(quiet = true) {
+    if (!target) return;
     try {
-      if (editingId) {
-        await updateUser(instance, editingId, payload as PatchUser);
+      if (target.kind === 'cluster') {
+        const res = await regenerateClusterAccessKeys(target.name, { prune: true });
+        if (!quiet) {
+          actionResultsTitle = `Subscriptions regenerated across ${target.name}`;
+          actionResults = res.results;
+          toast('Subscriptions regenerated and pruned.');
+        }
+      } else {
+        const rep = await regenerateAccessKeys(target.name, { prune: true });
+        if (!quiet) {
+          toast(`Subscriptions regenerated (${rep.written?.length ?? 0} written, ${rep.pruned?.length ?? 0} pruned).`);
+        }
+      }
+    } catch (e) {
+      const results = extractResults(e);
+      if (e instanceof ApiError && e.status === 501) {
+        if (!quiet) toast('Access-keys generator is not configured on server.', 'error');
+        return;
+      }
+      if (!quiet) {
+        if (results.length) {
+          actionResultsTitle = 'Subscription regeneration failed';
+          actionResults = results;
+        }
+        toast(`Subscription regeneration failed: ${errorMessage(e)}`, 'error');
+      } else {
+        toast(`User saved, but subscription sync failed: ${errorMessage(e)}`, 'error');
+      }
+    }
+  }
+
+  async function manualRegenerate() {
+    if (!target) return;
+    regenerating = true;
+    try {
+      await autoPruneSubscriptions(false);
+    } finally {
+      regenerating = false;
+    }
+  }
+
+  async function saveUser(payload: NewUser | PatchUser, editingId: string | null) {
+    if (!target) return;
+    mutating = true;
+    actionResults = [];
+    try {
+      if (target.kind === 'cluster') {
+        const res = editingId
+          ? await updateClusterUser(target.name, editingId, payload as PatchUser)
+          : await createClusterUser(target.name, payload as NewUser);
+        actionResultsTitle = editingId
+          ? `Updated ${editingId} on ${target.name}`
+          : `Created ${payload.id} on ${target.name}`;
+        actionResults = res.results;
+        toast(editingId ? 'User updated across cluster.' : 'User created across cluster.');
+      } else if (editingId) {
+        await updateUser(target.name, editingId, payload as PatchUser);
         toast('User updated.');
       } else {
-        await createUser(instance, payload as NewUser);
+        await createUser(target.name, payload as NewUser);
         toast('User created.');
       }
+      const createdId = editingId ? null : String(payload.id ?? '');
       closeDrawer();
       await usersPoll.refresh();
+      await autoPruneSubscriptions(true);
+      if (createdId) {
+        createdShowLinksBanner = createdId;
+      }
     } catch (e) {
+      const results = extractResults(e);
+      if (results.length) {
+        actionResultsTitle = editingId ? `Update ${editingId} failed` : 'Cluster create failed';
+        actionResults = results;
+      }
       toast(errorMessage(e), 'error');
     } finally {
       mutating = false;
@@ -150,26 +261,60 @@
   }
 
   async function toggleBlock(user: User) {
+    if (!target) return;
     mutating = true;
+    actionResults = [];
     try {
-      const updated = user.enabled ? await blockUser(instance, user.id) : await unblockUser(instance, user.id);
-      toast(`${updated.id} ${updated.enabled ? 'enabled' : 'blocked'}.`);
+      if (target.kind === 'cluster') {
+        const res = user.enabled
+          ? await blockClusterUser(target.name, user.id)
+          : await unblockClusterUser(target.name, user.id);
+        actionResultsTitle = `${user.enabled ? 'Blocked' : 'Unblocked'} ${user.id} on ${target.name}`;
+        actionResults = res.results;
+        toast(`${user.id} ${user.enabled ? 'blocked' : 'enabled'} across cluster.`);
+      } else {
+        const updated = user.enabled
+          ? await blockUser(target.name, user.id)
+          : await unblockUser(target.name, user.id);
+        toast(`${updated.id} ${updated.enabled ? 'enabled' : 'blocked'}.`);
+      }
       await usersPoll.refresh();
+      await autoPruneSubscriptions(true);
     } catch (e) {
+      const results = extractResults(e);
+      if (results.length) {
+        actionResultsTitle = `${user.enabled ? 'Block' : 'Unblock'} ${user.id} partial failure`;
+        actionResults = results;
+      }
       toast(errorMessage(e), 'error');
     } finally {
       mutating = false;
     }
   }
 
-  async function removeUser(user: User) {
-    if (!confirm(`Delete user ${user.id}?`)) return;
+  async function performDelete(user: User) {
+    if (!target) return;
     mutating = true;
+    actionResults = [];
     try {
-      await deleteUser(instance, user.id);
-      toast(`${user.id} deleted.`);
+      if (target.kind === 'cluster') {
+        const res = await deleteClusterUser(target.name, user.id);
+        actionResultsTitle = `Deleted ${user.id} on ${target.name}`;
+        actionResults = res.results;
+        toast(`${user.id} deleted across cluster.`);
+      } else {
+        await deleteUser(target.name, user.id);
+        toast(`${user.id} deleted.`);
+      }
+      if (createdShowLinksBanner === user.id) createdShowLinksBanner = null;
       await usersPoll.refresh();
+      await autoPruneSubscriptions(true);
     } catch (e) {
+      const results = extractResults(e);
+      if (results.length) {
+        actionResultsTitle = `Delete ${user.id} failed`;
+        actionResults = results;
+      }
       toast(errorMessage(e), 'error');
     } finally {
       mutating = false;
@@ -179,24 +324,80 @@
 
 <section class="view active">
   <div class="page-head">
-    <div><h1>Users</h1><p>Shadowsocks access keys on the selected server.</p></div>
+    <div>
+      <h1>Users</h1>
+      <p>
+        {isCluster
+          ? `Manage users and subscription links synchronously across cluster ${target?.name}.`
+          : 'Shadowsocks & VLESS access keys on the selected server.'}
+      </p>
+    </div>
     <div class="toolbar">
-      <InstanceSelector base="/ss" bind:selected={instance} bind:refreshSecs={refreshSecs} />
+      <SsTargetSelector />
       <input type="search" placeholder="Search id / method…" bind:value={search} aria-label="Search users" />
-      <button class="btn sm" disabled={!instance || mutating} onclick={openCreateDrawer}>
+      {#if !isCluster}
+        <button
+          type="button"
+          class="btn sm"
+          disabled={!target || mutating || regenerating}
+          onclick={manualRegenerate}
+          title="Regenerate subscription artifacts and prune deleted/disabled users"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          {regenerating ? 'Regenerating…' : 'Regenerate'}
+        </button>
+      {/if}
+      <button class="btn primary sm" disabled={!target || mutating} onclick={openCreateDrawer}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Add user
       </button>
     </div>
   </div>
 
-  {#if !instance}
-    <div class="empty">Select a server to load users.</div>
+  {#if !target}
+    <div class="empty">Select a cluster or server to load users.</div>
   {:else}
-    <ErrorBanner message={usersPoll.error} />
+    {#if isCluster && clusterSummary}
+      <ClusterStatusStrip
+        cluster={clusterSummary}
+        reachableNodes={clusterPayload?.reachable_nodes ?? clusterSummary.members.length}
+        totalNodes={clusterPayload?.total_nodes ?? clusterSummary.members.length}
+        {regenerating}
+        onRegenerate={manualRegenerate}
+      />
+    {/if}
+
+    <ErrorBanner message={pollError} />
+
+    {#if createdShowLinksBanner}
+      <div class="info-banner" role="status">
+        <span>User <strong class="mono">{createdShowLinksBanner}</strong> created. Open subscription links &amp; QR code?</span>
+        <span class="spacer"></span>
+        <button type="button" class="btn primary sm" onclick={() => openLinksModal(createdShowLinksBanner!)}>
+          Show links
+        </button>
+        <button type="button" class="btn ghost sm" onclick={() => (createdShowLinksBanner = null)}>Dismiss</button>
+      </div>
+    {/if}
+
+    <PerNodeResultPanel
+      title={actionResultsTitle}
+      results={actionResults}
+      onDismiss={() => (actionResults = [])}
+    />
+
     {#if users.length}
       <div class="panel">
-        <UsersTable {users} filter={search}>
-          {#snippet rowActions(user: User)}
+        <UsersTable {users} filter={search} clusterMode={isCluster}>
+          {#snippet rowActions(user: User | ClusterUser)}
+            <button
+              class="iconbtn act-soft"
+              title="Show links & QR"
+              disabled={mutating || !user.enabled}
+              aria-label={`Links for ${user.id}`}
+              onclick={() => openLinksModal(user.id)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </button>
             <button class="iconbtn act-activate" title="Clone" disabled={mutating} aria-label={`Clone ${user.id}`} onclick={() => openCloneDrawer(user)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
             </button>
@@ -217,17 +418,50 @@
               title="Delete"
               disabled={mutating}
               aria-label={`Delete ${user.id}`}
-              onclick={() => removeUser(user)}
+              onclick={() => (confirmDeleteUser = user)}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
             </button>
           {/snippet}
         </UsersTable>
       </div>
-    {:else if !usersPoll.error}
+    {:else if !pollError}
       <div class="empty">No users yet.</div>
     {/if}
   {/if}
 </section>
 
-<UserDrawer open={drawerOpen} {editingUser} {seedFields} {seedNeedsPassword} onclose={closeDrawer} onsave={saveUser} />
+<UserDrawer
+  open={drawerOpen}
+  {editingUser}
+  {seedFields}
+  {seedNeedsPassword}
+  {defaultMethod}
+  clusterName={isCluster ? target?.name ?? null : null}
+  clusterMembers={clusterSummary?.members ?? []}
+  onclose={closeDrawer}
+  onsave={saveUser}
+/>
+
+<AccessKeysModal
+  bind:open={linksModalOpen}
+  {target}
+  userId={linksUserId}
+  onclose={() => (linksUserId = null)}
+/>
+
+<ConfirmDialog
+  open={confirmDeleteOpen}
+  title={isCluster ? `Delete ${confirmDeleteUser?.id ?? ''} across cluster?` : `Delete ${confirmDeleteUser?.id ?? ''}?`}
+  message={isCluster
+    ? `This removes user "${confirmDeleteUser?.id ?? ''}" from all nodes of cluster "${target?.name ?? ''}" and prunes their subscription files.`
+    : `This removes user "${confirmDeleteUser?.id ?? ''}" and prunes their subscription files.`}
+  confirmLabel="Delete"
+  danger={true}
+  onconfirm={() => {
+    const u = confirmDeleteUser;
+    confirmDeleteUser = null;
+    if (u) void performDelete(u);
+  }}
+  oncancel={() => (confirmDeleteUser = null)}
+/>

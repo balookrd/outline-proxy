@@ -22,19 +22,47 @@ holds are its own token and the instance tokens its config points at.
 
 ## Server dashboard (`/ss`)
 
-- Users (`/ss`): create, edit, block, clone and delete access keys
-  (Shadowsocks AEAD / VLESS), generate credentials.
-- Mesh cluster (`/ss/cluster`): the `[cluster]` section — local shard ID
-  (0..15), mesh listen address, relay budget (ms), cluster PSK (the mesh mutual
-  TLS identity and the shard obfuscation key are derived from it with BLAKE3),
-  peer list.
-- Server settings (`/ss/settings`): TCP/TLS and HTTP/3 listen addresses,
-  `h3_initial_mtu`, TLS certificate and key paths; session resumption (TCP/UDP
-  TTL, per-user and global caps, downlink buffer); outbound policy (prefer IPv4,
-  sticky IPv6 sessions, IPv6 prefix pool, dynamic prefix interface and its
-  refresh interval, outbound interface); tuning profile (`large`, `medium`,
-  `small`); `[padding]` (min/max bytes, cover jitter, throttle detection); SNI
-  routing (`match_sni`); `[http_fallback]`; the list of carrier endpoints.
+The `/ss` dashboard shares a single target selector in the toolbar for switching
+between configured/discovered clusters (`cluster:<name>`) and individual servers
+(`instance:<name>`):
+
+- Users (`/ss`): create, edit, block/unblock, clone and delete access keys
+  (Shadowsocks AEAD / VLESS) for a single server or atomically across a cluster
+  (with pre-flight `409` duplicate checks, rollback on partial `POST` failure,
+  idempotent `DELETE` when absent with `404`, per-node sync badges
+  `Synced` / `Partial` / `Drift`, and BLAKE3 secret fingerprints `password_fp` /
+  `vless_id_fp`). Includes an **Access links & subscriptions** dialog (`<dialog>`)
+  with locally rendered SVG QR codes (Outline `ssconf://`, Happ/Xray `.json`,
+  App Config `.toml`, and Share Links) plus one-click subscription regeneration
+  (`--prune`).
+- Mesh cluster (`/ss/cluster`): manage the `[cluster]` section — local shard ID
+  (0..15), mesh listen address, peer reachability address (`mesh_addr`), relay
+  budget (ms), cluster PSK rotation (BLAKE3-derived mTLS identity and shard
+  obfuscation key), and symmetric peer list. In cluster mode, inspects
+  `mesh_health` (`all_reachable`, `psk_match`, `shards_unique`,
+  `peers_symmetric`, `restart_pending_nodes`); servers with matching
+  `psk_fingerprint` and `cluster.enabled = true` are also auto-discovered when
+  no explicit `[[ss.clusters]]` entry covers them.
+- Server settings (`/ss/settings`): organized into 5 horizontal tabs
+  (`Carriers & Endpoints`, `Network & TLS`, `Resumption & Camouflage`,
+  `Subscriptions`, `Tuning & System`) with post-interaction validation, sticky
+  save-bar, cluster `drift` badges with per-node diff & align, and a
+  post-save banner showing `restart_pending` / subscription regeneration:
+  - `[[endpoint]]` CRUD (`path`, `kind`, `padded`), `[shadowsocks].method`,
+    `[http_root]` (`auth`, `realm`);
+  - per-node & shared TCP/TLS and HTTP/3 settings (`listen`, `cert_path`,
+    `key_path`, `[[server.certs]]`, `max_connections_per_ip`, `h3_listen`,
+    `h3_cert_path`, `h3_key_path`, `[[server.h3.certs]]`, `h3_alpn`,
+    `h3_udp_datagrams`, `h3_initial_mtu`, `h3_mtu_first_probe`, `[outbound]`);
+  - `[session_resumption]`, all 11 `[padding]` fields, `[http_fallback]`, and
+    `[sni_fallback]` with dynamic backends;
+  - `[access_keys]` (`public_host`, `public_scheme`, `url_base`,
+    `file_extension`, `write_dir`, `nodes`), which apply immediately without a
+    server restart;
+  - `tuning_profile` (`small`, `medium`, `large`) plus all 23 `[tuning]`
+    override fields and read-only `[metrics]` / `[control]` status.
+- UI version: fetched from `GET /api/meta` and shown in the sidebar footer (and
+  in the mobile topbar on viewports `<= 900px`).
 
 ## Client dashboard (`/ws`)
 
@@ -148,6 +176,20 @@ token_file = "/etc/outline-ui/secrets/ws-beelink102"
 name = "relay-a"
 control_url = "https://relay-a.fleet.example/rust-ss-exporter"
 token_file = "/etc/outline-ui/secrets/ss-relay-a"
+public_host = "relay-a.fleet.example"     # optional, used when generating cluster/subscription hosts
+mesh_addr = "198.51.100.11:9443"          # optional, explicit peer mesh address in cluster setup
+
+[[ss.instances]]
+name = "relay-b"
+control_url = "https://relay-b.fleet.example/rust-ss-exporter"
+token_file = "/etc/outline-ui/secrets/ss-relay-b"
+public_host = "relay-b.fleet.example"
+mesh_addr = "198.51.100.12:9443"
+
+[[ss.clusters]]                           # optional; overrides/supplements psk_fingerprint auto-discovery
+name = "cloud"
+members = ["relay-a", "relay-b"]
+subscription_nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]
 ```
 
 | Key | Default | What it does |
@@ -159,6 +201,10 @@ token_file = "/etc/outline-ui/secrets/ss-relay-a"
 | `[server] refresh_interval_secs` | `5` | Polling interval of the dashboards |
 | `[[ws.instances]]` / `[[ss.instances]]` `name`, `control_url` | — (required) | Instance name and base URL of its control API |
 | `[[ws.instances]]` / `[[ss.instances]]` `token` / `token_file` | — (one of them required) | Instance control token |
+| `[[ss.instances]]` `public_host` | none | Public host advertised for this SS server |
+| `[[ss.instances]]` `mesh_addr` | none | Peer mesh `host:port` used by cluster management |
+| `[[ss.clusters]]` `name`, `members` | `[]` | Explicit SS cluster name and member instance names (`>= 2` members) |
+| `[[ss.clusters]]` `subscription_nodes` | `[]` | Balancer hosts passed to access-keys regeneration for this cluster |
 
 Every token is given either inline as `token` or from disk as `token_file`,
 never both. Trailing whitespace in a token file is stripped: secret mounts and
@@ -210,7 +256,7 @@ pnpm install
 pnpm dev   # http://localhost:5173
 ```
 
-`vite.config.ts` proxies `/ss/dashboard/api` and `/ws/dashboard/api` to
+`vite.config.ts` proxies `/api`, `/ss/dashboard/api`, and `/ws/dashboard/api` to
 `127.0.0.1:9500`: the dev server serves the SPA from its own origin, and its API
 calls reach the backend process and, through it, the `control_url`s in its
 `config.toml`. The requests still need `Bearer`/`Basic` credentials; the dev
@@ -235,8 +281,10 @@ two gates:
 - `/ui-assets/*` — hashed JS/CSS/font files (`assets::asset`). Vite emits
   assets under this prefix so they cannot collide with either dashboard's API
   tree.
+- `/api/meta` — panel metadata (`{ "version": "<CARGO_PKG_VERSION>" }`, `Cache-Control: no-store`).
 - `/ws/dashboard/api/...` and `/ss/dashboard/api/...` — the two dashboards'
-  JSON APIs, each `.nest`-ed under `/ws`/`/ss` (`ws::router`/`ss::router`).
+  JSON APIs (including `/ss/dashboard/api/clusters` and `/ss/dashboard/api/clusters/{cluster}/...`),
+  each `.nest`-ed under `/ws`/`/ss` (`ws::router`/`ss::router`).
 - Everything else — `/`, a deep link like `/ws/uplinks`, a typo — serves the
   same `index.html` shell (`assets::spa_index`), including the `.fallback`
   inside the nested `/ws` and `/ss` routers.
