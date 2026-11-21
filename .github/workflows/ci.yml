@@ -373,7 +373,9 @@ jobs:
         shell: bash
         env:
           AR_x86_64_pc_windows_msvc: lib.exe
-        run: ./scripts/package-windows.sh --output-dir dist/windows
+        run: |
+          rm -f "/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe" 2>/dev/null || true
+          ./scripts/package-windows.sh --output-dir dist/windows
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: OutlineProxy-Windows-preview

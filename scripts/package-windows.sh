@@ -341,6 +341,10 @@ else
 fi
 
 if [[ "${IS_WINDOWS}" == "true" ]]; then
+    # Git for Windows поставляет GNU coreutils link.exe в /usr/bin, который затеняет
+    # системный линкер MSVC link.exe. Удаляем его, чтобы rustc использовал MSVC link.exe.
+    rm -f "/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe" "C:/Program Files/Git/usr/bin/link.exe" 2>/dev/null || true
+
     # На Windows MSVC архиватором является lib.exe. .cargo/config.toml глобально форсит
     # AR="zig ar" для кросс-сборки musl, однако zig ar не принимает флаги MSVC (-out:... -nologo).
     # Явно задаем AR_x86_64_pc_windows_msvc для cc-rs (aws-lc-sys и др.).
