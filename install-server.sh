@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 
 REPO="${REPO:-balookrd/outline-proxy}"
-TAG_PREFIX="ss-"
-BINARY_NAME="outline-ss-rust"
-SERVICE_NAME="${SERVICE_NAME:-outline-ss-rust.service}"
+NIGHTLY_TAG="server-nightly"
+BINARY_NAME="outline-server"
+SERVICE_NAME="${SERVICE_NAME:-outline-server.service}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
 FORCE="${FORCE:-}"
@@ -15,15 +15,15 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
 INSTALL_BIN_PATH="${INSTALL_BIN_DIR}/${BINARY_NAME}"
 
-CONFIG_DIR="${CONFIG_DIR:-/etc/outline-ss-rust}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/outline-server}"
 CONFIG_PATH="${CONFIG_DIR}/config.toml"
 
-STATE_DIR="${STATE_DIR:-/var/lib/outline-ss-rust}"
+STATE_DIR="${STATE_DIR:-/var/lib/outline-server}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_PATH="${SYSTEMD_DIR}/${SERVICE_NAME}"
 
-SERVICE_USER="${SERVICE_USER:-outline-ss-rust}"
-SERVICE_GROUP="${SERVICE_GROUP:-outline-ss-rust}"
+SERVICE_USER="${SERVICE_USER:-outline-server}"
+SERVICE_GROUP="${SERVICE_GROUP:-outline-server}"
 SERVICE_WAS_ACTIVE=0
 INSTALLED_VERSION=""
 SKIP_UPDATE=0
@@ -255,8 +255,7 @@ release_field() {
 }
 
 strip_v() {
-  local ver="${1#"${TAG_PREFIX:-}"}"
-  echo "${ver#v}"
+  echo "${1#v}"
 }
 
 # Возвращает короткий (12 символов) SHA коммита для тега nightly.
@@ -274,7 +273,7 @@ get_nightly_commit_sha() {
   fi
 
   # target_commitish — имя ветки; резолвим через refs API
-  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${TAG_PREFIX}nightly")" 2>/dev/null || true)"
+  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${NIGHTLY_TAG}")" 2>/dev/null || true)"
 
   [[ -n "$ref_json" ]] || { echo ""; return; }
 
@@ -306,8 +305,6 @@ resolve_release() {
       tag="$VERSION"
     elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       tag="v${VERSION}"
-    elif [[ "$VERSION" =~ ^${TAG_PREFIX}v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      tag="$VERSION"
     else
       die "VERSION должен быть в формате v26.11.0 или 26.11.0"
     fi
@@ -318,7 +315,7 @@ resolve_release() {
         api_path="releases/latest"
         ;;
       nightly)
-        api_path="releases/tags/${TAG_PREFIX}nightly"
+        api_path="releases/tags/${NIGHTLY_TAG}"
         ;;
       *)
         die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
@@ -413,7 +410,7 @@ install_config_if_missing() {
   fi
 
   local cfg_url
-  cfg_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-ss-rust/config.toml")"
+  cfg_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-server/config.toml")"
 
   log "Скачиваю пример конфига ${cfg_url}"
   fetch "$cfg_url" "$CONFIG_PATH"
@@ -423,7 +420,7 @@ install_config_if_missing() {
 
 install_systemd_unit() {
   local unit_url tmp_unit
-  unit_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-ss-rust/systemd/${SERVICE_NAME}")"
+  unit_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-server/systemd/${SERVICE_NAME}")"
   tmp_unit="${TMP_DIR}/${SERVICE_NAME}"
 
   log "Скачиваю systemd unit ${unit_url}"

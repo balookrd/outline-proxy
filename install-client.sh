@@ -4,19 +4,19 @@ set -Eeuo pipefail
 REPO_OWNER="${REPO_OWNER:-balookrd}"
 REPO_NAME="${REPO_NAME:-outline-proxy}"
 REPO="${REPO_OWNER}/${REPO_NAME}"
-TAG_PREFIX="ws-"
+NIGHTLY_TAG="client-nightly"
 
-BINARY_NAME="${BINARY_NAME:-outline-ws-rust}"
+BINARY_NAME="${BINARY_NAME:-outline-client}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/${BINARY_NAME}}"
 
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
-CONFIG_DIR="${CONFIG_DIR:-/etc/outline-ws-rust}"
-STATE_DIR="${STATE_DIR:-/var/lib/outline-ws-rust}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/outline-client}"
+STATE_DIR="${STATE_DIR:-/var/lib/outline-client}"
 TMP_DIR=""
 trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
 
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
-VERSION="${VERSION:-}"         # stable: 26.11.0 or v26.11.0 (or legacy ws-vX.Y.Z); nightly: nightly
+VERSION="${VERSION:-}"         # stable: 26.11.0 or v26.11.0; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
 ACTION="${ACTION:-install}"    # install | remove | purge
 NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
@@ -28,17 +28,17 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 # отвязаны от релиз-бинаря. Заданные в окружении RAW_* сохраняют приоритет,
 # дефолты выводятся из тега уже после его резолва.
 RAW_BASE="${RAW_BASE:-}"
-BIN_SUBDIR="bins/outline-ws-rust"
+BIN_SUBDIR="bins/outline-client"
 RAW_SERVICE_URL="${RAW_SERVICE_URL:-}"
 RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-}"
 RAW_CONFIG_URL="${RAW_CONFIG_URL:-}"
 RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-}"
 
-SERVICE_NAME="outline-ws-rust.service"
-TEMPLATE_NAME="outline-ws-rust@.service"
+SERVICE_NAME="outline-client.service"
+TEMPLATE_NAME="outline-client@.service"
 
-SERVICE_USER="${SERVICE_USER:-outline-ws}"
-SERVICE_GROUP="${SERVICE_GROUP:-outline-ws}"
+SERVICE_USER="${SERVICE_USER:-outline-client}"
+SERVICE_GROUP="${SERVICE_GROUP:-outline-client}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -122,11 +122,11 @@ usage() {
   - создаёт system-юзера/группу ${SERVICE_USER}:${SERVICE_GROUP}
   - создаёт ${CONFIG_DIR} и ${STATE_DIR}, выставляет владельца/права
   - скачивает config.toml и example instance, если их ещё нет
-  - перезапускает только уже активные outline-ws-rust unit'ы
+  - перезапускает только уже активные outline-client unit'ы
 
 Режимы удаления:
   --remove / --uninstall    останавливает и отключает основной сервис и все
-                            инстансы outline-ws-rust@NAME, удаляет оба unit'а,
+                            инстансы outline-client@NAME, удаляет оба unit'а,
                             бинарник и его backup'ы; ${CONFIG_DIR},
                             ${STATE_DIR} и сервис-юзер остаются
   --purge                   всё, что делает --remove, плюс удаление
@@ -139,13 +139,13 @@ usage() {
   INSTALL_PATH=...          Куда установить бинарник
   CONFIG_DIR=...            Каталог конфигурации
   STATE_DIR=...             Каталог рабочего состояния
-  SERVICE_USER=...          System-юзер сервиса (по умолчанию outline-ws)
-  SERVICE_GROUP=...         System-группа сервиса (по умолчанию outline-ws)
+  SERVICE_USER=...          System-юзер сервиса (по умолчанию outline-client)
+  SERVICE_GROUP=...         System-группа сервиса (по умолчанию outline-client)
   GITHUB_TOKEN=...          GitHub token для обхода rate limit API
 
 После установки:
   systemctl enable --now ${SERVICE_NAME}
-  systemctl enable --now outline-ws-rust@NAME.service
+  systemctl enable --now outline-client@NAME.service
 EOF
 }
 
@@ -202,8 +202,8 @@ github_api_url() {
 resolve_raw_urls() {
   local tag="$1"
   RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${tag}}"
-  RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust.service}"
-  RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust@.service}"
+  RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-client.service}"
+  RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-client@.service}"
   RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
   RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
 }
@@ -234,8 +234,6 @@ normalize_version_tag() {
       echo "$v"
     elif [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "v${v}"
-    elif [[ "$v" =~ ^${TAG_PREFIX}v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "$v"
     else
       die "Для CHANNEL=stable VERSION должен быть вида 26.11.0 или v26.11.0"
     fi
@@ -243,7 +241,7 @@ normalize_version_tag() {
     if [[ -z "$v" ]]; then
       echo ""
     elif [[ "$v" == "nightly" ]]; then
-      echo "${TAG_PREFIX}${v}"
+      echo "${NIGHTLY_TAG}"
     else
       die "Для CHANNEL=nightly VERSION должен быть равен nightly"
     fi
@@ -262,7 +260,7 @@ select_release_json() {
         api_path="releases/latest"
         ;;
       nightly)
-        api_path="releases/tags/${TAG_PREFIX}nightly"
+        api_path="releases/tags/${NIGHTLY_TAG}"
         ;;
       *)
         die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
@@ -307,7 +305,7 @@ get_nightly_commit_sha() {
   fi
 
   # target_commitish — имя ветки; резолвим через refs API
-  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${TAG_PREFIX}nightly")" 2>/dev/null || true)"
+  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${NIGHTLY_TAG}")" 2>/dev/null || true)"
 
   [[ -n "$ref_json" ]] || { echo ""; return; }
 
@@ -409,7 +407,7 @@ install_unit_files() {
 ensure_service_user() {
   # Сервис работает под фиксированным system-юзером (раньше был DynamicUser=true).
   # Фиксированный юзер нужен, чтобы dashboard CRUD и автомиграция конфига могли
-  # писать в /etc/outline-ws-rust (UID стабилен между рестартами).
+  # писать в /etc/outline-client (UID стабилен между рестартами).
   if ! getent group "$SERVICE_GROUP" >/dev/null; then
     log "Создание группы ${SERVICE_GROUP}"
     groupadd --system "$SERVICE_GROUP"
@@ -461,14 +459,13 @@ get_installed_version() {
 
 # Убирает префикс 'v' из тега релиза для сравнения с выводом --version
 strip_v() {
-  local ver="${1#"${TAG_PREFIX:-}"}"
-  echo "${ver#v}"
+  echo "${1#v}"
 }
 
 collect_active_units() {
   systemctl list-units --type=service --state=active --no-legend --no-pager \
     | awk '{print $1}' \
-    | grep -E '^outline-ws-rust(\.service|@.+\.service)$' || true
+    | grep -E '^outline-client(\.service|@.+\.service)$' || true
 }
 
 restart_previously_active_units() {
@@ -483,7 +480,7 @@ restart_previously_active_units() {
   done < <(collect_active_units)
 
   if [[ "$had" -eq 0 ]]; then
-    log "Активных outline-ws-rust unit'ов не найдено"
+    log "Активных outline-client unit'ов не найдено"
   fi
 }
 
@@ -496,7 +493,7 @@ require_remove_tools() {
   fi
 }
 
-# Перечисляет основной unit и все инстансы outline-ws-rust@NAME (active или
+# Перечисляет основной unit и все инстансы outline-client@NAME (active или
 # enabled), но не голый шаблонный unit. Источники — list-units --all и
 # list-unit-files, объединённые и дедуплицированные.
 list_known_units() {
@@ -505,7 +502,7 @@ list_known_units() {
       | awk '{print $1}'
     systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null \
       | awk '{print $1}'
-  } | grep -E '^outline-ws-rust(\.service|@.+\.service)$' | sort -u || true
+  } | grep -E '^outline-client(\.service|@.+\.service)$' | sort -u || true
 }
 
 stop_disable_units() {
@@ -524,7 +521,7 @@ stop_disable_units() {
     fi
   done < <(list_known_units)
 
-  [[ "$had" -eq 1 ]] || log "Активных/enabled outline-ws-rust unit'ов не найдено"
+  [[ "$had" -eq 1 ]] || log "Активных/enabled outline-client unit'ов не найдено"
 }
 
 remove_unit_files() {
@@ -540,7 +537,7 @@ remove_unit_files() {
   if [[ "$removed" -eq 1 ]]; then
     systemctl daemon-reload
   else
-    log "Unit-файлы outline-ws-rust не найдены — пропускаю"
+    log "Unit-файлы outline-client не найдены — пропускаю"
   fi
 }
 
@@ -638,7 +635,7 @@ main() {
   local target release_json release_tag release_name asset_url archive_path workdir
   local svc_tmp tpl_tmp
   target="$(map_arch_to_target)"
-  [[ -n "$TMP_DIR" ]] || TMP_DIR="$(mktemp -d -t outline-ws-rust-install.XXXXXX)"
+  [[ -n "$TMP_DIR" ]] || TMP_DIR="$(mktemp -d -t outline-client-install.XXXXXX)"
   archive_path="${TMP_DIR}/${BINARY_NAME}.tar.gz"
   workdir="${TMP_DIR}/work"
   svc_tmp="${TMP_DIR}/${SERVICE_NAME}"
@@ -751,7 +748,7 @@ main() {
   log "Инстансы:       ${CONFIG_DIR}/instances/NAME.toml"
   log "Автозапуск после установки не выполняется"
   log "Запуск обычного сервиса: systemctl enable --now ${SERVICE_NAME}"
-  log "Запуск инстанса:        systemctl enable --now outline-ws-rust@NAME.service"
+  log "Запуск инстанса:        systemctl enable --now outline-client@NAME.service"
 }
 
 main "$@"
