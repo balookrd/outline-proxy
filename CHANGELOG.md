@@ -12,6 +12,7 @@ per-binary changelogs:
 |-----------|-----------|---------|
 | **Server** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) |
 | **Client** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) |
+| **Windows client** (`outline-windows`) | [`bins/outline-windows/CHANGELOG.md`](bins/outline-windows/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-windows/CHANGELOG.ru.md) |
 | **Dashboard** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) |
 | **Android app** | [`android/CHANGELOG.md`](android/CHANGELOG.md) | [`CHANGELOG.ru.md`](android/CHANGELOG.ru.md) |
 
@@ -45,6 +46,10 @@ whole system:
   traffic, active carrier), a build-version footer, and a signed-APK release
   pipeline (`android-v*` tags, rolling `android-nightly`) — plus the
   **`outline-ui`** aggregating dashboard service.
+- **A Windows client** ([`bins/outline-windows/`](bins/outline-windows/)) on Tauri v2
+  + Svelte 5 supporting SOCKS5 and TUN (Wintun) modes, built-in auto-updater with
+  SHA-256 verification against `SHA256SUMS.txt`, zip-slip protection, and
+  automatic tunnel reconnect.
 
 See each binary's changelog for the full, version-by-version detail.
 

@@ -11,6 +11,7 @@
 |-----------|-----------|---------|
 | **Сервер** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) |
 | **Клиент** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) |
+| **Windows-клиент** (`outline-windows`) | [`bins/outline-windows/CHANGELOG.ru.md`](bins/outline-windows/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-windows/CHANGELOG.md) |
 | **Дашборд** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) |
 | **Android-приложение** | [`android/CHANGELOG.ru.md`](android/CHANGELOG.ru.md) | [`CHANGELOG.md`](android/CHANGELOG.md) |
 
@@ -45,6 +46,10 @@ carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
   приложении (длительность, трафик, активный носитель), футером версии билда и
   конвейером выпуска подписанного APK (теги `android-v*`, rolling
   `android-nightly`) — плюс агрегирующий dashboard-сервис **`outline-ui`**.
+- **Windows-клиент** ([`bins/outline-windows/`](bins/outline-windows/)) на стеке
+  Tauri v2 + Svelte 5 с поддержкой режимов SOCKS5 и TUN (Wintun), встроенным
+  автоапдейтером с проверкой SHA-256 по `SHA256SUMS.txt`, защитой от zip-slip
+  и автореконнектом туннеля.
 
 Подробная история по версиям — в changelog'ах бинарей.
 
