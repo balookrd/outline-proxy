@@ -3382,7 +3382,7 @@ dependencies = [
 
 [[package]]
 name = "outline-client"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "outline-metrics"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "parking_lot 0.13.0",
@@ -3440,7 +3440,7 @@ dependencies = [
 
 [[package]]
 name = "outline-net"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "hashbrown 0.17.1",
@@ -3454,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "outline-routing"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "outline-server"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -3526,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "outline-transport"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "outline-tun"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "outline-ui"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3639,7 +3639,7 @@ dependencies = [
 
 [[package]]
 name = "outline-uplink"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "outline-windows"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3692,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "outline-wire"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -5049,7 +5049,7 @@ dependencies = [
 
 [[package]]
 name = "shadowsocks-crypto"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5159,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "socks5-proto"
-version = "26.11.0"
+version = "26.11.1"
 dependencies = [
  "blake3",
  "outline-wire",
