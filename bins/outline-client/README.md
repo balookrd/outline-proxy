@@ -5,11 +5,11 @@
   </picture>
 </p>
 
-# outline-ws-rust
+# outline-client
 
-`outline-ws-rust` is the client binary of the `outline-proxy` monorepo. It accepts local SOCKS5 traffic and, optionally, packets from an existing TUN device, and forwards them to an `outline-ss-rust` server (or another Outline-compatible / VLESS server) over WebSocket on HTTP/1.1, HTTP/2 or HTTP/3, or over XHTTP on the same three HTTP versions.
+`outline-client` is the client binary of the `outline-proxy` monorepo. It accepts local SOCKS5 traffic and, optionally, packets from an existing TUN device, and forwards them to an `outline-server` server (or another Outline-compatible / VLESS server) over WebSocket on HTTP/1.1, HTTP/2 or HTTP/3, or over XHTTP on the same three HTTP versions.
 
-This document covers building, configuring and running the client on Linux. Operating the server side is described in [`bins/outline-ss-rust/README.md`](../outline-ss-rust/README.md); the per-shape uplink reference is [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+This document covers building, configuring and running the client on Linux. Operating the server side is described in [`bins/outline-server/README.md`](../outline-server/README.md); the per-shape uplink reference is [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 
 It supports:
 
@@ -42,7 +42,7 @@ flowchart LR
     subgraph LocalHost["Local host"]
         C["SOCKS5 clients"]
         T["Existing TUN device"]
-        P["outline-ws-rust"]
+        P["outline-client"]
         M["/metrics endpoint"]
         C --> P
         T --> P
@@ -113,14 +113,14 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
-- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) for SS (`tcp_xhttp_url` / `udp_xhttp_url`) and VLESS (`vless_xhttp_url`); pairs with the XHTTP endpoints of outline-ss-rust. The query string of the dial URL selects the submode: a bare URL or `?mode=packet-up` runs a GET plus sequenced POSTs, `?mode=stream-one` runs one bidirectional POST (h2 / h3 only; the h1 carrier supports packet-up only and fails on stream-one). Use it when WebSocket upgrades are blocked on the path (CDNs, captive-portal middleboxes).
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) for SS (`tcp_xhttp_url` / `udp_xhttp_url`) and VLESS (`vless_xhttp_url`); pairs with the XHTTP endpoints of `outline-server`. The query string of the dial URL selects the submode: a bare URL or `?mode=packet-up` runs a GET plus sequenced POSTs, `?mode=stream-one` runs one bidirectional POST (h2 / h3 only; the h1 carrier supports packet-up only and fails on stream-one). Use it when WebSocket upgrades are blocked on the path (CDNs, captive-portal middleboxes).
 - VLESS uplinks (`transport = "vless"`, UUID auth, per-destination UDP session-mux bounded by `vless_udp_max_sessions`)
 - carrier fallback on dial failure:
   - `ws_h3 -> ws_h2 -> ws_h1`
   - `ws_h2 -> ws_h1`
-  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (packet-up only; stream-one stops at h2). The same `X-Outline-Resume` token is carried across each carrier switch, so an outline-ss-rust server with session resumption enabled re-attaches the parked upstream instead of opening a new one. The h1 step is for paths that block both QUIC and the h2 ALPN; it opens two keep-alive sockets per session (long-lived GET + serialised POSTs) because h1 cannot multiplex.
+  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (packet-up only; stream-one stops at h2). The same `X-Outline-Resume` token is carried across each carrier switch, so an `outline-server` instance with session resumption enabled re-attaches the parked upstream instead of opening a new one. The h1 step is for paths that block both QUIC and the h2 ALPN; it opens two keep-alive sockets per session (long-lived GET + serialised POSTs) because h1 cannot multiplex.
   - per-uplink fallback wires via `[[outline.uplinks.fallbacks]]`: each uplink may declare further wire shapes (another `transport` + URL) that the dial loop tries when the primary fails on this uplink, e.g. `vless → ss` or `ss → vless`. After `probe.min_failures` consecutive dial failures the active wire stays on the fallback for `mode_downgrade_secs` and new sessions start there; when that pin expires, sessions return to the primary. Resume tokens (`X-Outline-Resume`) survive the wire switch through the identity-level resume cache, so a resume-enabled server re-attaches the upstream across `vless ↔ ss`. The chunk-0 failover loop tries every other wire of the same uplink before moving to another uplink. `shuffle_wires = true` shuffles the chain at process start (collision-free permutations within an `[[uplink_group]]`) and hands over to uplink failover after one full pass without a successful wire (any successful wire resets the pass); `shuffle_timer = "1h"` rerolls `active_wire` on a per-uplink interval (`30s` / `5m` / `1h30m` / `2d` / bare seconds) and suppresses probe-driven early failback to the primary so the reroll stays in effect. `carrier_downgrade = false` disables the carrier cascade inside a wire, so a failure moves straight to the next wire (for DPI that drops the upstream regardless of HTTP version). See "Per-uplink fallback transports" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
-- client-side session resumption across carriers: WebSocket upgrades carry `X-Outline-Resume-Capable: 1`; the `X-Outline-Session` ID the server returns is cached per uplink (and per (uplink, target) inside the VLESS UDP mux) and sent as `X-Outline-Resume: <hex>` on the next dial, so an outline-ss-rust server with resumption enabled re-attaches the parked upstream and skips the connect to the target. Covers TCP over WS, SS-UDP over WS and VLESS over XHTTP (h1 / h2 / h3, packet-up and stream-one; the token comes back on the response that carries the first downlink chunk). A server without resumption ignores the header; the wire is otherwise unchanged.
+- client-side session resumption across carriers: WebSocket upgrades carry `X-Outline-Resume-Capable: 1`; the `X-Outline-Session` ID the server returns is cached per uplink (and per (uplink, target) inside the VLESS UDP mux) and sent as `X-Outline-Resume: <hex>` on the next dial, so an `outline-server` instance with resumption enabled re-attaches the parked upstream and skips the connect to the target. Covers TCP over WS, SS-UDP over WS and VLESS over XHTTP (h1 / h2 / h3, packet-up and stream-one; the token comes back on the response that carries the first downlink chunk). A server without resumption ignores the header; the wire is otherwise unchanged.
 
 ### Encryption
 
@@ -189,12 +189,12 @@ tun2udp + tun2tcp"]
 
 ## Repository layout
 
-Paths are relative to `bins/outline-ws-rust/`; shared crates live at the workspace root.
+Paths are relative to `bins/outline-client/`; shared crates live at the workspace root.
 
 - [`config.toml`](config.toml) — example configuration
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service), [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — systemd units
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — main operational dashboard
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — hang diagnostics
+- [`systemd/outline-client.service`](systemd/outline-client.service), [`systemd/outline-client@.service`](systemd/outline-client@.service) — systemd units
+- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json) — main operational dashboard
+- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json) — hang diagnostics
 - [`src/bootstrap/`](src/bootstrap) — startup sequence: listener binding and persistent state store
 - [`src/config/`](src/config) — CLI and config schema, loading, validation
 - [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (dispatcher, TCP failover, UDP relay)
@@ -233,16 +233,16 @@ rustup target add aarch64-unknown-linux-musl
 Aliases from the root `.cargo/config.toml`:
 
 ```bash
-cargo ws-release-musl-x86_64
-cargo ws-release-musl-aarch64
+cargo client-release-musl-x86_64
+cargo client-release-musl-aarch64
 ```
 
 ### CI releases
 
-Nightly builds live in `.github/workflows/ws-nightly-release.yml`; unified stable releases live in `.github/workflows/release.yml` and `.github/workflows/tag-release.yml`.
+Nightly builds live in `.github/workflows/client-nightly-release.yml`; unified stable releases live in `.github/workflows/release.yml` and `.github/workflows/tag-release.yml`.
 
-- A push to `main` that touches `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` or `.cargo/**` runs `Nightly Release (client)`. It moves the rolling tag `ws-nightly` to that commit and republishes the `Client Nightly` prerelease.
-- Nightly publishes `release` builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` plus `SHA256SUMS.txt`. Archives are named `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
+- A push to `main` that touches `bins/outline-client/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` or `.cargo/**` runs `Nightly Release (client)`. It moves the rolling tag `client-nightly` to that commit and republishes the `Client Nightly` prerelease.
+- Nightly publishes `release` builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` plus `SHA256SUMS.txt`. Archives are named `outline-client-nightly-<8-char-commit-sha>-<target>.tar.gz`.
 - To cut a unified stable CalVer release, run the manual `Release` workflow with an optional `series` (`YY.M`, defaulting to the current UTC month). CI computes the next patch for `v<YY>.<M>.*`, updates versions across workspace manifests and lockfiles, creates a release commit and pushes it to `main`.
 - After the release commit lands on `main`, create and push a signed tag locally (`git tag -s vYY.M.PATCH -m vYY.M.PATCH`). The tag push runs `Tag Release`, which builds all platforms and publishes the unified GitHub Release.
 - Pushing a `vYY.M.PATCH` tag manually also runs `Tag Release`.
@@ -267,29 +267,29 @@ Nightly builds live in `.github/workflows/ws-nightly-release.yml`; unified stabl
 Native build for the current machine:
 
 ```bash
-cargo build --release -p outline-ws-rust
+cargo build --release -p outline-client
 ```
 
 Static x86-64 binary (no glibc dependency):
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p outline-client --target x86_64-unknown-linux-musl
 # or
-cargo ws-release-musl-x86_64
+cargo client-release-musl-x86_64
 ```
 
 Static AArch64 binary:
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl
+cargo zigbuild --release -p outline-client --target aarch64-unknown-linux-musl
 # or
-cargo ws-release-musl-aarch64
+cargo client-release-musl-aarch64
 ```
 
 To drop one feature, disable the defaults and list the rest. Example without `metrics`:
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --no-default-features \
+cargo zigbuild --release -p outline-client --no-default-features \
   --features h3,control,socks5,tun,jemalloc,env-filter,multi-thread \
   --target x86_64-unknown-linux-musl
 ```
@@ -299,13 +299,13 @@ cargo zigbuild --release -p outline-ws-rust --no-default-features \
 `--config` defaults to `config.toml` in the current directory. From the workspace root, point it at the example:
 
 ```bash
-cargo run --release -p outline-ws-rust -- --config bins/outline-ws-rust/config.toml
+cargo run --release -p outline-client -- --config bins/outline-client/config.toml
 ```
 
 One-shot run with CLI overrides:
 
 ```bash
-cargo run --release -p outline-ws-rust -- \
+cargo run --release -p outline-client -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
   --tcp-mode h3 \
@@ -321,7 +321,7 @@ Client settings for this example: SOCKS5 host `::1` or `127.0.0.1`, port `1080`.
 
 ### `hev-socks5-tunnel` compatibility
 
-`outline-ws-rust` accepts both UDP relay modes of [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+`outline-client` accepts both UDP relay modes of [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
 
 ```yaml
 socks5:
@@ -365,7 +365,7 @@ listen = "[::1]:9090"
 # token = "long-random-secret"
 # # Or read the token from a sidecar file (path resolved relative to this
 # # config). Use this when secrets must not live in the config itself.
-# # token_file = "/etc/outline-ws/control.token"
+# # token_file = "/etc/outline-client/control.token"
 
 # The multi-instance dashboard has moved to the outline-ui service
 # (see bins/outline-ui/README.md). This binary serves only [metrics]
@@ -626,7 +626,7 @@ via = "main"
   - `true`: while the current active is healthy and a candidate with a higher `weight` (or equal weight and lower config index) exists, traffic returns to that candidate after it has passed `min_failures` consecutive probe cycles. Priority is `weight`, not EWMA RTT: under load the active uplink's EWMA rises while an idle backup looks faster, and comparing EWMA would switch on that. Failback only moves toward higher weight (`1.0 → 1.5 → 2.0`); moving to a lower-weight uplink requires a probe-confirmed failover.
 - `mode_downgrade_secs` (per group, default `60`, alias `h3_downgrade_secs`): how long an uplink that failed on its advanced carrier (e.g. an H3 application error such as `H3_INTERNAL_ERROR`) stays capped one rank lower (`ws_h3 → ws_h2`, `xhttp_h3 → xhttp_h2`) before the configured carrier is retried. Applies to `ss` and `vless`. `0` disables the downgrade.
 - `carrier_degraded_failover_secs` (per group, default `3 × mode_downgrade_secs`): carrier-quality failover for strict (`active_passive`) selection. An uplink whose probes pass on its TCP fallback counts as healthy, so without this knob it would keep the active slot while every dial is capped below the configured carrier (`ws_h3 → ws_h2`, TCP over TCP). When the active uplink has run below its configured carrier under one unbroken downgrade window for at least this many seconds, and the group has a probe-healthy candidate of equal or higher `weight` whose carrier is not degraded and whose probe-success streak has reached `min_failures`, selection soft-switches to that candidate. A single flap cannot trigger it: one window expires after `mode_downgrade_secs`, so only failures that keep extending the window cross the threshold. `0` disables. Works with either `auto_failback` value; a lower-weight candidate never takes the slot on carrier quality alone.
-- `state_path` (optional): TOML file where the active-uplink selection is persisted across restarts. Default: the config path with the extension replaced by `.state.toml` (`config.toml` → `config.state.toml`). If the file cannot be written (e.g. the config lives in `/etc/` under `ProtectSystem=strict`), the process logs a warning at startup and runs without persistence. The bundled units set `STATE_PATH=/var/lib/outline-ws-rust/_default/state.toml` (template: `/var/lib/outline-ws-rust/<instance>/state.toml`). Only the active uplink name is stored; EWMA and penalties are rebuilt within one probe cycle after restart.
+- `state_path` (optional): TOML file where the active-uplink selection is persisted across restarts. Default: the config path with the extension replaced by `.state.toml` (`config.toml` → `config.state.toml`). If the file cannot be written (e.g. the config lives in `/etc/` under `ProtectSystem=strict`), the process logs a warning at startup and runs without persistence. The bundled units set `STATE_PATH=/var/lib/outline-client/_default/state.toml` (template: `/var/lib/outline-client/<instance>/state.toml`). Only the active uplink name is stored; EWMA and penalties are rebuilt within one probe cycle after restart.
 - Each `[[uplink_group]]` has its own probe loop, standby pool, sticky-routes store, active-uplink state and load-balancing policy; groups do not share runtime state.
 - `[outline.probe]` is a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields. Probe sub-tables (`ws` / `http` / `dns` / `tcp` / `tls`) are replaced as a whole: if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group. Application-level probes (`http` / `tcp` / `tls`) are mutually exclusive: one runs per cycle, priority `tls → http → tcp`.
 - Uplink names must be unique across all groups: Prometheus labels use `uplink="..."` without a group qualifier.
@@ -701,7 +701,7 @@ via = "direct"
 
 # Country or GeoIP list loaded from a file and hot-reloaded on mtime change.
 [[route]]
-file = "/etc/outline-ws-rust/geoip-cn.list"
+file = "/etc/outline-client/geoip-cn.list"
 file_poll_secs = 60
 via = "backup"
 fallback_via = "main"     # try "main" if "backup" has no healthy uplinks
@@ -711,8 +711,8 @@ fallback_via = "main"     # try "main" if "backup" has no healthy uplinks
 # reloaded independently; inline `prefixes` may still be combined with them.
 [[route]]
 files = [
-    "/etc/outline-ws-rust/geoip-cn-v4.list",
-    "/etc/outline-ws-rust/geoip-cn-v6.list",
+    "/etc/outline-client/geoip-cn-v4.list",
+    "/etc/outline-client/geoip-cn-v6.list",
 ]
 file_poll_secs = 60
 via = "backup"
@@ -725,7 +725,7 @@ via = "drop"
 # Domain targets (SOCKS5h hostnames): local zones stay direct…
 [[route]]
 domains = ["home.arpa", "corp.example"]
-domain_file = "/etc/outline-ws-rust/bypass-domains.lst"
+domain_file = "/etc/outline-client/bypass-domains.lst"
 via = "direct"
 
 # …every other domain goes through the tunnel instead of the default.
@@ -825,7 +825,7 @@ On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride 
 - Sizes. The choice is made per packet against the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
 - Rollout. Servers first, then clients; either order works. Rollback: set `udp_datagrams = false` on the misbehaving side and restart that service (no rebuild).
 
-Path MTU cache. The client stores the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file with the extension `.pmtu` (default `<config>.state.pmtu`; with the bundled unit `/var/lib/outline-ws-rust/_default/state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection.
+Path MTU cache. The client stores the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file with the extension `.pmtu` (default `<config>.state.pmtu`; with the bundled unit `/var/lib/outline-client/_default/state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection.
 
 | Cached value | Lifetime | Effect on the next connection |
 |---|---|---|
@@ -852,7 +852,7 @@ Metrics (on `/metrics`):
 Optional application-layer padding for WebSocket and XHTTP dials — the client half of the server's padding feature. Each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited `real_len | pad_len | real | pad` frame, so the outer TLS record size no longer follows the payload size. TLS-in-TLS classifiers use that record-size correlation.
 
 - Global default plus per-uplink override. `[padding]` holds the scheme parameters and the default on/off (`enabled`, default `false`); each `[[outline.uplinks]]` may set `padding = true` / `padding = false`. A dial uses the per-uplink value when set, else the global default (the same override shape as the per-uplink `fingerprint_profile`). Either keep the default off and set `padding = true` on uplinks that point at your padded server endpoints, or keep it on and set `padding = false` on a VLESS uplink aimed at a third-party server (xray / sing-box). A padded dial (SS and VLESS, TCP and UDP) must point at server endpoints that are padded too.
-- Set by config on both sides, not negotiated. On outline-ss-rust the matching `[[endpoint]]` must have `padded = true`; otherwise padded frames reach a plain decoder and the session fails.
+- Set by config on both sides, not negotiated. On `outline-server` the matching `[[endpoint]]` must have `padded = true`; otherwise padded frames reach a plain decoder and the session fails.
 - Cover traffic. With `cover = true` an idle connection emits pad-only frames at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`, defaults 250 / 1500).
 
 Covers SS and VLESS over WebSocket (h1/h2/h3) and over XHTTP. UDP is padded per datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the keys.
@@ -1006,13 +1006,13 @@ Default: `false`. Both ports are matched together: IKEv2 moves IKE_AUTH from 500
 
 A tunnelled TUN flow does not own its transport: it shares one carrier — a single H3/H2/H1 connection — with the other flows on that uplink. When the carrier collapses (an H3 connection-level error takes down everything multiplexed on it at once), every flow on it loses its transport at the same moment, and each application sees its connection die.
 
-The upstream sockets are still there. The server moves each one into its orphan registry, keyed by the Session ID it issued for that flow, and holds it for 30 s ([`docs/SESSION-RESUMPTION.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.md)). With `[tun.tcp] carrier_migration = true` (the default), a flow whose carrier dies dials a new one, presents its own Session ID, gets the parked upstream re-attached, and closes the byte gap in both directions before continuing. The Ack-Prefix Protocol (v1) tells the client how many uplink bytes the server actually forwarded, so it replays only the tail lost in flight; Symmetric Downlink Replay (v2) returns the downstream bytes the dead carrier never delivered, and they are flushed to the application before anything from the new carrier. The application sees no disconnect: no FIN, no RST, no gap, no duplicate byte.
+The upstream sockets are still there. The server moves each one into its orphan registry, keyed by the Session ID it issued for that flow, and holds it for 30 s ([`docs/SESSION-RESUMPTION.md`](../outline-server/docs/SESSION-RESUMPTION.md)). With `[tun.tcp] carrier_migration = true` (the default), a flow whose carrier dies dials a new one, presents its own Session ID, gets the parked upstream re-attached, and closes the byte gap in both directions before continuing. The Ack-Prefix Protocol (v1) tells the client how many uplink bytes the server actually forwarded, so it replays only the tail lost in flight; Symmetric Downlink Replay (v2) returns the downstream bytes the dead carrier never delivered, and they are flushed to the application before anything from the new carrier. The application sees no disconnect: no FIN, no RST, no gap, no duplicate byte.
 
 It engages only on a confirmed resume hit. A redial that presents an ID can miss — the park expired, or the server has resumption off — and on a miss the server opens a new upstream to the destination, with the byte stream starting from zero. Continuing the flow on that would splice a new stream onto a half-finished one and hand the application corrupt data that looks valid. So the client migrates only when the server proves the re-attach by sending the v1 control frame, which it sends only after the orphan was taken. The capability header on the upgrade response is not proof: the server echoes it on hit and miss alike. Everything else — a miss, a timeout, an unparseable frame, a replay the client can no longer reproduce byte-exact, a truncated downstream slice — falls through to the ordinary teardown.
 
 Consequences:
 
-- Server-side resumption is off by default (`[session_resumption] enabled` on outline-ss-rust). A server without it never issues a Session ID, so its flows are never eligible and the client setting has no effect there.
+- Server-side resumption is off by default (`[session_resumption] enabled` on `outline-server`). A server without it never issues a Session ID, so its flows are never eligible and the client setting has no effect there.
 - Direct (`via = "direct"`) flows never migrate: they own a plain socket to the origin, there is no carrier to move off and nothing parked to re-attach.
 - Limits: at most 2 attempts per flow, none started later than 20 s after the first (the server's park TTL is 30 s), and the uplink replay ring is capped at 64 KiB per flow. A flow that sends one chunk larger than that loses its ring, cannot prove byte-exactness, and tears down as before instead of resuming with a hole.
 - The migration dial requests the uplink's configured carrier, not the capped one. The carrier death that triggers a migration is itself a runtime failure, which caps the uplink one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`. Honouring that cap would put every rescued flow on TCP over TCP for the rest of its life — nothing moves a live flow back up — so a long download rescued from a dead H3 carrier would crawl instead of reconnecting at full speed. The dial still falls back `h3 → h2 → h1` on its own when the carrier is really broken. For the same reason the migration re-dials its own uplink rather than a re-selected one: the carrier death may have put that uplink in cooldown.
@@ -1094,7 +1094,7 @@ Prometheus scrape example:
 
 ```yaml
 scrape_configs:
-  - job_name: outline-ws-rust
+  - job_name: outline-client
     metrics_path: /metrics
     static_configs:
       - targets:
@@ -1138,7 +1138,7 @@ Per-uplink open-connection accounting, for connections that leak into a non-acti
 - `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge of open upstream transports per uplink. After a switch the new active uplink ramps up while the old one drains; a series that does not drain is the leak signal.
 - `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — counter of upstream-transport closes, classified at close time as `active` (the uplink was still active), `inactive` (the active pointer had moved — a stranded session draining) or `unknown` (`per_flow` scope, no active pointer). `rate(...{classification="inactive"}[5m])` is the drain rate after a switch; a sustained non-zero rate outside a recent switch points at a stale sticky route or warm-standby pool.
 
-Both feed the Grafana row "Inactive Uplink Leak (Global / Per-Uplink)" in `grafana/outline-ws-rust-dashboard.json`. Probe connections are not counted; the metrics cover user-traffic dials only.
+Both feed the Grafana row "Inactive Uplink Leak (Global / Per-Uplink)" in `grafana/outline-client-dashboard.json`. Probe connections are not counted; the metrics cover user-traffic dials only.
 
 `outline_ws_carrier_writer_terminations_total{writer, reason}` counts WebSocket carrier writer tasks that stopped because a sink write failed. `writer` is `ss` (SS over WS) or `frame` (VLESS byte-chunk / datagram writer); `reason` is `peer_closed` when the carrier was already closed (routine, logged at `debug`) or `error` for a real write failure (logged at `warn`). A sustained `reason="error"` rate means the uplink is failing writes. Grafana row: "Carrier Writer Terminations".
 
@@ -1154,8 +1154,8 @@ On the TUN UDP path oversize drops also produce an ICMP PTB toward the sender; s
 
 Grafana dashboards (see [`grafana/README.md`](grafana/README.md)):
 
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
+- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json)
+- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json)
 
 ## Control plane
 
@@ -1288,7 +1288,7 @@ Modes:
 ```bash
 sudo ./install-client.sh                       # latest stable release (/releases/latest)
 sudo ./install-client.sh --force               # reinstall even if the version matches
-sudo CHANNEL=nightly ./install-client.sh       # rolling ws-nightly prerelease
+sudo CHANNEL=nightly ./install-client.sh       # rolling client-nightly prerelease
 sudo VERSION=v26.11.0 ./install-client.sh      # pin a stable version (tag v26.11.0)
 sudo ./install-client.sh --remove              # alias --uninstall
 sudo ./install-client.sh --purge
@@ -1297,21 +1297,21 @@ sudo ./install-client.sh --purge
 What the script does:
 
 - picks the release asset for `uname -m` (`x86_64`/`amd64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`); other architectures are rejected
-- skips the download when the installed version already matches the selected release (`--force` or `FORCE=1` overrides); for the nightly channel it tracks the release commit SHA in `/etc/outline-ws-rust/nightly-commit`
-- installs the binary to `/usr/local/bin/outline-ws-rust`, keeping the previous one as `<path>.bak.<timestamp>`
-- installs `outline-ws-rust.service` and `outline-ws-rust@.service` into `/etc/systemd/system`, taken from the same release tag as the binary
-- creates the system user and group `outline-ws`, the directories `/etc/outline-ws-rust` and `/var/lib/outline-ws-rust`, and gives the config directory to `outline-ws` (`0750`, files `0640`) so the control API can write the config
+- skips the download when the installed version already matches the selected release (`--force` or `FORCE=1` overrides); for the nightly channel it tracks the release commit SHA in `/etc/outline-client/nightly-commit`
+- installs the binary to `/usr/local/bin/outline-client`, keeping the previous one as `<path>.bak.<timestamp>`
+- installs `outline-client.service` and `outline-client@.service` into `/etc/systemd/system`, taken from the same release tag as the binary
+- creates the system user and group `outline-client`, the directories `/etc/outline-client` and `/var/lib/outline-client`, and gives the config directory to `outline-client` (`0750`, files `0640`) so the control API can write the config
 - downloads `config.toml` and `instances/example.toml` only if they do not exist yet
-- restarts only `outline-ws-rust` units that were active; it does not enable or start a fresh service, and a stopped service stays stopped
+- restarts only `outline-client` units that were active; it does not enable or start a fresh service, and a stopped service stays stopped
 
 After the first install:
 
-1. Edit `/etc/outline-ws-rust/config.toml`.
+1. Edit `/etc/outline-client/config.toml`.
 2. Enable one variant:
-   - single instance: `sudo systemctl enable --now outline-ws-rust.service`
-   - named instance (config `/etc/outline-ws-rust/instances/<name>.toml`): `sudo systemctl enable --now outline-ws-rust@<name>.service`
-3. Check the status: `systemctl status outline-ws-rust --no-pager`.
-4. Check the logs: `journalctl -u outline-ws-rust -e --no-pager`.
+   - single instance: `sudo systemctl enable --now outline-client.service`
+   - named instance (config `/etc/outline-client/instances/<name>.toml`): `sudo systemctl enable --now outline-client@<name>.service`
+3. Check the status: `systemctl status outline-client --no-pager`.
+4. Check the logs: `journalctl -u outline-client -e --no-pager`.
 
 Re-run the script to upgrade; it replaces the binary only when the selected release differs from the installed one.
 
@@ -1320,18 +1320,18 @@ Environment overrides:
 | Variable | Default | Meaning |
 |---|---|---|
 | `CHANNEL` | `stable` | `stable` or `nightly` |
-| `VERSION` | latest | stable: `1.2.3` or `v1.2.3`; with `CHANNEL=nightly` only `nightly` is accepted |
+| `VERSION` | latest | stable: `26.11.0` or `v26.11.0`; with `CHANNEL=nightly` only `nightly` is accepted |
 | `FORCE` | empty | `1` reinstalls even if the version matches |
-| `INSTALL_PATH` | `/usr/local/bin/outline-ws-rust` | full path of the installed binary |
-| `CONFIG_DIR` | `/etc/outline-ws-rust` | configuration directory |
-| `STATE_DIR` | `/var/lib/outline-ws-rust` | state directory |
-| `SERVICE_USER` / `SERVICE_GROUP` | `outline-ws` | system user and group of the service |
+| `INSTALL_PATH` | `/usr/local/bin/outline-client` | full path of the installed binary |
+| `CONFIG_DIR` | `/etc/outline-client` | configuration directory |
+| `STATE_DIR` | `/var/lib/outline-client` | state directory |
+| `SERVICE_USER` / `SERVICE_GROUP` | `outline-client` | system user and group of the service |
 | `GITHUB_TOKEN` | empty | GitHub token against API rate limits |
 
 Removal:
 
-- `--remove` (alias `--uninstall`): stops and disables `outline-ws-rust.service` and every `outline-ws-rust@<name>.service`, removes both unit files (followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ws-rust` (including `instances/`), `/var/lib/outline-ws-rust` and the `outline-ws` user/group, so a reinstall reuses the config.
-- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` and the `outline-ws` user/group.
+- `--remove` (alias `--uninstall`): stops and disables `outline-client.service` and every `outline-client@<name>.service`, removes both unit files (followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-client` (including `instances/`), `/var/lib/outline-client` and the `outline-client` user/group, so a reinstall reuses the config.
+- `--purge`: everything `--remove` does, plus deletes `/etc/outline-client`, `/var/lib/outline-client` and the `outline-client` user/group.
 
 Both modes are idempotent: missing artifacts are skipped.
 
@@ -1365,19 +1365,19 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 
 Units:
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — single instance, config `/etc/outline-ws-rust/config.toml`, state in `/var/lib/outline-ws-rust/_default/`
-- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — named-instance template, config `/etc/outline-ws-rust/instances/<name>.toml`, state in `/var/lib/outline-ws-rust/<name>/`
+- [`systemd/outline-client.service`](systemd/outline-client.service) — single instance, config `/etc/outline-client/config.toml`, state in `/var/lib/outline-client/_default/`
+- [`systemd/outline-client@.service`](systemd/outline-client@.service) — named-instance template, config `/etc/outline-client/instances/<name>.toml`, state in `/var/lib/outline-client/<name>/`
 
 Manual installation (`install-client.sh` does the same):
 
-1. Install the binary to `/usr/local/bin/outline-ws-rust`.
+1. Install the binary to `/usr/local/bin/outline-client`.
 2. Create the service user and group:
-   `sudo groupadd --system outline-ws && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-ws outline-ws`
-3. Install the configuration to `/etc/outline-ws-rust/config.toml` and give the directory to the service user:
-   `sudo chown -R outline-ws:outline-ws /etc/outline-ws-rust && sudo chmod 0750 /etc/outline-ws-rust`
+   `sudo groupadd --system outline-client && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-client outline-client`
+3. Install the configuration to `/etc/outline-client/config.toml` and give the directory to the service user:
+   `sudo chown -R outline-client:outline-client /etc/outline-client && sudo chmod 0750 /etc/outline-client`
 4. Copy both unit files to `/etc/systemd/system/`.
 5. Reload and enable the service:
-   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
+   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-client`
 
 What the units set:
 
@@ -1385,8 +1385,8 @@ What the units set:
 - `RUST_LOG=info`, logs to journald
 - `LimitNOFILE=1048576`, `LimitSTACK=8M`, `TasksMax=infinity`
 - `MemoryHigh=70%`, `MemoryMax=85%`: on a low-RAM host a burst of flows can exhaust memory faster than the kernel reclaims it and hang the whole host; with the limits the kernel OOM-kills the service and systemd restarts it. Override with a drop-in for fixed values
-- `User=outline-ws` / `Group=outline-ws` with `StateDirectory=outline-ws-rust/_default` (template: `outline-ws-rust/%i`), so state files keep a stable owner
-- `ReadWritePaths` includes `/etc/outline-ws-rust` (template: `/etc/outline-ws-rust/instances`) so control-API edits and config migration can write the file
+- `User=outline-client` / `Group=outline-client` with `StateDirectory=outline-client/_default` (template: `outline-client/%i`), so state files keep a stable owner
+- `ReadWritePaths` includes `/etc/outline-client` (template: `/etc/outline-client/instances`) so control-API edits and config migration can write the file
 - `AmbientCapabilities=CAP_NET_ADMIN` for `fwmark`; remove both capability lines if `fwmark` / `direct_fwmark` are not used. Using them also requires `PrivateUsers=no` in a drop-in: the units set `PrivateUsers=true`, and `SO_MARK` fails with `EPERM` inside a private user namespace even with the capability
 - `PrivateDevices=false` for access to `/dev/net/tun` (TUN mode)
 - `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` and the other `Protect*` / `Restrict*` options in the unit file
@@ -1424,14 +1424,14 @@ Two routine events are logged below `warn` because neither indicates a problem i
 From the workspace root:
 
 ```bash
-cargo check -p outline-ws-rust
-cargo test -p outline-ws-rust
+cargo check -p outline-client
+cargo test -p outline-client
 ```
 
-The CI gate (fmt, clippy, tests, feature matrix) is described in the root [`AGENTS.md`](../../AGENTS.md). End-to-end tests against real `outline-ss-rust` processes (`tests/e2e_*.rs`) run only with `RUN_E2E_FAILOVER=1`, and the TLS/H3 carrier set needs the `test-tls` feature:
+The CI gate (fmt, clippy, tests, feature matrix) is described in the root [`AGENTS.md`](../../AGENTS.md). End-to-end tests against real `outline-server` processes (`tests/e2e_*.rs`) run only with `RUN_E2E_FAILOVER=1`, and the TLS/H3 carrier set needs the `test-tls` feature:
 
 ```bash
-RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
+RUN_E2E_FAILOVER=1 cargo test -p outline-client --features test-tls --test 'e2e_*' -- --test-threads=1
 ```
 
 Manual tests against a real server exist for HTTP/1.1, HTTP/2 and HTTP/3 (`real_server_h1`, `real_server_h2`, `real_server_h3`); each is skipped unless its `RUN_REAL_SERVER_*` variable is `1`:
@@ -1441,7 +1441,7 @@ RUN_REAL_SERVER_H2=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test -p outline-ws-rust --test real_server_h2 -- --nocapture
+cargo test -p outline-client --test real_server_h2 -- --nocapture
 ```
 
 ```bash
@@ -1449,19 +1449,19 @@ RUN_REAL_SERVER_H3=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test -p outline-ws-rust --test real_server_h3 -- --nocapture
+cargo test -p outline-client --test real_server_h3 -- --nocapture
 ```
 
 Group isolation, fallback and direct dispatch:
 
 ```bash
-cargo test -p outline-ws-rust --test group_routing -- --nocapture
+cargo test -p outline-client --test group_routing -- --nocapture
 ```
 
 Warm standby:
 
 ```bash
-cargo test -p outline-ws-rust --test standby_validation -- --nocapture
+cargo test -p outline-client --test standby_validation -- --nocapture
 ```
 
 ## Protocol references

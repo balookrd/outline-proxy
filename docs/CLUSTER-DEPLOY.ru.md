@@ -2,7 +2,7 @@
 
 *English version: [CLUSTER-DEPLOY.md](CLUSTER-DEPLOY.md)*
 
-Как превратить два и более отдельных сервера `outline-ss-rust` в mesh-кластер,
+Как превратить два и более отдельных сервера `outline-server` в mesh-кластер,
 в котором клиентская сессия переживает смену edge. Дизайн — в
 [`CLUSTER.ru.md`](CLUSTER.ru.md).
 
@@ -183,7 +183,7 @@ resume id на чужих home всегда давал бы miss.
 Общий scope охватывает и UDP, и TCP: при `shared_resume = true` сессии SS-UDP и
 VLESS-UDP предъявляют групповой resume id с shard и мигрируют при смене edge так
 же, как TCP (релеятся на свой home-shard). См. «Cross-node миграция UDP» в
-[`UPLINK-CONFIGURATIONS.ru.md`](../bins/outline-ws-rust/docs/UPLINK-CONFIGURATIONS.ru.md).
+[`UPLINK-CONFIGURATIONS.ru.md`](../bins/outline-client/docs/UPLINK-CONFIGURATIONS.ru.md).
 
 ## 6. Порядок раскатки
 
@@ -215,7 +215,7 @@ VLESS-UDP предъявляют групповой resume id с shard и миг
 - Выживание: начните сессию с идущей загрузкой, принудительно переведите клиента
   на другой узел (при §5c — выключите или остановите активный uplink) и
   убедитесь, что загрузка продолжается.
-- Метрики на `/metrics` каждого узла (и в Grafana-дашборде ss-rust, ряд
+- Метрики на `/metrics` каждого узла (и в Grafana-дашборде `outline-server`, ряд
   Cluster Mesh):
   - Рост `outline_ss_mesh_relay_opened_total{outcome="ok"}`: edge'и релеят
     cross-shard-сессии на свои home. Рост `{outcome="fail"}`: OPEN не дошёл до
@@ -307,7 +307,7 @@ VLESS-UDP предъявляют групповой resume id с shard и миг
     `outline_ss_mesh_control_datagram_errors_total` и панель Mesh Throttle Hints
     & Control Errors. Throttle-детекция локальна для edge, а control-датаграмм
     mesh не носит. Если дашборд форкали, удалите панель и у себя.
-  - На клиенте (дашборд ws-rust, ряд Cluster / Soft-switch):
+  - На клиенте (дашборд `outline-client`, ряд Cluster / Soft-switch):
     `outline_ws_soft_switch_total{outcome}` считает операторские
     soft-switch-миграции, на здоровом переключении в основном `migrated`;
     `outline_ws_resume_lookup_total{transport,scope,result}` с

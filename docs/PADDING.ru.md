@@ -248,7 +248,7 @@ sustain и минимальной скорости ограничивают ло
 
 ## Конфигурация
 
-### Сервер (`outline-ss-rust`)
+### Сервер (`outline-server`)
 
 ```toml
 # Пометьте эндпоинты, которые нужно паддить, — SS-TCP, SS-UDP, combined
@@ -298,7 +298,7 @@ edge кластера, а тот удалён вместе с v4-релеем me
 при старте `ignoring retired padding.throttle_edge_min_bytes_per_sec`. Удалите
 ключ; само поле уйдёт в следующем релизе.
 
-### Клиент (`outline-ws-rust`)
+### Клиент (`outline-client`)
 
 ```toml
 [padding]

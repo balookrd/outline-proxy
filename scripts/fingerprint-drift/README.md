@@ -2,7 +2,7 @@
 
 Russian version: [README.ru.md](README.ru.md).
 
-`outline-ws-rust` imitates browsers on every layer a DPI box can see: the TCP
+`outline-client` imitates browsers on every layer a DPI box can see: the TCP
 and QUIC ClientHello, QUIC transport parameters, the HTTP/2 preface and the
 request headers. The profiles (`crates/outline-transport/src/fingerprint_profile.rs`
 and the tables next to it) were tuned against Chrome 157 and Firefox 160

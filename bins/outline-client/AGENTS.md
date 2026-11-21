@@ -2,16 +2,16 @@
 
 ## Обзор проекта
 
-> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-ws-rust`
-> (`bins/outline-ws-rust/`). Общая структура, команды и монорепо-инварианты —
+> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-client`
+> (`bins/outline-client/`). Общая структура, команды и монорепо-инварианты —
 > в корневом [`AGENTS.md`](../../AGENTS.md), он имеет приоритет. Учитывай: крейты
-> `crates/*` и vendored — на уровне workspace; сборка — `cargo … -p outline-ws-rust`;
+> `crates/*` и vendored — на уровне workspace; сборка — `cargo … -p outline-client`;
 > rustls-провайдер — `aws-lc-rs`, в графе зависимостей должен оставаться ровно
 > один `CryptoProvider`. Описание «workspace» ниже относится к историческому
 > раздельному репо — теперь workspace это `outline-proxy`.
 
-`outline-ws-rust` — Rust 2024 workspace для production-ориентированного прокси.
-Верхнеуровневый пакет собирает бинарь `outline-ws-rust`, принимает локальный
+`outline-client` — Rust 2024 workspace для production-ориентированного прокси.
+Верхнеуровневый пакет собирает бинарь `outline-client`, принимает локальный
 SOCKS5 и опциональный TUN-трафик и отправляет его через Outline-совместимые
 WebSocket-транспорты, direct Shadowsocks или VLESS-транспорты.
 
@@ -97,11 +97,11 @@ feature gates частью публичного поведения.
 - `crates/outline-wire/`: общий с сервером wire-кодек (`CipherKind`,
   `TargetAddr`, SS2022-заголовки, VLESS/mux). `socks5-proto`,
   `shadowsocks-crypto` и `outline-transport` реэкспортируют его типы —
-  wire-форматы правятся там (это затрагивает и `outline-ss-rust`).
+  wire-форматы правятся там (это затрагивает и `outline-server`).
 - `tests/`: интеграционные тесты. Real upstream tests включаются явно через env
   vars.
 - `docs/`, `README.md`, `README.ru.md`: пользовательское поведение и config docs.
-- `config.toml`: пример серверной конфигурации.
+- `config.toml`: пример клиентской конфигурации.
 - `vendor/h3`: patched vendored dependency. При изменении vendored patches
   обновляйте корневые `PATCHES.md` / `PATCHES.ru.md` (единый источник истины).
 - `vendor/sockudo-ws`: vendored path dependency, явно перечисленный в workspace
@@ -131,7 +131,7 @@ cargo check --no-default-features
 полезны более узкие проверки:
 
 ```bash
-cargo check -p outline-ws-rust --all-targets
+cargo check -p outline-client --all-targets
 cargo check -p outline-transport --all-targets
 cargo check -p outline-transport --features metrics --all-targets
 ```
@@ -141,7 +141,7 @@ incremental artifacts, сначала перепроверьте в чистом
 диагностируйте исходники:
 
 ```bash
-cargo check --workspace --all-targets --target-dir /private/tmp/outline-ws-rust-check-target
+cargo check --workspace --all-targets --target-dir /private/tmp/outline-client-check-target
 ```
 
 Точечные интеграционные тесты:
@@ -172,8 +172,8 @@ cargo test --test real_server_h3 -- --nocapture
 `cargo-zigbuild`, например:
 
 ```bash
-cargo release-musl-x86_64
-cargo release-musl-aarch64
+cargo client-release-musl-x86_64
+cargo client-release-musl-aarch64
 ```
 
 ## Правила разработки
@@ -408,7 +408,7 @@ cargo release-musl-aarch64
   transport}` (публикуется ТОЛЬКО для opted-in групп — отсутствие серии =
   опция выключена), в `/control/topology` (групповые поля скрываются при
   `false` через `skip_serializing_if`) и в чип `groupBypassChip` в
-  `dashboard.html`; в `grafana/outline-ws-rust-dashboard.json` — панели
+  `dashboard.html`; в `grafana/outline-client-dashboard.json` — панели
   Direct Bypass (id 230/231) в секции Routing Policy.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
@@ -448,7 +448,7 @@ cargo release-musl-aarch64
   H3-datagram-стриме, не рискуя connection-level `H3_INTERNAL_ERROR`, поэтому
   доказывать живость по входящим WS-фреймам = спурьёзно рвать здоровую сессию.
   На h1/h2 общего QUIC keep_alive нет — watchdog и Ping там сохраняются.
-  Серверная половина фикса (`outline-ss-rust`) дренит застрявший reactive Pong
+  Серверная половина фикса (`outline-server`) дренит застрявший reactive Pong
   таймерным `WsSocket::flush`, а не шлёт server-originated Ping. Тот же выбор
   несущей вынесен в `frame_io_ws::carrier_liveness` и применяется на всех
   WS-over-* путях: SS-UDP / VLESS-UDP / VLESS-TCP (через `carrier_liveness`),

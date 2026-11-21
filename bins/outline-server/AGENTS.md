@@ -2,18 +2,18 @@
 
 ## Область действия
 
-> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-ss-rust`
-> (`bins/outline-ss-rust/`). Общая структура, команды и монорепо-инварианты —
+> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-server`
+> (`bins/outline-server/`). Общая структура, команды и монорепо-инварианты —
 > в корневом [`AGENTS.md`](../../AGENTS.md), он имеет приоритет. Учитывай:
 > vendored-крейты и `[patch.crates-io]` теперь на уровне workspace (`vendor/`,
-> корневой `Cargo.toml`); сборка — `cargo … -p outline-ss-rust`; dev-dependency
+> корневой `Cargo.toml`); сборка — `cargo … -p outline-server`; dev-dependency
 > `outline-transport` теперь in-workspace (`crates/`), не cross-repo.
 
 Архитектурные и протокольные правила ниже относятся к коду этого бинаря.
 
 ## Кратко о проекте
 
-`outline-ss-rust` — production-ориентированный Rust-сервер data plane для
+`outline-server` — production-ориентированный Rust-сервер data plane для
 Shadowsocks AEAD и VLESS поверх WebSocket, XHTTP и HTTP/3. Это не
 реализация Outline management API.
 
@@ -94,7 +94,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - Обновляй `AGENTS.md`, когда в ходе работы появляются новые устойчивые правила,
   ограничения или проектные соглашения, полезные будущим агентам.
 - Массовое форматирование выполняй для основного package
-  (`cargo fmt -p outline-ss-rust`), но не форматируй `vendor/*` без явной
+  (`cargo fmt -p outline-server`), но не форматируй `vendor/*` без явной
   просьбы. Vendored source должен сохранять upstream/minimal diff стиль, если
   задача не меняет его поведение.
 
@@ -201,7 +201,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
   H3-carrier. Безусловная запись Ping на h3-стрим гонится с teardown'ом при
   `shuffle_timer`-реролле и эскалирует до connection-level `H3_INTERNAL_ERROR`,
   рвущего все мультиплексированные стримы на QUIC-соединении (см. откат в
-  истории `run_udp_relay`). Клиент (`outline-ws-rust`) сам шлёт keepalive Ping;
+  истории `run_udp_relay`). Клиент (`outline-client`) сам шлёт keepalive Ping;
   на H3 vendored `sockudo-ws` split-reader проглатывает его и паркует ответный
   Pong, который уходит на провод только при следующем `send`/`flush` writer'а.
   Поэтому `run_ws_writer` периодически зовёт `WsSocket::flush`
@@ -240,7 +240,7 @@ HTTP/3 WebSocket path зависит от этих патчей.
 Используй самую маленькую команду, которая дает уверенность для затронутой
 области:
 
-- Форматирование основного package: `cargo fmt -p outline-ss-rust -- --check`
+- Форматирование основного package: `cargo fmt -p outline-server -- --check`
 - Компиляция default feature set: `cargo check`
 - Компиляция без default feature `control`, если трогаешь gated code paths:
   `cargo check --no-default-features`
@@ -254,11 +254,11 @@ HTTP/3 WebSocket path зависит от этих патчей.
 - Dev-dependency `outline-transport` лежит in-workspace
   (`crates/outline-transport`) — соседний checkout больше не нужен.
 - Cross-build aliases определены в корневом `.cargo/config.toml` и требуют
-  `cargo-zigbuild` плюс `zig`; серверные алиасы имеют префикс `ss-`:
-  `cargo ss-build-musl-x86_64`, `cargo ss-release-musl-x86_64`,
-  `cargo ss-build-musl-aarch64`, `cargo ss-release-musl-aarch64`,
-  `cargo ss-build-musl-arm`, `cargo ss-release-musl-arm`,
-  `cargo ss-build-musl-armv7`, `cargo ss-release-musl-armv7`.
+  `cargo-zigbuild` плюс `zig`; серверные алиасы имеют префикс `server-`:
+  `cargo server-build-musl-x86_64`, `cargo server-release-musl-x86_64`,
+  `cargo server-build-musl-aarch64`, `cargo server-release-musl-aarch64`,
+  `cargo server-build-musl-arm`, `cargo server-release-musl-arm`,
+  `cargo server-build-musl-armv7`, `cargo server-release-musl-armv7`.
 - Некоторые тесты биндинят локальные TCP/UDP sockets и используют async
   timeouts. Предпочитай ephemeral ports и существующие test helpers в
   `src/server/tests/mod.rs`.
@@ -280,7 +280,7 @@ HTTP/3 WebSocket path зависит от этих патчей.
 ## Release и runtime artifacts
 
 - `target/` является generated и ignored.
-- `grafana/outline-ss-rust-dashboard.json`, `systemd/outline-ss-rust.service`,
+- `grafana/outline-server-dashboard.json`, `systemd/outline-server.service`,
   `config.toml` и корневой `install-server.sh` являются user-facing deployment
   artifacts; держи их согласованными с runtime behavior.
 - Не добавляй в репозиторий local secrets, generated access-key YAML files,

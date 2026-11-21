@@ -12,20 +12,20 @@ built on Shadowsocks AEAD and VLESS over WebSocket / XHTTP / HTTP/3. It contains
 the server, the client, an aggregating dashboard UI, an Android VPN client and a
 macOS menu-bar client.
 
-- [`outline-ss-rust`](bins/outline-ss-rust/) is the server data plane. It
+- [`outline-server`](bins/outline-server/) is the server data plane. It
   accepts Shadowsocks AEAD or VLESS traffic over WebSocket (HTTP/1.1, RFC 8441
   H2, RFC 9220 H3) and XHTTP and relays it to arbitrary TCP/UDP destinations.
   Users carry their own `method`, `fwmark`, `enabled` flag and IP `aliases`; the
   server exports Prometheus metrics and can run built-in TLS and QUIC/H3
   listeners and a mesh cluster across nodes.
-- [`outline-ws-rust`](bins/outline-ws-rust/) is the client. It accepts local
+- [`outline-client`](bins/outline-client/) is the client. It accepts local
   SOCKS5 (and, optionally, TUN) traffic and forwards it over the same carriers,
   with multi-uplink failover, load balancing and health probes.
 - [`outline-ui`](bins/outline-ui/) serves both the server and the client
   dashboards from one binary (`/ss` and `/ws`). It has no data plane and only
   queries each node's control API.
 - [`android/`](android/) is an Android VPN client. It runs the
-  `outline-ws-rust` uplink stack unchanged under a `VpnService` + Compose UI
+  `outline-client` uplink stack unchanged under a `VpnService` + Compose UI
   layer.
 - [`macos/`](macos/) is a macOS menu-bar client. It switches between the SOCKS5
   system proxy mode (no root) and the TUN mode (L3 VPN over the kernel `utun`
@@ -88,7 +88,7 @@ Shadowsocks over WebSocket is the path the Outline apps speak. The access-key
 generator [`ops/access-keys`](ops/access-keys/) emits an Outline access key
 (`$type: websocket`, TCP + UDP) for a user when the server has a split
 `ws_ss_tcp` / `ws_ss_udp` endpoint pair. Shadowsocks over XHTTP works only with
-the bundled `outline-ws-rust` client and has no Outline key; for each combined
+the bundled `outline-client` client and has no Outline key; for each combined
 endpoint (`ws_ss` / `xhttp_ss`) the generator emits an `ss://…` share link
 (SIP002 userinfo) for that client instead. VLESS endpoints (`ws_vless` /
 `xhttp_vless`) get a `vless://…` share link.
@@ -98,14 +98,14 @@ endpoint (`ws_ss` / `xhttp_ss`) the generator emits an `ss://…` share link
 ```
 outline-proxy/
 ├── bins/
-│   ├── outline-ss-rust/   # server binary  (+ its README, CHANGELOG, docs/)
-│   ├── outline-ws-rust/   # client binary  (+ its README, CHANGELOG, docs/)
+│   ├── outline-server/    # server binary  (+ its README, CHANGELOG, docs/)
+│   ├── outline-client/    # client binary  (+ its README, CHANGELOG, docs/)
 │   └── outline-ui/        # aggregating dashboard UI (+ its README)
 ├── android/               # Android VPN client (separate workspace: Rust core + Gradle/Kotlin app)
 ├── macos/                 # macOS menu-bar client (Swift/AppKit)
 ├── crates/                # shared crates (wire protocol, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # patched h3, sockudo-ws, quinn-proto, rustls, hyper (single copy, workspace-level)
-├── .cargo/config.toml     # cross-build aliases (ss-* / ws-* / ui-*)
+├── .cargo/config.toml     # cross-build aliases (server-* / client-* / ui-*)
 ├── .github/workflows/     # CI: lint/test gate, unified release / tag pipelines, per-component nightlies
 ├── AGENTS.md              # contributor guidelines + monorepo invariants
 ├── PATCHES.md             # what each vendored crate changes against upstream
@@ -113,8 +113,8 @@ outline-proxy/
 ```
 
 Per-component documentation lives next to each component:
-[server README](bins/outline-ss-rust/README.md) ·
-[client README](bins/outline-ws-rust/README.md) ·
+[server README](bins/outline-server/README.md) ·
+[client README](bins/outline-client/README.md) ·
 [dashboard UI README](bins/outline-ui/README.md) ·
 [Android client README](android/README.md) ·
 [macOS client README](macos/README.md). More detail is under each
@@ -142,12 +142,12 @@ cargo build --release
 cargo test --workspace --exclude sockudo-ws
 
 # a single binary
-cargo build --release -p outline-ss-rust
-cargo build --release -p outline-ws-rust
+cargo build --release -p outline-server
+cargo build --release -p outline-client
 
 # musl cross-builds via cargo-zigbuild aliases (need cargo-zigbuild + zig)
-cargo ss-release-musl-x86_64
-cargo ws-release-musl-aarch64
+cargo server-release-musl-x86_64
+cargo client-release-musl-aarch64
 cargo ui-release-musl-aarch64
 ```
 
@@ -169,15 +169,15 @@ Gradle/Kotlin app; build it from there, see [its README](android/README.md).
 All six deliverables share a single CalVer version (`vYY.M.PATCH`, e.g. `v26.11.0`)
 published under one unified GitHub Release (`Tag Release`):
 
-- `outline-ss-rust` (server, `x86_64` and `aarch64` musl)
-- `outline-ws-rust` (client, `x86_64` and `aarch64` musl)
+- `outline-server` (server, `x86_64` and `aarch64` musl)
+- `outline-client` (client, `x86_64` and `aarch64` musl)
 - `outline-ui` (dashboard UI, `x86_64` and `aarch64` musl)
 - Android app (`outline-proxy-<version>-arm64-v8a.apk`)
 - macOS app (`OutlineProxy-v<version>-macOS-Universal.dmg`)
 - Windows app (`OutlineProxy-v<version>-Windows-x86_64.zip`)
 
-Pushes to `main` still publish per-component rolling prereleases (`ss-nightly`,
-`ws-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`, `windows-nightly`).
+Pushes to `main` still publish per-component rolling prereleases (`server-nightly`,
+`client-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`, `windows-nightly`).
 Each nightly workflow has a path filter, so only affected components rebuild;
 the Android, macOS and Windows filters also cover the client and the shared and
 vendored crates their native code links.

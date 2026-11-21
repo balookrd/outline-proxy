@@ -5,11 +5,11 @@
   </picture>
 </p>
 
-# outline-ws-rust
+# outline-client
 
-`outline-ws-rust` — клиентский бинарь монорепо `outline-proxy`. Он принимает локальный SOCKS5-трафик и, опционально, пакеты с существующего TUN-устройства и отправляет их на сервер `outline-ss-rust` (или другой Outline-совместимый / VLESS-сервер) по WebSocket поверх HTTP/1.1, HTTP/2 или HTTP/3 либо по XHTTP поверх тех же трёх версий HTTP.
+`outline-client` — клиентский бинарь монорепо `outline-proxy`. Он принимает локальный SOCKS5-трафик и, опционально, пакеты с существующего TUN-устройства и отправляет их на сервер `outline-server` (или другой Outline-совместимый / VLESS-сервер) по WebSocket поверх HTTP/1.1, HTTP/2 или HTTP/3 либо по XHTTP поверх тех же трёх версий HTTP.
 
-Документ описывает сборку, настройку и запуск клиента на Linux. Серверная сторона описана в [`bins/outline-ss-rust/README.ru.md`](../outline-ss-rust/README.ru.md), справочник по формам аплинков — [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+Документ описывает сборку, настройку и запуск клиента на Linux. Серверная сторона описана в [`bins/outline-server/README.ru.md`](../outline-server/README.ru.md), справочник по формам аплинков — [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 
 Поддерживает:
 
@@ -42,7 +42,7 @@ flowchart LR
     subgraph LocalHost["Локальный хост"]
         C["SOCKS5-клиенты"]
         T["Существующий TUN"]
-        P["outline-ws-rust"]
+        P["outline-client"]
         M["/metrics endpoint"]
         C --> P
         T --> P
@@ -113,14 +113,14 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
-- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) для SS (`tcp_xhttp_url` / `udp_xhttp_url`) и VLESS (`vless_xhttp_url`); парные эндпоинты — XHTTP-эндпоинты outline-ss-rust. Подрежим выбирает query-строка URL дозвона: голый URL или `?mode=packet-up` — GET плюс последовательные POST'ы, `?mode=stream-one` — один двунаправленный POST (только h2 / h3; h1-носитель поддерживает только packet-up и на stream-one завершается ошибкой). Используйте, когда WebSocket Upgrade режется на пути (CDN, captive-portal middlebox'ы).
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) для SS (`tcp_xhttp_url` / `udp_xhttp_url`) и VLESS (`vless_xhttp_url`); парные эндпоинты — XHTTP-эндпоинты `outline-server`. Подрежим выбирает query-строка URL дозвона: голый URL или `?mode=packet-up` — GET плюс последовательные POST'ы, `?mode=stream-one` — один двунаправленный POST (только h2 / h3; h1-носитель поддерживает только packet-up и на stream-one завершается ошибкой). Используйте, когда WebSocket Upgrade режется на пути (CDN, captive-portal middlebox'ы).
 - VLESS-аплинки (`transport = "vless"`, UUID-аутентификация, per-destination UDP session-mux с лимитом `vless_udp_max_sessions`)
 - fallback носителя при неудаче дозвона:
   - `ws_h3 -> ws_h2 -> ws_h1`
   - `ws_h2 -> ws_h1`
-  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (только packet-up; stream-one останавливается на h2). Через каждую смену носителя переносится тот же токен `X-Outline-Resume`, поэтому сервер outline-ss-rust с включённым возобновлением сессий подхватывает запаркованный upstream вместо нового. Шаг h1 — для путей, режущих и QUIC, и ALPN h2; он открывает два keep-alive сокета на сессию (долгоживущий GET + сериализованные POST'ы), потому что h1 не мультиплексирует.
+  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (только packet-up; stream-one останавливается на h2). Через каждую смену носителя переносится тот же токен `X-Outline-Resume`, поэтому сервер `outline-server` с включённым возобновлением сессий подхватывает запаркованный upstream вместо нового. Шаг h1 — для путей, режущих и QUIC, и ALPN h2; он открывает два keep-alive сокета на сессию (долгоживущий GET + сериализованные POST'ы), потому что h1 не мультиплексирует.
   - fallback-wire'ы на аплинк через `[[outline.uplinks.fallbacks]]`: аплинк может объявить дополнительные wire-формы (другой `transport` + URL), которые dial-цикл пробует после провала primary на этом аплинке, например `vless → ss` или `ss → vless`. После `probe.min_failures` подряд проваленных дозвонов активный wire остаётся на fallback на `mode_downgrade_secs`, и новые сессии стартуют с него; по истечении пина сессии возвращаются на primary. Resume-токены (`X-Outline-Resume`) переживают смену wire через identity-level resume-cache, поэтому сервер с включённым возобновлением подхватывает upstream и при переходе `vless ↔ ss`. Цикл chunk-0 failover пробует все остальные wire'ы того же аплинка, прежде чем перейти на другой аплинк. `shuffle_wires = true` перемешивает цепочку при старте процесса (перестановки без совпадений внутри `[[uplink_group]]`) и передаёт управление uplink-failover'у после одного полного прохода без успешного wire (любой успешный wire сбрасывает проход); `shuffle_timer = "1h"` перевыбирает `active_wire` с заданным интервалом (`30s` / `5m` / `1h30m` / `2d` / голые секунды) и подавляет probe-driven ранний возврат на primary, чтобы перевыбор действовал. `carrier_downgrade = false` отключает каскад носителей внутри wire: сбой сразу переводит на следующий wire (против DPI, который режет upstream независимо от версии HTTP). См. «Внутри-аплинковые fallback-транспорты» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
-- клиентское возобновление сессии между носителями: WebSocket Upgrade несёт `X-Outline-Resume-Capable: 1`; Session ID из ответа сервера (`X-Outline-Session`) кэшируется по аплинку (а внутри VLESS UDP mux — по паре (uplink, target)) и предъявляется как `X-Outline-Resume: <hex>` при следующем дозвоне, так что сервер outline-ss-rust с включённым возобновлением подхватывает запаркованный upstream и пропускает connect к цели. Покрытие: TCP поверх WS, SS-UDP поверх WS и VLESS поверх XHTTP (h1 / h2 / h3, packet-up и stream-one; токен возвращается в том ответе, что несёт первый downlink-чанк). Сервер без возобновления игнорирует заголовок, остальной wire не меняется.
+- клиентское возобновление сессии между носителями: WebSocket Upgrade несёт `X-Outline-Resume-Capable: 1`; Session ID из ответа сервера (`X-Outline-Session`) кэшируется по аплинку (а внутри VLESS UDP mux — по паре (uplink, target)) и предъявляется как `X-Outline-Resume: <hex>` при следующем дозвоне, так что сервер `outline-server` с включённым возобновлением подхватывает запаркованный upstream и пропускает connect к цели. Покрытие: TCP поверх WS, SS-UDP поверх WS и VLESS поверх XHTTP (h1 / h2 / h3, packet-up и stream-one; токен возвращается в том ответе, что несёт первый downlink-чанк). Сервер без возобновления игнорирует заголовок, остальной wire не меняется.
 
 ### Шифрование
 
@@ -189,12 +189,12 @@ tun2udp + tun2tcp"]
 
 ## Структура репозитория
 
-Пути указаны относительно `bins/outline-ws-rust/`; общие крейты лежат в корне workspace.
+Пути указаны относительно `bins/outline-client/`; общие крейты лежат в корне workspace.
 
 - [`config.toml`](config.toml) — пример конфигурации
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service), [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — systemd-юниты
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — диагностика зависаний
+- [`systemd/outline-client.service`](systemd/outline-client.service), [`systemd/outline-client@.service`](systemd/outline-client@.service) — systemd-юниты
+- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json) — основной операционный дашборд
+- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json) — диагностика зависаний
 - [`src/bootstrap/`](src/bootstrap) — запуск: bind слушателей и хранилище состояния
 - [`src/config/`](src/config) — схема CLI и конфига, загрузка, валидация
 - [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (диспетчер, TCP failover, UDP-реле)
@@ -233,16 +233,16 @@ rustup target add aarch64-unknown-linux-musl
 Алиасы из корневого `.cargo/config.toml`:
 
 ```bash
-cargo ws-release-musl-x86_64
-cargo ws-release-musl-aarch64
+cargo client-release-musl-x86_64
+cargo client-release-musl-aarch64
 ```
 
 ### CI-релизы
 
-Nightly-сборка клиента живёт в `.github/workflows/ws-nightly-release.yml`, а единый стабильный релиз — в `.github/workflows/release.yml` и `.github/workflows/tag-release.yml`.
+Nightly-сборка клиента живёт в `.github/workflows/client-nightly-release.yml`, а единый стабильный релиз — в `.github/workflows/release.yml` и `.github/workflows/tag-release.yml`.
 
-- Push в `main`, затрагивающий `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` или `.cargo/**`, запускает `Nightly Release (client)`. Он переносит rolling-тег `ws-nightly` на этот коммит и заново публикует prerelease `Client Nightly`.
-- Nightly публикует `release`-сборки для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl` и `SHA256SUMS.txt`. Архивы называются `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
+- Push в `main`, затрагивающий `bins/outline-client/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` или `.cargo/**`, запускает `Nightly Release (client)`. Он переносит rolling-тег `client-nightly` на этот коммит и заново публикует prerelease `Client Nightly`.
+- Nightly публикует `release`-сборки для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl` и `SHA256SUMS.txt`. Архивы называются `outline-client-nightly-<8-char-commit-sha>-<target>.tar.gz`.
 - Для единого стабильного CalVer-релиза запустите вручную workflow `Release` (опционально с серией `series`, например `26.11`, по умолчанию — текущий месяц UTC). CI вычисляет следующий patch для `v<YY>.<M>.*`, обновляет версии в манифестах и lock-файлах workspace, создаёт release-коммит и пушит его в `main`.
 - После появления release-коммита в `main` создайте и отправьте подписанный тег локально (`git tag -s vYY.M.PATCH -m vYY.M.PATCH`). Push тега запускает `Tag Release`, который собирает все платформы и публикует единый GitHub Release.
 - Ручной push тега `vYY.M.PATCH` тоже запускает `Tag Release`.
@@ -267,29 +267,29 @@ Nightly-сборка клиента живёт в `.github/workflows/ws-nightly-
 Нативная сборка под текущую машину:
 
 ```bash
-cargo build --release -p outline-ws-rust
+cargo build --release -p outline-client
 ```
 
 Статический бинарь x86-64 (без зависимости от glibc):
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p outline-client --target x86_64-unknown-linux-musl
 # или
-cargo ws-release-musl-x86_64
+cargo client-release-musl-x86_64
 ```
 
 Статический бинарь AArch64:
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl
+cargo zigbuild --release -p outline-client --target aarch64-unknown-linux-musl
 # или
-cargo ws-release-musl-aarch64
+cargo client-release-musl-aarch64
 ```
 
 Чтобы убрать одну фичу, отключите дефолтные и перечислите остальные. Пример без `metrics`:
 
 ```bash
-cargo zigbuild --release -p outline-ws-rust --no-default-features \
+cargo zigbuild --release -p outline-client --no-default-features \
   --features h3,control,socks5,tun,jemalloc,env-filter,multi-thread \
   --target x86_64-unknown-linux-musl
 ```
@@ -299,13 +299,13 @@ cargo zigbuild --release -p outline-ws-rust --no-default-features \
 `--config` по умолчанию — `config.toml` в текущем каталоге. Из корня workspace укажите путь к примеру:
 
 ```bash
-cargo run --release -p outline-ws-rust -- --config bins/outline-ws-rust/config.toml
+cargo run --release -p outline-client -- --config bins/outline-client/config.toml
 ```
 
 Разовый запуск с параметрами из CLI:
 
 ```bash
-cargo run --release -p outline-ws-rust -- \
+cargo run --release -p outline-client -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
   --tcp-mode h3 \
@@ -321,7 +321,7 @@ cargo run --release -p outline-ws-rust -- \
 
 ### Совместимость с `hev-socks5-tunnel`
 
-`outline-ws-rust` принимает оба UDP-режима [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+`outline-client` принимает оба UDP-режима [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
 
 ```yaml
 socks5:
@@ -365,7 +365,7 @@ listen = "[::1]:9090"
 # token = "long-random-secret"
 # # Либо читать токен из соседнего файла (путь — относительно конфига).
 # # Используйте, когда секрет нельзя хранить в самом конфиге.
-# # token_file = "/etc/outline-ws/control.token"
+# # token_file = "/etc/outline-client/control.token"
 
 # Multi-instance дашборд переехал в сервис outline-ui
 # (см. bins/outline-ui/README.ru.md). Этот бинарь отдаёт только [metrics]
@@ -628,7 +628,7 @@ via = "main"
   - `true`: пока текущий активный здоров, а есть кандидат с более высоким `weight` (или равным weight и меньшим индексом в конфиге), трафик возвращается на кандидата после того, как он пройдёт `min_failures` циклов проб подряд. Приоритет — `weight`, а не EWMA RTT: под нагрузкой EWMA активного аплинка растёт, а простаивающий резервный выглядит быстрее, и сравнение по EWMA переключало бы на этом. Failback идёт только в сторону большего weight (`1.0 → 1.5 → 2.0`); переход на аплинк с меньшим weight требует подтверждённого пробой failover'а.
 - `mode_downgrade_secs` (на группу, по умолчанию `60`, алиас `h3_downgrade_secs`): сколько аплинк после сбоя на «продвинутом» носителе (например, H3 application error вроде `H3_INTERNAL_ERROR`) остаётся на ранг ниже (`ws_h3 → ws_h2`, `xhttp_h3 → xhttp_h2`), прежде чем снова попробовать заданный носитель. Действует для `ss` и `vless`. `0` отключает даунгрейд.
 - `carrier_degraded_failover_secs` (на группу, по умолчанию `3 × mode_downgrade_secs`): failover по качеству носителя для строгого выбора (`active_passive`). Аплинк, чьи пробы проходят по TCP-фоллбеку, считается здоровым, поэтому без этого параметра он держал бы активный слот, даже когда каждый дозвон ограничен ниже заданного носителя (`ws_h3 → ws_h2`, TCP поверх TCP). Если активный аплинк проработал ниже заданного носителя под одним непрерывным окном даунгрейда не меньше этого числа секунд, а в группе есть здоровый по пробам кандидат с равным или большим `weight`, чей носитель не деградирован и чья серия успешных проб достигла `min_failures`, выбор мягко переключается на этого кандидата. Одиночная вспышка сработать не может: одно окно истекает через `mode_downgrade_secs`, порог пересекают только сбои, которые продолжают продлевать окно. `0` отключает. Работает при любом `auto_failback`; кандидат с меньшим weight не забирает слот только за качество носителя.
-- `state_path` (опционально): TOML-файл, где хранится выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с расширением `.state.toml` (`config.toml` → `config.state.toml`). Если файл нельзя записать (например, конфиг в `/etc/` под `ProtectSystem=strict`), при старте пишется предупреждение и процесс работает без сохранения. Прилагаемые юниты задают `STATE_PATH=/var/lib/outline-ws-rust/_default/state.toml` (шаблон: `/var/lib/outline-ws-rust/<instance>/state.toml`). Сохраняется только имя активного аплинка; EWMA и штрафы восстанавливаются за один цикл проб после рестарта.
+- `state_path` (опционально): TOML-файл, где хранится выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с расширением `.state.toml` (`config.toml` → `config.state.toml`). Если файл нельзя записать (например, конфиг в `/etc/` под `ProtectSystem=strict`), при старте пишется предупреждение и процесс работает без сохранения. Прилагаемые юниты задают `STATE_PATH=/var/lib/outline-client/_default/state.toml` (шаблон: `/var/lib/outline-client/<instance>/state.toml`). Сохраняется только имя активного аплинка; EWMA и штрафы восстанавливаются за один цикл проб после рестарта.
 - У каждой `[[uplink_group]]` свой probe loop, standby-пул, sticky-routes, активный аплинк и политика балансировки; группы не делят runtime-состояние.
 - `[outline.probe]` — шаблон: каждая группа его наследует, `[uplink_group.probe]` переопределяет отдельные поля. Подтаблицы проб (`ws` / `http` / `dns` / `tcp` / `tls`) заменяются целиком: если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё не действует. Application-level пробы (`http` / `tcp` / `tls`) взаимоисключающие: за цикл выполняется одна, приоритет `tls → http → tcp`.
 - Имена аплинков должны быть уникальны по всем группам: лейбл Prometheus `uplink="..."` не содержит группы.
@@ -703,7 +703,7 @@ via = "direct"
 
 # Страновой / GeoIP-список из файла, hot-reload по mtime.
 [[route]]
-file = "/etc/outline-ws-rust/geoip-cn.list"
+file = "/etc/outline-client/geoip-cn.list"
 file_poll_secs = 60
 via = "backup"
 fallback_via = "main"     # пробуем "main", если в "backup" нет healthy-аплинков
@@ -713,8 +713,8 @@ fallback_via = "main"     # пробуем "main", если в "backup" нет h
 # inline `prefixes` при желании тоже можно добавить — всё смерджится.
 [[route]]
 files = [
-    "/etc/outline-ws-rust/geoip-cn-v4.list",
-    "/etc/outline-ws-rust/geoip-cn-v6.list",
+    "/etc/outline-client/geoip-cn-v4.list",
+    "/etc/outline-client/geoip-cn-v6.list",
 ]
 file_poll_secs = 60
 via = "backup"
@@ -727,7 +727,7 @@ via = "drop"
 # Доменные цели (SOCKS5h-hostname): локальные зоны — напрямую…
 [[route]]
 domains = ["home.arpa", "corp.example"]
-domain_file = "/etc/outline-ws-rust/bypass-domains.lst"
+domain_file = "/etc/outline-client/bypass-domains.lst"
 via = "direct"
 
 # …все остальные домены — через туннель, а не в default.
@@ -827,7 +827,7 @@ Warm-standby следует даунгрейду: пока аплинк огра
 - Размеры. Выбор делается на каждый пакет по текущему `max_datagram_size()`; пакет, который не помещается, идёт по стриму. До PMTUD клиент начинает с MTU 1200, поэтому сразу после подключения большинство полноразмерных пакетов ещё идёт по стриму. Максимальный UDP payload сервера — 1452. Буферы датаграмм — 1 МиБ с каждой стороны.
 - Выкатка. Сначала серверы, потом клиенты; безопасен любой порядок. Откат: `udp_datagrams = false` на стороне, которая сбоит, и перезапуск этого сервиса (без пересборки).
 
-Кэш path MTU. Клиент запоминает path MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark и хэш локального адреса источника, то есть сеть, в которой он находится), в файле рядом с state-файлом с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`; с прилагаемым юнитом — `/var/lib/outline-ws-rust/_default/state.pmtu`). Следующий дозвон по тому же пути пробует этот размер первым: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении.
+Кэш path MTU. Клиент запоминает path MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark и хэш локального адреса источника, то есть сеть, в которой он находится), в файле рядом с state-файлом с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`; с прилагаемым юнитом — `/var/lib/outline-client/_default/state.pmtu`). Следующий дозвон по тому же пути пробует этот размер первым: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении.
 
 | Значение в кэше | Срок жизни | Что происходит при следующем соединении |
 |---|---|---|
@@ -854,7 +854,7 @@ Warm-standby следует даунгрейду: пока аплинк огра
 Опциональный паддинг на уровне приложения для WebSocket- и XHTTP-дозвонов — клиентская половина серверного паддинга. Каждый Shadowsocks-чанк или VLESS-кадр оборачивается в кадр с длинами `real_len | pad_len | real | pad`, и размер внешней TLS-записи перестаёт следовать за размером payload. На этой корреляции размеров записей работают классификаторы TLS-in-TLS.
 
 - Глобальное значение плюс переопределение на аплинке. `[padding]` задаёт параметры схемы и значение по умолчанию (`enabled`, по умолчанию `false`); каждый `[[outline.uplinks]]` может задать `padding = true` / `padding = false`. Дозвон берёт значение аплинка, если оно задано, иначе глобальное (та же схема, что у `fingerprint_profile` на аплинке). Либо оставьте глобальное выключенным и задайте `padding = true` на аплинках, ведущих на ваши padded-эндпоинты сервера, либо включите глобально и задайте `padding = false` на VLESS-аплинке к стороннему серверу (xray / sing-box). Padded-дозвон (SS и VLESS, TCP и UDP) должен идти на эндпоинты сервера, где паддинг тоже включён.
-- Задаётся конфигом на обеих сторонах, не согласуется по сети. На outline-ss-rust у соответствующего `[[endpoint]]` должно быть `padded = true`; иначе padded-кадры попадут в обычный декодер и сессия упадёт.
+- Задаётся конфигом на обеих сторонах, не согласуется по сети. На `outline-server` у соответствующего `[[endpoint]]` должно быть `padded = true`; иначе padded-кадры попадут в обычный декодер и сессия упадёт.
 - Cover-трафик. При `cover = true` простаивающее соединение шлёт кадры из одного паддинга со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`, по умолчанию 250 / 1500).
 
 Покрывает SS и VLESS поверх WebSocket (h1/h2/h3) и поверх XHTTP. UDP паддится по датаграммам на каждом WS-носителе — SS-UDP (split: укажите его путь; combined: общий базовый путь) и VLESS-UDP. Полное описание: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); ключи перечислены в блоке `[padding]` в `config.toml`.
@@ -1008,13 +1008,13 @@ Bypass использует локальный сокет direct-пути. На 
 
 Туннелируемый TUN-флоу не владеет своим транспортом: он делит один носитель — одно H3/H2/H1-соединение — с остальными флоу этого аплинка. Когда носитель рушится (ошибка уровня H3-соединения разом обрывает всё, что на нём мультиплексировано), все флоу на нём теряют транспорт в один момент, и каждое приложение видит обрыв соединения.
 
-Upstream-сокеты при этом живы. Сервер переносит каждый в реестр сирот под Session ID, выданным этому флоу, и держит 30 с ([`docs/SESSION-RESUMPTION.ru.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.ru.md)). При `[tun.tcp] carrier_migration = true` (по умолчанию) флоу, чей носитель умер, дозванивается на новый, предъявляет свой Session ID, получает запаркованный upstream обратно и закрывает байтовый разрыв в обе стороны, прежде чем продолжить. Ack-Prefix Protocol (v1) сообщает клиенту, сколько uplink-байт сервер реально переслал, и клиент повторяет только хвост, потерянный в пути; Symmetric Downlink Replay (v2) возвращает downstream-байты, которые мёртвый носитель не доставил, и они отдаются приложению раньше всего, что пришлёт новый носитель. Приложение не видит обрыва: ни FIN, ни RST, ни дыры, ни дублированного байта.
+Upstream-сокеты при этом живы. Сервер переносит каждый в реестр сирот под Session ID, выданным этому флоу, и держит 30 с ([`docs/SESSION-RESUMPTION.ru.md`](../outline-server/docs/SESSION-RESUMPTION.ru.md)). При `[tun.tcp] carrier_migration = true` (по умолчанию) флоу, чей носитель умер, дозванивается на новый, предъявляет свой Session ID, получает запаркованный upstream обратно и закрывает байтовый разрыв в обе стороны, прежде чем продолжить. Ack-Prefix Protocol (v1) сообщает клиенту, сколько uplink-байт сервер реально переслал, и клиент повторяет только хвост, потерянный в пути; Symmetric Downlink Replay (v2) возвращает downstream-байты, которые мёртвый носитель не доставил, и они отдаются приложению раньше всего, что пришлёт новый носитель. Приложение не видит обрыва: ни FIN, ни RST, ни дыры, ни дублированного байта.
 
 Миграция срабатывает только при подтверждённом resume hit. Перезвон с ID может промахнуться — парковка истекла или у сервера выключено возобновление, — и при промахе сервер открывает к назначению новый upstream, байтовый поток которого начинается с нуля. Продолжить флоу на нём значило бы пришить новый поток к недочитанному и отдать приложению испорченные данные, похожие на корректные. Поэтому клиент мигрирует только тогда, когда сервер доказал подхват, прислав управляющий кадр v1, — а он шлёт его только после того, как забрал сироту. Capability-заголовок в ответе на upgrade доказательством не является: сервер возвращает его и при попадании, и при промахе. Всё остальное — промах, таймаут, неразбираемый кадр, повтор, который клиент уже не может воспроизвести байт в байт, обрезанный downstream-срез — уходит в обычное закрытие.
 
 Следствия:
 
-- Возобновление на сервере по умолчанию выключено (`[session_resumption] enabled` в outline-ss-rust). Сервер без него не выдаёт Session ID, его флоу к миграции не допускаются, и клиентская настройка там ни на что не влияет.
+- Возобновление на сервере по умолчанию выключено (`[session_resumption] enabled` в `outline-server`). Сервер без него не выдаёт Session ID, его флоу к миграции не допускаются, и клиентская настройка там ни на что не влияет.
 - Direct-флоу (`via = "direct"`) не мигрируют никогда: у них свой сокет до origin, носителя, с которого уходить, нет, и подхватывать нечего.
 - Лимиты: не больше 2 попыток на флоу, ни одна не стартует позже 20 с после первой (TTL парковки на сервере — 30 с), кольцо повтора uplink ограничено 64 КиБ на флоу. Флоу, отправивший один чанк больше этого, теряет кольцо, не может доказать побайтовую точность и закрывается как раньше, а не возобновляется с дырой.
 - Миграционный дозвон запрашивает заданный носитель аплинка, а не ограниченный. Смерть носителя, вызвавшая миграцию, сама засчитывается как runtime-сбой и опускает аплинк на ранг ниже (`ws_h3` → `ws_h2`) на `mode_downgrade_secs`. Если соблюдать это ограничение, каждый спасённый флоу до конца жизни ехал бы по TCP поверх TCP — живой флоу обратно наверх ничто не переносит, — и долгая загрузка, спасённая с мёртвого H3-носителя, ползла бы вместо переподключения на полной скорости. Если носитель действительно сломан, дозвон сам спускается `h3 → h2 → h1`. По той же причине миграция перезванивает в свой аплинк, а не в перевыбранный: смерть носителя могла отправить этот аплинк в cooldown.
@@ -1096,7 +1096,7 @@ curl http://[::1]:9090/metrics
 
 ```yaml
 scrape_configs:
-  - job_name: outline-ws-rust
+  - job_name: outline-client
     metrics_path: /metrics
     static_configs:
       - targets:
@@ -1140,7 +1140,7 @@ scrape_configs:
 - `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge открытых upstream-транспортов по аплинку. После переключения новый активный аплинк набирает соединения, старый их сливает; серия, которая не опускается, — признак утечки.
 - `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — счётчик закрытий upstream-транспортов, классифицированных в момент закрытия: `active` (аплинк ещё был активным), `inactive` (указатель активного уже ушёл — сливается оставшаяся сессия) или `unknown` (scope `per_flow`, указателя нет). `rate(...{classification="inactive"}[5m])` — скорость слива после переключения; устойчиво ненулевое значение вне недавнего переключения указывает на устаревший sticky-маршрут или warm-standby пул.
 
-Обе метрики выведены в строку Grafana «Inactive Uplink Leak (Global / Per-Uplink)» в `grafana/outline-ws-rust-dashboard.json`. Соединения проб не учитываются; метрики покрывают только дозвоны пользовательского трафика.
+Обе метрики выведены в строку Grafana «Inactive Uplink Leak (Global / Per-Uplink)» в `grafana/outline-client-dashboard.json`. Соединения проб не учитываются; метрики покрывают только дозвоны пользовательского трафика.
 
 `outline_ws_carrier_writer_terminations_total{writer, reason}` считает writer-задачи WebSocket-носителя, остановившиеся из-за ошибки записи. `writer` — `ss` (SS поверх WS) или `frame` (writer VLESS-чанков / датаграмм); `reason` — `peer_closed`, если носитель уже был закрыт (штатно, лог на `debug`), или `error` для настоящей ошибки записи (лог на `warn`). Устойчивый rate `reason="error"` значит, что аплинк не может писать. Строка Grafana: «Carrier Writer Terminations».
 
@@ -1156,8 +1156,8 @@ scrape_configs:
 
 Дашборды Grafana (см. [`grafana/README.md`](grafana/README.md)):
 
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
+- [`grafana/outline-client-dashboard.json`](grafana/outline-client-dashboard.json)
+- [`grafana/outline-client-hang-diagnostics.json`](grafana/outline-client-hang-diagnostics.json)
 
 ## Control plane
 
@@ -1291,7 +1291,7 @@ sudo ./install-client.sh
 ```bash
 sudo ./install-client.sh                       # последний stable-релиз (/releases/latest)
 sudo ./install-client.sh --force               # переустановить, даже если версия совпадает
-sudo CHANNEL=nightly ./install-client.sh       # rolling prerelease ws-nightly
+sudo CHANNEL=nightly ./install-client.sh       # rolling prerelease client-nightly
 sudo VERSION=v26.11.0 ./install-client.sh      # закрепить stable-версию (тег v26.11.0)
 sudo ./install-client.sh --remove              # алиас --uninstall
 sudo ./install-client.sh --purge
@@ -1300,21 +1300,21 @@ sudo ./install-client.sh --purge
 Что делает скрипт:
 
 - выбирает артефакт релиза по `uname -m` (`x86_64`/`amd64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`); другие архитектуры отвергает
-- не скачивает, если установленная версия совпадает с выбранным релизом (`--force` или `FORCE=1` отменяют проверку); для nightly отслеживает SHA коммита релиза в `/etc/outline-ws-rust/nightly-commit`
-- ставит бинарь в `/usr/local/bin/outline-ws-rust`, предыдущий сохраняет как `<path>.bak.<timestamp>`
-- ставит `outline-ws-rust.service` и `outline-ws-rust@.service` в `/etc/systemd/system`, взятые из того же релизного тега, что и бинарь
-- создаёт системного пользователя и группу `outline-ws`, каталоги `/etc/outline-ws-rust` и `/var/lib/outline-ws-rust` и отдаёт каталог конфигурации `outline-ws` (`0750`, файлы `0640`), чтобы control API мог писать конфиг
+- не скачивает, если установленная версия совпадает с выбранным релизом (`--force` или `FORCE=1` отменяют проверку); для nightly отслеживает SHA коммита релиза в `/etc/outline-client/nightly-commit`
+- ставит бинарь в `/usr/local/bin/outline-client`, предыдущий сохраняет как `<path>.bak.<timestamp>`
+- ставит `outline-client.service` и `outline-client@.service` в `/etc/systemd/system`, взятые из того же релизного тега, что и бинарь
+- создаёт системного пользователя и группу `outline-client`, каталоги `/etc/outline-client` и `/var/lib/outline-client` и отдаёт каталог конфигурации `outline-client` (`0750`, файлы `0640`), чтобы control API мог писать конфиг
 - скачивает `config.toml` и `instances/example.toml`, только если их ещё нет
-- перезапускает только те unit'ы `outline-ws-rust`, что были активны; новый сервис не включает и не запускает, остановленный остаётся остановленным
+- перезапускает только те unit'ы `outline-client`, что были активны; новый сервис не включает и не запускает, остановленный остаётся остановленным
 
 После первой установки:
 
-1. Отредактируйте `/etc/outline-ws-rust/config.toml`.
+1. Отредактируйте `/etc/outline-client/config.toml`.
 2. Включите один из вариантов:
-   - один инстанс: `sudo systemctl enable --now outline-ws-rust.service`
-   - именованный инстанс (конфиг `/etc/outline-ws-rust/instances/<name>.toml`): `sudo systemctl enable --now outline-ws-rust@<name>.service`
-3. Проверьте статус: `systemctl status outline-ws-rust --no-pager`.
-4. Проверьте логи: `journalctl -u outline-ws-rust -e --no-pager`.
+   - один инстанс: `sudo systemctl enable --now outline-client.service`
+   - именованный инстанс (конфиг `/etc/outline-client/instances/<name>.toml`): `sudo systemctl enable --now outline-client@<name>.service`
+3. Проверьте статус: `systemctl status outline-client --no-pager`.
+4. Проверьте логи: `journalctl -u outline-client -e --no-pager`.
 
 Для обновления запустите скрипт ещё раз; бинарь заменяется, только если выбранный релиз отличается от установленного.
 
@@ -1323,18 +1323,18 @@ sudo ./install-client.sh --purge
 | Переменная | По умолчанию | Значение |
 |---|---|---|
 | `CHANNEL` | `stable` | `stable` или `nightly` |
-| `VERSION` | последняя | stable: `1.2.3` или `v1.2.3`; при `CHANNEL=nightly` допустимо только `nightly` |
+| `VERSION` | последняя | stable: `26.11.0` или `v26.11.0`; при `CHANNEL=nightly` допустимо только `nightly` |
 | `FORCE` | пусто | `1` — переустановить, даже если версия совпадает |
-| `INSTALL_PATH` | `/usr/local/bin/outline-ws-rust` | полный путь устанавливаемого бинаря |
-| `CONFIG_DIR` | `/etc/outline-ws-rust` | каталог конфигурации |
-| `STATE_DIR` | `/var/lib/outline-ws-rust` | каталог состояния |
-| `SERVICE_USER` / `SERVICE_GROUP` | `outline-ws` | системный пользователь и группа сервиса |
+| `INSTALL_PATH` | `/usr/local/bin/outline-client` | полный путь устанавливаемого бинаря |
+| `CONFIG_DIR` | `/etc/outline-client` | каталог конфигурации |
+| `STATE_DIR` | `/var/lib/outline-client` | каталог состояния |
+| `SERVICE_USER` / `SERVICE_GROUP` | `outline-client` | системный пользователь и группа сервиса |
 | `GITHUB_TOKEN` | пусто | GitHub-токен против rate limit API |
 
 Удаление:
 
-- `--remove` (алиас `--uninstall`): останавливает и отключает `outline-ws-rust.service` и все `outline-ws-rust@<name>.service`, удаляет оба unit-файла (с последующим `daemon-reload`), бинарь и его `.bak.*`. Оставляет `/etc/outline-ws-rust` (включая `instances/`), `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`, чтобы переустановка подхватила конфиг.
-- `--purge`: всё, что делает `--remove`, плюс удаляет `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`.
+- `--remove` (алиас `--uninstall`): останавливает и отключает `outline-client.service` и все `outline-client@<name>.service`, удаляет оба unit-файла (с последующим `daemon-reload`), бинарь и его `.bak.*`. Оставляет `/etc/outline-client` (включая `instances/`), `/var/lib/outline-client` и пользователя/группу `outline-client`, чтобы переустановка подхватила конфиг.
+- `--purge`: всё, что делает `--remove`, плюс удаляет `/etc/outline-client`, `/var/lib/outline-client` и пользователя/группу `outline-client`.
 
 Оба режима идемпотентны: отсутствующие артефакты пропускаются.
 
@@ -1368,19 +1368,19 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 
 Юниты:
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — один инстанс, конфиг `/etc/outline-ws-rust/config.toml`, состояние в `/var/lib/outline-ws-rust/_default/`
-- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — шаблон именованного инстанса, конфиг `/etc/outline-ws-rust/instances/<name>.toml`, состояние в `/var/lib/outline-ws-rust/<name>/`
+- [`systemd/outline-client.service`](systemd/outline-client.service) — один инстанс, конфиг `/etc/outline-client/config.toml`, состояние в `/var/lib/outline-client/_default/`
+- [`systemd/outline-client@.service`](systemd/outline-client@.service) — шаблон именованного инстанса, конфиг `/etc/outline-client/instances/<name>.toml`, состояние в `/var/lib/outline-client/<name>/`
 
 Ручная установка (`install-client.sh` делает то же самое):
 
-1. Установите бинарь в `/usr/local/bin/outline-ws-rust`.
+1. Установите бинарь в `/usr/local/bin/outline-client`.
 2. Создайте пользователя и группу сервиса:
-   `sudo groupadd --system outline-ws && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-ws outline-ws`
-3. Положите конфигурацию в `/etc/outline-ws-rust/config.toml` и отдайте каталог пользователю сервиса:
-   `sudo chown -R outline-ws:outline-ws /etc/outline-ws-rust && sudo chmod 0750 /etc/outline-ws-rust`
+   `sudo groupadd --system outline-client && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-client outline-client`
+3. Положите конфигурацию в `/etc/outline-client/config.toml` и отдайте каталог пользователю сервиса:
+   `sudo chown -R outline-client:outline-client /etc/outline-client && sudo chmod 0750 /etc/outline-client`
 4. Скопируйте оба unit-файла в `/etc/systemd/system/`.
 5. Перечитайте конфигурацию systemd и включите сервис:
-   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
+   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-client`
 
 Что задают юниты:
 
@@ -1388,8 +1388,8 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 - `RUST_LOG=info`, логи в journald
 - `LimitNOFILE=1048576`, `LimitSTACK=8M`, `TasksMax=infinity`
 - `MemoryHigh=70%`, `MemoryMax=85%`: на хосте с малым объёмом RAM всплеск флоу может исчерпать память быстрее, чем ядро её освободит, и подвесить весь хост; с лимитами ядро убивает по OOM сервис, и systemd его перезапускает. Для фиксированных значений переопределите drop-in'ом
-- `User=outline-ws` / `Group=outline-ws` и `StateDirectory=outline-ws-rust/_default` (шаблон: `outline-ws-rust/%i`), чтобы у файлов состояния был постоянный владелец
-- `ReadWritePaths` включает `/etc/outline-ws-rust` (шаблон: `/etc/outline-ws-rust/instances`), чтобы правки через control API и миграция конфига могли записать файл
+- `User=outline-client` / `Group=outline-client` и `StateDirectory=outline-client/_default` (шаблон: `outline-client/%i`), чтобы у файлов состояния был постоянный владелец
+- `ReadWritePaths` включает `/etc/outline-client` (шаблон: `/etc/outline-client/instances`), чтобы правки через control API и миграция конфига могли записать файл
 - `AmbientCapabilities=CAP_NET_ADMIN` для `fwmark`; уберите обе строки с capability, если `fwmark` / `direct_fwmark` не используются. Для них нужен ещё `PrivateUsers=no` в drop-in'е: юниты задают `PrivateUsers=true`, а `SO_MARK` внутри приватного user namespace падает с `EPERM` даже при наличии capability
 - `PrivateDevices=false` для доступа к `/dev/net/tun` (TUN-режим)
 - `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` и остальные опции `Protect*` / `Restrict*` в файле юнита
@@ -1427,14 +1427,14 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 Из корня workspace:
 
 ```bash
-cargo check -p outline-ws-rust
-cargo test -p outline-ws-rust
+cargo check -p outline-client
+cargo test -p outline-client
 ```
 
-CI-гейт (fmt, clippy, тесты, feature matrix) описан в корневом [`AGENTS.md`](../../AGENTS.md). End-to-end тесты против настоящих процессов `outline-ss-rust` (`tests/e2e_*.rs`) запускаются только с `RUN_E2E_FAILOVER=1`, а набор TLS/H3-носителей требует фичи `test-tls`:
+CI-гейт (fmt, clippy, тесты, feature matrix) описан в корневом [`AGENTS.md`](../../AGENTS.md). End-to-end тесты против настоящих процессов `outline-server` (`tests/e2e_*.rs`) запускаются только с `RUN_E2E_FAILOVER=1`, а набор TLS/H3-носителей требует фичи `test-tls`:
 
 ```bash
-RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
+RUN_E2E_FAILOVER=1 cargo test -p outline-client --features test-tls --test 'e2e_*' -- --test-threads=1
 ```
 
 Ручные тесты против реального сервера есть для HTTP/1.1, HTTP/2 и HTTP/3 (`real_server_h1`, `real_server_h2`, `real_server_h3`); каждый пропускается, если его переменная `RUN_REAL_SERVER_*` не равна `1`:
@@ -1444,7 +1444,7 @@ RUN_REAL_SERVER_H2=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test -p outline-ws-rust --test real_server_h2 -- --nocapture
+cargo test -p outline-client --test real_server_h2 -- --nocapture
 ```
 
 ```bash
@@ -1452,19 +1452,19 @@ RUN_REAL_SERVER_H3=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test -p outline-ws-rust --test real_server_h3 -- --nocapture
+cargo test -p outline-client --test real_server_h3 -- --nocapture
 ```
 
 Изоляция групп, fallback и direct-диспатч:
 
 ```bash
-cargo test -p outline-ws-rust --test group_routing -- --nocapture
+cargo test -p outline-client --test group_routing -- --nocapture
 ```
 
 Warm standby:
 
 ```bash
-cargo test -p outline-ws-rust --test standby_validation -- --nocapture
+cargo test -p outline-client --test standby_validation -- --nocapture
 ```
 
 ## Ссылки на протоколы

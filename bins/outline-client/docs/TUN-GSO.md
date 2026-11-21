@@ -1,6 +1,6 @@
 # TUN GSO / GRO / USO offload (`[tun] gso`, `[tun] gro`, `[tun] uso`)
 
-This document describes the three TUN offload settings of `outline-ws-rust` on Linux: what each one changes on the read and write paths, how to check that it is active, and how to roll it back. It is for operators running the TUN client on Linux.
+This document describes the three TUN offload settings of `outline-client` on Linux: what each one changes on the read and write paths, how to check that it is active, and how to roll it back. It is for operators running the TUN client on Linux.
 
 *Русская версия: [TUN-GSO.ru.md](TUN-GSO.ru.md)*
 
@@ -68,7 +68,7 @@ All three paths are in the data plane, so check data integrity first, then CPU:
 2. Downlink (`gso`): download a large file through the tunnel and compare its `sha256sum` with the original. The hashes must match.
 3. Uplink (`gro`): upload a large file through the tunnel and compare its `sha256sum` on the far end.
 4. UDP (`uso`): check that DNS resolves and QUIC traffic (for example YouTube) plays, then run a bulk UDP transfer. A growing `outline_ws_tun_packets_total{outcome="uso_supersegment"}` means downlink datagrams are being coalesced.
-5. Compare CPU and syscall rate with offload off at the same throughput: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)`. With `gso` the `write` count drops; with `gro` on a bulk upload the `read` count drops.
+5. Compare CPU and syscall rate with offload off at the same throughput: `sudo timeout 5 strace -f -c -p $(pidof outline-client)`. With `gso` the `write` count drops; with `gro` on a bulk upload the `read` count drops.
 
 The startup log lines `TUN offload negotiated` (fields `req_gso`, `req_gro`, `req_uso`, `vnet_hdr`, `rx_gro`, `udp_gso`) and `TUN loop started` (fields `gso`, `rx_gro`, `udp_gso`) show what the kernel accepted.
 

@@ -2,8 +2,8 @@
 
 *English version: [CLUSTER.md](CLUSTER.md)*
 
-Документ описывает, как несколько серверов `outline-ss-rust` работают одним
-кластером: клиент `outline-ws-rust` входит через любой сервер, а сессия
+Документ описывает, как несколько серверов `outline-server` работают одним
+кластером: клиент `outline-client` входит через любой сервер, а сессия
 закреплена за своим home-сервером. Сервер, который не является home сессии
 (edge), сам терминирует крипту клиента и пересылает application-plaintext на
 home по QUIC-каналу mesh; маршрут выбирается по shard-id, зашитому в session id.
@@ -78,7 +78,7 @@ Edge должен узнать shard до любого SS/VLESS-payload. Shard �
 | Первое подключение (нет resume) | — | edge и есть home: обрабатывает локально, генерирует session id с `shard = self` |
 
 ```
-            client (ws-rust)
+          client (outline-client)
           resume? X-Outline-Resume
                       │ carrier (WS/H3)
                       ▼
@@ -212,7 +212,7 @@ UDP-sub-connection'а и есть граница кадра. Sub-connection'ы, 
 отдаёт один mux-кадр на бинарное WebSocket-сообщение; релеимый пересылает
 mesh-чанки, поэтому в сообщении может прийти несколько кадров или часть одного.
 Потоково-ориентированному mux-клиенту (такой подразумевает обрамление mux.cool;
-в `outline-ws-rust` mux нет вовсе) разницы нет. Сторонний клиент, который
+в `outline-client` mux нет вовсе) разницы нет. Сторонний клиент, который
 разбирает «один кадр = одно сообщение», должен буферизовать через границы
 сообщений, чтобы возобновиться через чужой edge.
 
@@ -331,7 +331,7 @@ resume отвергается
 парковка, сделанная под Shadowsocks, отдаётся VLESS-носителю той же учётки и
 наоборот. Поэтому `[[users]].id` и каждое имя из `[users.aliases]` должны
 обозначать одного и того же человека на каждом узле. См.
-`bins/outline-ss-rust/docs/SESSION-RESUMPTION.ru.md` § Кросс-протокольный
+`bins/outline-server/docs/SESSION-RESUMPTION.ru.md` § Кросс-протокольный
 resume; переходы считаются в
 `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`.
 
@@ -582,7 +582,7 @@ home, его реестр сессий и два счётчика
 
 ## Конфигурация
 
-Сервер (`outline-ss-rust`):
+Сервер (`outline-server`):
 
 ```toml
 [cluster]
@@ -621,7 +621,7 @@ peers = [
 `"outline-proxy cluster mesh-auth v1"` для keypair интерконнекта), так что один
 ключ не используется в двух криптоконтекстах.
 
-Клиент (`outline-ws-rust`): без правок кода. Клиент и так резюмит на тот же
+Клиент (`outline-client`): без правок кода. Клиент и так резюмит на тот же
 uplink с тем же session id, и путь failover между edge уже есть. При
 anycast-входе релей для клиента невидим. Без anycast и без надёжного DNS
 пропишите каждый узел отдельным uplink'ом и выставьте `shared_resume = true` на
@@ -649,7 +649,7 @@ mesh-объекта есть лимит:
 ## Открытые риски
 
 1. Mesh data-plane (тот же класс тихой порчи, что в TUN-pump). Покрыт тестами в
-   `bins/outline-ss-rust/src/server/tests/resumption/cluster.rs`:
+   `bins/outline-server/src/server/tests/resumption/cluster.rs`:
    `cluster_relay_streams_large_transfer_sha256` гонит 16 MiB через релей
    chunked SS-AEAD-потоком и сверяет байт-в-байт по SHA-256 в обе стороны;
    `cluster_session_survives_edge_switch` покрывает park и reattach при смене

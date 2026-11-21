@@ -247,7 +247,7 @@ them to your traffic.
 
 ## Configuration
 
-### Server (`outline-ss-rust`)
+### Server (`outline-server`)
 
 ```toml
 # Mark the endpoints you want padded — SS-TCP, SS-UDP, the combined SS
@@ -297,7 +297,7 @@ stop a config that still sets it from loading. A config that sets it logs
 `ignoring retired padding.throttle_edge_min_bytes_per_sec` at startup. Remove
 the key; the field itself goes in a later release.
 
-### Client (`outline-ws-rust`)
+### Client (`outline-client`)
 
 ```toml
 [padding]

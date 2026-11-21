@@ -1,6 +1,6 @@
 # Session resumption
 
-This document specifies the wire format and runtime semantics of cross-transport session resumption in `outline-ss-rust`: how a session is parked when its carrier closes, how a later connect reattaches to it, and the v1/v2 replay protocols that recover bytes lost with the old carrier. It is written for developers of the `outline-ss-rust` ↔ `outline-ws-rust` pair and for operators enabling `[session_resumption]`.
+This document specifies the wire format and runtime semantics of cross-transport session resumption in `outline-server`: how a session is parked when its carrier closes, how a later connect reattaches to it, and the v1/v2 replay protocols that recover bytes lost with the old carrier. It is written for developers of the `outline-server` ↔ `outline-client` pair and for operators enabling `[session_resumption]`.
 
 *Русская версия: [SESSION-RESUMPTION.ru.md](SESSION-RESUMPTION.ru.md)*
 
@@ -8,7 +8,7 @@ This document specifies the wire format and runtime semantics of cross-transport
 
 Session resumption lets a compatible client move an existing logical session from one ingress transport to another (for example from WebSocket over HTTP/3 to WebSocket over HTTP/2) without re-establishing the upstream connection to the destination host. The use case is a path between client and server where intermittent UDP loss breaks QUIC but TCP still works, or the other way round.
 
-The same mechanism lets the `outline-ws-rust` TUN client survive the death of a shared carrier. Many flows are multiplexed onto one QUIC connection; when it collapses (connection-level `H3_INTERNAL_ERROR`, idle timeout), every flow on it would otherwise be reset. Instead the client redials the same uplink, presents each flow's Session ID and reattaches its parked upstream, so the application sees no disconnect. This consumer needs both protocol halves: v1 (Ack-Prefix) replays the uplink tail, v2 (Symmetric Downlink Replay) replays the downstream bytes the server had already written to the dead carrier. For a download or SSE flow, where the payload travels downstream, a resume without v2 leaves a gap in the server's reply. v2 is off by default on the server (`downlink_buffer_bytes = 0`), so this consumer needs a non-zero `downlink_buffer_bytes`. The TUN client also parks many flows of one user at once, so `orphan_per_user_cap` must be set well above its default of 4 (see [Resource exhaustion](#resource-exhaustion)).
+The same mechanism lets the `outline-client` TUN client survive the death of a shared carrier. Many flows are multiplexed onto one QUIC connection; when it collapses (connection-level `H3_INTERNAL_ERROR`, idle timeout), every flow on it would otherwise be reset. Instead the client redials the same uplink, presents each flow's Session ID and reattaches its parked upstream, so the application sees no disconnect. This consumer needs both protocol halves: v1 (Ack-Prefix) replays the uplink tail, v2 (Symmetric Downlink Replay) replays the downstream bytes the server had already written to the dead carrier. For a download or SSE flow, where the payload travels downstream, a resume without v2 leaves a gap in the server's reply. v2 is off by default on the server (`downlink_buffer_bytes = 0`), so this consumer needs a non-zero `downlink_buffer_bytes`. The TUN client also parks many flows of one user at once, so `orphan_per_user_cap` must be set well above its default of 4 (see [Resource exhaustion](#resource-exhaustion)).
 
 ### What is preserved
 
@@ -31,7 +31,7 @@ Session resumption is opt-in on both sides. Clients that do not advertise it get
 - the negotiation uses `X-Outline-*` headers that other clients do not send and ignore in responses;
 - no bytes are added to handshakes that do not negotiate.
 
-The feature is for the `outline-ss-rust` ↔ `outline-ws-rust` pair; it is not a public protocol.
+The feature is for the `outline-server` ↔ `outline-client` pair; it is not a public protocol.
 
 ## Identifiers
 
@@ -58,7 +58,7 @@ The negotiation rides on HTTP request and response headers of the WebSocket Upgr
 
 | Header | Format | Meaning |
 |---|---|---|
-| `X-Outline-Resume-Capable` | `1` | Client wants a Session ID for this session. `outline-ws-rust` sends it on every dial |
+| `X-Outline-Resume-Capable` | `1` | Client wants a Session ID for this session. `outline-client` sends it on every dial |
 | `X-Outline-Resume` | 32 lowercase hex chars | Client asks to resume the parked session with this id |
 | `X-Outline-Resume-Ack-Prefix` | `1` | v1 capability, see [Ack-Prefix protocol (v1)](#ack-prefix-protocol-v1) |
 | `X-Outline-Resume-Symmetric-Replay` | `1` | v2 capability, see [Symmetric downlink replay (v2)](#symmetric-downlink-replay-v2) |
@@ -147,11 +147,11 @@ When a client transport stream closes and a Session ID was issued for it:
 
 On WebSocket carriers (h1/h2/h3) the close is visible to the relay: a Close frame, or the death of the TCP/QUIC stream under it, ends the relay's carrier read and the park sequence starts within milliseconds.
 
-XHTTP packet-up has no such signal. The downlink GET and each uplink POST are separate requests; a client that stops POSTing looks the same as one that has gone quiet, and a dropped GET only frees the downlink slot for a reattach. The close is therefore sent as a header: the client's final POST carries `X-Xhttp-Fin`, which closes the session's uplink, so the relay reads EOF and parks. `outline-ws-rust` sends it on an explicit `close()` and on a plain drop of the transport (which is how the TUN data plane tears flows down). A client that is killed, or whose network dies, sends nothing; the session is then removed only by the XHTTP session idle eviction (3 × the relay keepalive interval, 180 s in production), which is too late for a soft switch that needs the park to exist when the redial arrives. The FIN closes the uplink, so it must be the session's last POST; otherwise the rest of the upload is discarded.
+XHTTP packet-up has no such signal. The downlink GET and each uplink POST are separate requests; a client that stops POSTing looks the same as one that has gone quiet, and a dropped GET only frees the downlink slot for a reattach. The close is therefore sent as a header: the client's final POST carries `X-Xhttp-Fin`, which closes the session's uplink, so the relay reads EOF and parks. `outline-client` sends it on an explicit `close()` and on a plain drop of the transport (which is how the TUN data plane tears flows down). A client that is killed, or whose network dies, sends nothing; the session is then removed only by the XHTTP session idle eviction (3 × the relay keepalive interval, 180 s in production), which is too late for a soft switch that needs the park to exist when the redial arrives. The FIN closes the uplink, so it must be the session's last POST; otherwise the rest of the upload is discarded.
 
 #### Park on carrier failure
 
-The park sequence also runs when the carrier failed, not only when it closed cleanly: a receive error on the relay's carrier read (a collapsed H3/QUIC connection, a reset TCP connection, an H2 stream error) must park before the error is reported, the same as a Close frame. The TUN client starts a carrier migration only when its carrier died without a clean close (`!closed_cleanly()`); if the server parked only on clean closes, every migration resume would miss. Regression tests: `ss_resume_hit_after_dirty_carrier_death` and `vless_resume_hit_after_dirty_carrier_death` (`bins/outline-ss-rust/src/server/tests/resumption/`), which reset the carrier with `SO_LINGER = 0` instead of closing it.
+The park sequence also runs when the carrier failed, not only when it closed cleanly: a receive error on the relay's carrier read (a collapsed H3/QUIC connection, a reset TCP connection, an H2 stream error) must park before the error is reported, the same as a Close frame. The TUN client starts a carrier migration only when its carrier died without a clean close (`!closed_cleanly()`); if the server parked only on clean closes, every migration resume would miss. Regression tests: `ss_resume_hit_after_dirty_carrier_death` and `vless_resume_hit_after_dirty_carrier_death` (`bins/outline-server/src/server/tests/resumption/`), which reset the carrier with `SO_LINGER = 0` instead of closing it.
 
 #### Park-before-resume barrier
 
@@ -221,7 +221,7 @@ VLESS mux carries several sub-connections (TCP and UDP) over one carrier stream.
 
 ## Client semantics
 
-`outline-ws-rust` (`crates/outline-transport/src/resumption.rs`):
+`outline-client` (`crates/outline-transport/src/resumption.rs`):
 
 1. Sends `X-Outline-Resume-Capable: 1` on every dial and stores the `X-Outline-Session` value from the response in a resume cache.
 2. When a carrier closes or fails mid-session, opens a new transport, possibly of a different kind, and sends the cached id in `X-Outline-Resume`.
@@ -349,7 +349,7 @@ To pick the suffix of its captured downstream bytes to replay, the server needs 
 |---|---|---|---|
 | Client request | `X-Outline-Resume-Down-Acked` | decimal `u64`, no leading zeros, max 2^63−1 | Total downstream payload bytes the client has delivered to its local client (SOCKS5 or TUN flow) over the session lifetime |
 
-`outline-ws-rust` sends the header only on resume requests that also advertise v2, and only when the offset is non-zero. On the first connect of a session there is no offset to report.
+`outline-client` sends the header only on resume requests that also advertise v2, and only when the offset is non-zero. On the first connect of a session there is no offset to report.
 
 If the header is malformed (not decimal, overflow) or missing on a v2 resume request, the server uses `0`, which means "replay everything still in the ring". The parse failure is logged at `DEBUG`; the session continues.
 

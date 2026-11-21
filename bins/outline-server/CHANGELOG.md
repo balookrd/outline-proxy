@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorepo tags `ss-v1.5.0` … `ss-v1.9.0` for the merged tree; the earlier `v1.x` tags predate the ss/ws split). The latest stable release is `1.9.0` (2026-08-24).
+This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorepo tags `ss-v1.5.0` … `ss-v1.9.0` for the merged tree; the earlier `v1.x` tags predate the ss/ws split). Starting with `v26.11.0`, the crate and binary were renamed from `outline-ss-rust` to `outline-server` (`bins/outline-server/`), stable releases moved to unified CalVer tags (`vYY.M.PATCH`), and the rolling nightly tag is `server-nightly`; archival entries below for `1.0.0` … `1.9.0` retain the historical package, unit, and path names of those releases. The latest `1.x` release was `1.9.0` (2026-08-24).
 
 *Русская версия: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 

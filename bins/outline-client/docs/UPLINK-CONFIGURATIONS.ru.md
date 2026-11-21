@@ -971,7 +971,7 @@ reselect_sync = true
   транспорт (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
   reset и т. п.), relay может прозрачно сделать одну попытку
   re-dial на тот же SS-WS аплинк. Новый dial объявляет
-  `X-Outline-Resume-Ack-Prefix: 1`; outline-ss-rust сервер с
+  `X-Outline-Resume-Ack-Prefix: 1`; сервер `outline-server` с
   включённой фичей шлёт 14-байтный control-frame на resume-hit, в
   котором сообщает точный байтовый offset upstream-байт, которые
   он успел отправить наверх. Клиент replay'ит хвост из своего
@@ -1021,7 +1021,7 @@ reselect_sync = true
   `outline_ws_uplink_mid_session_retries_total{outcome}` со
   значениями `outcome ∈ {success, failed_redial, failed_replay,
   buffer_overflow, downlink_truncated}`. Wire-формат — в
-  [`bins/outline-ss-rust/docs/SESSION-RESUMPTION.ru.md`](../../outline-ss-rust/docs/SESSION-RESUMPTION.ru.md),
+  [`bins/outline-server/docs/SESSION-RESUMPTION.ru.md`](../../outline-server/docs/SESSION-RESUMPTION.ru.md),
   раздел про Ack-Prefix Protocol (v1).
 
 ### Symmetric Downlink Replay (v2)
@@ -1995,9 +1995,9 @@ fingerprint_profile = "stable"   # алиас `process_stable` — рекоме�
 как у `--listen` / `--metrics-listen` над их TOML-ключами):
 
 ```sh
-outline-ws-rust --fingerprint-profile stable
+outline-client --fingerprint-profile stable
 # либо:
-OUTLINE_FINGERPRINT_PROFILE=random outline-ws-rust
+OUTLINE_FINGERPRINT_PROFILE=random outline-client
 ```
 
 Принимает тот же набор алиасов, что и TOML-ключ, поэтому профиль можно

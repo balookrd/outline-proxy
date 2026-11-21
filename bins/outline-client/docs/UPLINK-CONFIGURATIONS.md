@@ -970,7 +970,7 @@ anyone who knows the group and uplink names.
   mid-stream (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
   reset, etc.), the relay can opt into a one-shot transparent
   re-dial against the same SS-WS uplink. The new dial advertises
-  `X-Outline-Resume-Ack-Prefix: 1`; an outline-ss-rust server with
+  `X-Outline-Resume-Ack-Prefix: 1`; an `outline-server` server with
   the feature emits a 14-byte control frame on resume hit reporting
   the exact upstream byte offset it has acked. The client replays
   the buffered uplink tail from that offset so the upstream sees
@@ -1020,7 +1020,7 @@ anyone who knows the group and uplink names.
   `outline_ws_uplink_mid_session_retries_total{outcome}` with
   `outcome ∈ {success, failed_redial, failed_replay,
   buffer_overflow, downlink_truncated}`. Wire format:
-  [`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`](../../outline-ss-rust/docs/SESSION-RESUMPTION.md),
+  [`bins/outline-server/docs/SESSION-RESUMPTION.md`](../../outline-server/docs/SESSION-RESUMPTION.md),
   section "Ack-Prefix Protocol (v1)".
 
 ### Symmetric Downlink Replay (v2)
@@ -1969,9 +1969,9 @@ still win on top of either source — same precedence as
 `--listen` / `--metrics-listen` over their TOML keys):
 
 ```sh
-outline-ws-rust --fingerprint-profile stable
+outline-client --fingerprint-profile stable
 # or:
-OUTLINE_FINGERPRINT_PROFILE=random outline-ws-rust
+OUTLINE_FINGERPRINT_PROFILE=random outline-client
 ```
 
 Accepts the same alias set as the TOML key, so a deployed config can be
