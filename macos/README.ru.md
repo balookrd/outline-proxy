@@ -3,7 +3,7 @@
 English version: [README.md](README.md).
 
 Нативный клиент для macOS (Apple Silicon и Intel) в строке меню. Работает поверх
-ядра `outline-ws-rust` (VLESS, Shadowsocks AEAD, WebSocket, HTTP/3, padding,
+ядра `outline-client` (VLESS, Shadowsocks AEAD, WebSocket, HTTP/3, padding,
 failover): Swift-приложение запускает ядро дочерним процессом и управляет
 вокруг него системным прокси, профилями и подписками.
 
@@ -24,7 +24,7 @@ failover): Swift-приложение запускает ядро дочерни
     перехватывается трафик всех процессов, включая консольные утилиты и DNS.
 - Запуск TUN без пароля. Кнопка **Настроить в 1 клик...** в окне «Настройки»
   один раз запрашивает пароль администратора, устанавливает скрипт `tun-runner.sh`
-  и ядро `outline-ws-rust` в `/Library/Application Support/OutlineProxy/` с правами
+  и ядро `outline-client` в `/Library/Application Support/OutlineProxy/` с правами
   `root:wheel 0755`, готовит каталог `/var/run/outline-proxy` (`0755`) и пишет строго
   ограниченное правило `NOPASSWD` для этого пути в `/etc/sudoers.d/outline-proxy`.
   Хелпер запускает исключительно фиксированный системный бинарник и игнорирует
@@ -75,7 +75,7 @@ failover): Swift-приложение запускает ядро дочерни
 
 Скрипт:
 
-1. Собирает `outline-ws-rust` в release (`cargo build -p outline-ws-rust --release`).
+1. Собирает `outline-client` в release (`cargo build -p outline-client --release`).
 2. Собирает Swift-приложение (`swift build -c release`).
 3. Формирует `macos/dist/Outline Proxy.app`: Swift-бинарь в
    `Contents/MacOS/OutlineProxy`; ядро, `tun-runner.sh` и графические ресурсы в
@@ -192,6 +192,6 @@ Nightly-сборка следит за плавающим тегом `macos-nigh
 | Workflow | Запуск | Что делает |
 |---|---|---|
 | `.github/workflows/ci.yml`, джоб `macos` | Каждый pull request и push в `main` | `package-dmg.sh --arch native`; выкладывает DMG артефактом `OutlineProxy-macOS-preview`, хранится 7 дней |
-| `.github/workflows/macos-nightly-release.yml` | Push в `main`, затрагивающий `macos/**`, `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; ручной запуск | Собирает `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` и обновляет плавающий релиз `macos-nightly` |
+| `.github/workflows/macos-nightly-release.yml` | Push в `main`, затрагивающий `macos/**`, `bins/outline-client/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; ручной запуск | Собирает `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` и обновляет плавающий релиз `macos-nightly` |
 | `.github/workflows/tag-release.yml` | Push единого тега `v*` | Собирает `OutlineProxy-v<версия>-macOS-Universal.dmg` вместе с остальными платформами, пишет `SHA256SUMS.txt`, генерирует заметки к релизу через `git-cliff` и публикует общий релиз на GitHub |
 | `.github/workflows/release.yml` | Вручную (`workflow_dispatch`) | Поднимает единую CalVer-версию во всех манифестах workspace и коммитит `release: cut v...` в `main` |

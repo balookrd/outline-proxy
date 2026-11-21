@@ -5,13 +5,13 @@ set -e
 # Used by Outline Proxy macOS client for TUN (Full VPN) mode.
 #
 # SECURITY INVARIANTS:
-# 1. The binary path is strictly fixed to root-owned /Library/Application Support/OutlineProxy/outline-ws-rust.
+# 1. The binary path is strictly fixed to root-owned /Library/Application Support/OutlineProxy/outline-client.
 # 2. The run directory is strictly fixed to root-owned /var/run/outline-proxy (mode 0700).
 # 3. Arbitrary binary paths or run directories from CLI arguments are strictly rejected.
 # 4. Host parameters and config links are sanitized to avoid shell command injections.
 # 5. IPv6 traffic is blackholed during TUN session to prevent IPv6 VPN leaks.
 
-SYSTEM_BIN="/Library/Application Support/OutlineProxy/outline-ws-rust"
+SYSTEM_BIN="/Library/Application Support/OutlineProxy/outline-client"
 RUN_DIR="/var/run/outline-proxy"
 
 ACTION="$1"
@@ -141,7 +141,7 @@ case "$ACTION" in
             done
         done <<< "$ALL_HOSTS"
 
-        # 4. Launch outline-ws-rust in background from fixed root-owned path
+        # 4. Launch outline-client in background from fixed root-owned path
         "$SYSTEM_BIN" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
         WS_PID=$!
         echo "$WS_PID" > "$PID_FILE"
@@ -151,7 +151,7 @@ case "$ACTION" in
         READY=0
         for _ in $(seq 1 30); do
             if ! kill -0 "$WS_PID" 2>/dev/null; then
-                echo "ERROR: outline-ws-rust terminated unexpectedly. Log:" >&2
+                echo "ERROR: outline-client terminated unexpectedly. Log:" >&2
                 cat "$LOG_FILE" >&2
                 exit 1
             fi

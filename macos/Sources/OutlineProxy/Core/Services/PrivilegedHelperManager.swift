@@ -8,7 +8,8 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
     public static let sudoersFilePath = "/etc/sudoers.d/outline-proxy"
     public static let systemSupportDir = "/Library/Application Support/OutlineProxy"
     public static let systemRunnerPath = "/Library/Application Support/OutlineProxy/tun-runner.sh"
-    public static let systemBinaryPath = "/Library/Application Support/OutlineProxy/outline-ws-rust"
+    public static let systemBinaryPath = "/Library/Application Support/OutlineProxy/outline-client"
+    private static let legacySystemBinaryPath = "/Library/Application Support/OutlineProxy/outline-ws-rust"
     public static let systemRunDir = "/var/run/outline-proxy"
 
     private init() {}
@@ -53,7 +54,7 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
 
         guard let binaryURL = ProcessController.shared.locateBinary() else {
             throw NSError(domain: "PrivilegedHelperManager", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Бинарник outline-ws-rust не найден для установки системного хелпера."
+                NSLocalizedDescriptionKey: "Бинарник outline-client не найден для установки системного хелпера."
             ])
         }
 
@@ -69,6 +70,7 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         let qRunnerDst = Self.shellQuote(Self.systemRunnerPath)
         let qBinarySrc = Self.shellQuote(binaryURL.path)
         let qBinaryDst = Self.shellQuote(Self.systemBinaryPath)
+        let qLegacyBinary = Self.shellQuote(Self.legacySystemBinaryPath)
         let qRunDir = Self.shellQuote(Self.systemRunDir)
         let qSudoersFile = Self.shellQuote(Self.sudoersFilePath)
 
@@ -81,6 +83,7 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         cp \(qBinarySrc) \(qBinaryDst)
         chmod 755 \(qBinaryDst)
         chown root:wheel \(qBinaryDst)
+        rm -f \(qLegacyBinary)
 
         mkdir -p \(qRunDir)
         chmod 755 \(qRunDir)
@@ -107,12 +110,14 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         let qSudoers = Self.shellQuote(Self.sudoersFilePath)
         let qRunner = Self.shellQuote(Self.systemRunnerPath)
         let qBinary = Self.shellQuote(Self.systemBinaryPath)
+        let qLegacyBinary = Self.shellQuote(Self.legacySystemBinaryPath)
         let qRunDir = Self.shellQuote(Self.systemRunDir)
 
         let script = """
         rm -f \(qSudoers)
         rm -f \(qRunner)
         rm -f \(qBinary)
+        rm -f \(qLegacyBinary)
         rm -rf \(qRunDir)
         """
         _ = try executeAsAdmin(command: script)

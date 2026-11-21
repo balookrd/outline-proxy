@@ -2,7 +2,7 @@
 
 Russian version: [README.ru.md](README.ru.md).
 
-Native macOS menu-bar client (Apple Silicon and Intel) for the `outline-ws-rust`
+Native macOS menu-bar client (Apple Silicon and Intel) for the `outline-client`
 proxy engine (VLESS, Shadowsocks AEAD, WebSocket, HTTP/3, padding, failover).
 The Swift app starts the engine as a child process and manages the system
 proxy, the profiles and the subscriptions around it.
@@ -24,7 +24,7 @@ with an English gloss.
     This captures traffic of every process, including CLI tools and DNS.
 - Passwordless TUN start. The **Настроить в 1 клик...** ("Configure in 1
   click") button in Settings asks for the administrator password once, installs
-  both `tun-runner.sh` and `outline-ws-rust` to `/Library/Application Support/OutlineProxy/`
+  both `tun-runner.sh` and `outline-client` to `/Library/Application Support/OutlineProxy/`
   with `root:wheel 0755` permissions, prepares `/var/run/outline-proxy` (`0755`),
   and writes a strictly scoped `NOPASSWD` rule for that runner path to
   `/etc/sudoers.d/outline-proxy`. The helper executes only the fixed system-installed
@@ -76,7 +76,7 @@ Build the app bundle:
 
 The script:
 
-1. Builds `outline-ws-rust` in release mode (`cargo build -p outline-ws-rust --release`).
+1. Builds `outline-client` in release mode (`cargo build -p outline-client --release`).
 2. Builds the Swift app (`swift build -c release`).
 3. Assembles `macos/dist/Outline Proxy.app`: the Swift binary in
    `Contents/MacOS/OutlineProxy`; the engine, `tun-runner.sh` and image assets in
@@ -196,6 +196,6 @@ next to it as `<dmg-name>.sha256`.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `.github/workflows/ci.yml`, job `macos` | Every pull request and push to `main` | `package-dmg.sh --arch native`; uploads the DMG as the `OutlineProxy-macOS-preview` artifact, kept for 7 days |
-| `.github/workflows/macos-nightly-release.yml` | Push to `main` touching `macos/**`, `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; manual dispatch | Builds `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` and updates the rolling `macos-nightly` release |
+| `.github/workflows/macos-nightly-release.yml` | Push to `main` touching `macos/**`, `bins/outline-client/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; manual dispatch | Builds `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` and updates the rolling `macos-nightly` release |
 | `.github/workflows/tag-release.yml` | Push of a unified `v*` tag | Builds `OutlineProxy-v<version>-macOS-Universal.dmg` alongside the other platforms, writes `SHA256SUMS.txt`, generates release notes with `git-cliff` and publishes a unified GitHub release |
 | `.github/workflows/release.yml` | Manual (`workflow_dispatch`) | Bumps the unified CalVer version across workspace manifests and commits `release: cut v...` to `main` |

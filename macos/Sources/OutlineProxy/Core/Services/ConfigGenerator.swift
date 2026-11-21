@@ -1,9 +1,9 @@
 import Foundation
 
-/// Renders a `ServerProfile` into a valid TOML configuration for `outline-ws-rust`.
+/// Renders a `ServerProfile` into a valid TOML configuration for `outline-client`.
 public enum ConfigGenerator {
 
-    /// Generates a complete TOML config for running `outline-ws-rust` in the selected mode.
+    /// Generates a complete TOML config for running `outline-client` in the selected mode.
     public static func generateConfig(
         for profile: ServerProfile,
         mode: ProxyMode = .socks5,
