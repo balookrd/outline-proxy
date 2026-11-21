@@ -9,6 +9,17 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+- **SS cluster management, full server configuration, and subscription access links:**
+  - Added config-driven `[[ss.clusters]]` (`members`, `subscription_nodes`) plus optional `public_host` and `mesh_addr` on `[[ss.instances]]`, alongside automatic cluster discovery by matching `cluster.enabled = true` and `psk_fingerprint`.
+  - Added cluster-wide BFF endpoints under `/ss/dashboard/api/clusters` and `/clusters/{cluster}/{defaults,config,users,users/{id},users/{id}/block,users/{id}/unblock,users/{id}/access-keys,access-keys/regenerate}` with config `drift` detection, `mesh_health` checks, pre-flight `409` duplicate checks, rollback on partial `POST` failure, and idempotent `DELETE` on `404`.
+  - Added `GET /api/meta` (`Cache-Control: no-store`) and displayed `outline-ui` version (`v<version>`) in the sidebar footer and mobile topbar (`<= 900px`).
+  - Overhauled `/ss/settings` into 5 horizontal tabs (`Carriers & Endpoints`, `Network & TLS`, `Resumption & Camouflage`, `Subscriptions`, `Tuning & System`) with `[[endpoint]]` CRUD, `DriftBadge` inspection/alignment, post-interaction inline validation, `<details>` accordion for all 23 `[tuning]` overrides, sticky save-bar, and post-save `RegenerateBanner`.
+  - Added **Access links & subscriptions** modal dialog (`<dialog>`) with locally generated SVG QR codes (via `uqr`) across Outline, Happ/Xray, App Config, and Share Links tabs, plus one-click subscription regeneration (`--prune`).
+
 ## [1.10.3] - 2026-10-04
 
 ### Added

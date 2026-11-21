@@ -69,6 +69,14 @@ def ws_url(user: User, server: ServerConfig) -> str | None:
     return uri.join_url(ak.url_base, f"{user.filename}.toml")
 
 
+def txt_url(user: User, server: ServerConfig) -> str | None:
+    """The URL to <user>.txt (all share links, one per line)."""
+    ak = server.access_keys
+    if not ak.url_base or not user_urls(user, server):
+        return None
+    return uri.join_url(ak.url_base, f"{user.filename}.txt")
+
+
 def _outline_legs(server: ServerConfig) -> tuple[Endpoint | None, Endpoint | None]:
     """The first split SS-over-WS TCP and UDP legs, the pair Outline rides.
 

@@ -126,6 +126,8 @@ fn instance(addr: SocketAddr) -> InstanceConfig {
         name: "probe".to_string(),
         control_url: format!("http://{addr}"),
         token: "inst-tok".to_string(),
+        public_host: None,
+        mesh_addr: None,
     }
 }
 

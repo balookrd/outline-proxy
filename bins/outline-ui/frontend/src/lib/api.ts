@@ -1,9 +1,17 @@
 import type {
+  MetaResponse,
   InstancesResponse,
+  ClusterSummary,
   User,
   NewUser,
   PatchUser,
   ServerDefaults,
+  ClusterUsersResponse,
+  ClusterConfigResponse,
+  ClusterMutationResponse,
+  RegenerateReport,
+  ClusterRegenerateResponse,
+  UserAccessKeysBundle,
   TopologyResponse,
   ActivateBody,
   ActivateResponse,
@@ -19,10 +27,22 @@ import type {
   WsConfigMutationResponse,
 } from './types';
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(status: number, message: string, body: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: 'no-store', ...init });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as any)?.error || `HTTP ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, (body as any)?.error || `HTTP ${res.status}`, body);
   return body as T;
 }
 const q = (instance: string) => `instance=${encodeURIComponent(instance)}`;
@@ -42,9 +62,11 @@ const mutate = (method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): RequestIni
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
+export const getMeta = () => json<MetaResponse>('/api/meta');
 export const listInstances = (base: '/ss'|'/ws') => json<InstancesResponse>(`${base}/dashboard/api/instances`);
+export const listClusters = () => json<{ clusters: ClusterSummary[] }>('/ss/dashboard/api/clusters');
 
-// SS
+// SS — single instance
 export const listUsers   = (i: string) => json<{ users: User[] }>(`/ss/dashboard/api/users?${q(i)}`).then(r => r.users);
 export const getDefaults = (i: string) => json<ServerDefaults>(`/ss/dashboard/api/defaults?${q(i)}`);
 export const createUser  = (i: string, u: NewUser)  => json<User>(`/ss/dashboard/api/users?${q(i)}`, mutate('POST', u));
@@ -57,6 +79,42 @@ export const unblockUser = (i: string, id: string) => json<User>(`/ss/dashboard/
 export const getServerConfig = (i: string) => json<ServerConfigResponse>(`/ss/dashboard/api/config?${q(i)}`);
 export const patchServerConfig = (i: string, patch: ServerConfigPatch) =>
   json<{ ok: boolean; message: string; requires_restart: boolean }>(`/ss/dashboard/api/config?${q(i)}`, mutate('PATCH', patch));
+export const regenerateAccessKeys = (i: string, body: { nodes?: string[]; prune?: boolean } = {}) =>
+  json<RegenerateReport>(`/ss/dashboard/api/access-keys/regenerate?${q(i)}`, mutate('POST', body));
+export const getUserAccessKeys = (i: string, id: string, nodes?: string[]) => {
+  const params = new URLSearchParams({ instance: i });
+  if (nodes?.length) params.set('nodes', nodes.join(','));
+  return json<UserAccessKeysBundle>(`/ss/dashboard/api/users/${seg(id)}/access-keys?${params}`);
+};
+
+// SS — cluster
+export const getClusterDefaults = (c: string) =>
+  json<ServerDefaults>(`/ss/dashboard/api/clusters/${seg(c)}/defaults`);
+export const getClusterConfig = (c: string) =>
+  json<ClusterConfigResponse>(`/ss/dashboard/api/clusters/${seg(c)}/config`);
+export const patchClusterConfig = (
+  c: string,
+  body: { shared?: ServerConfigPatch; per_node?: Record<string, ServerConfigPatch> },
+) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/config`, mutate('PATCH', body));
+export const listClusterUsers = (c: string) =>
+  json<ClusterUsersResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users`);
+export const createClusterUser = (c: string, u: NewUser) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users`, mutate('POST', u));
+export const updateClusterUser = (c: string, id: string, p: PatchUser) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users/${seg(id)}`, mutate('PATCH', p));
+export const deleteClusterUser = (c: string, id: string) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users/${seg(id)}`, mutate('DELETE'));
+export const blockClusterUser = (c: string, id: string) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users/${seg(id)}/block`, mutate('POST', {}));
+export const unblockClusterUser = (c: string, id: string) =>
+  json<ClusterMutationResponse>(`/ss/dashboard/api/clusters/${seg(c)}/users/${seg(id)}/unblock`, mutate('POST', {}));
+export const regenerateClusterAccessKeys = (c: string, body: { nodes?: string[]; prune?: boolean } = {}) =>
+  json<ClusterRegenerateResponse>(`/ss/dashboard/api/clusters/${seg(c)}/access-keys/regenerate`, mutate('POST', body));
+export const getClusterUserAccessKeys = (c: string, id: string, nodes?: string[]) => {
+  const qs = nodes?.length ? `?${new URLSearchParams({ nodes: nodes.join(',') })}` : '';
+  return json<UserAccessKeysBundle>(`/ss/dashboard/api/clusters/${seg(c)}/users/${seg(id)}/access-keys${qs}`);
+};
 
 // WS
 export const topology  = (i: string) => json<TopologyResponse>(`/ws/dashboard/api/topology?${q(i)}`);

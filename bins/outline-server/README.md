@@ -288,19 +288,22 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | `tuning.dns_cache_max_entries` | `16384` / `65536` / `262144` | Cap on upstream DNS cache entries; at `262144` the worst case is about 30–40 MiB (about 120 bytes plus the resolved addresses per entry). The key is `(port, prefer_ipv4_upstream, host)` with the host taken from the client, so without a cap a client resolving unique names grows the cache for TTL plus the one-hour stale-fallback window, reclaimed only by the 5-minute sweep. At the cap, inserts evict by approximate LRU, expired entries first. `0` disables the cap |
 | `tuning.ws_data_channel_capacity` | `16` / `64` / `128` | Per-session channel capacity, in chunks, between the upstream reader and the WebSocket writer (TCP relay) or the NAT reader and the WebSocket writer (UDP relay). Too low: a short writer stall back-pressures the upstream read, visible as video buffer underruns. Too high: worst-case per-session memory grows (`capacity × 16 KiB` for TCP). Must be > 0 |
 | `tuning.h2_*` / `tuning.h3_*` | per profile | H2/H3 flow-control windows, stream limits, H3 write buffer and backpressure limit, H3 UDP socket buffers; see `TuningProfile` in [src/config/tuning.rs](src/config/tuning.rs) and [QUIC limits](#quic-limits) |
-| `[[endpoint]]` | none | Carrier endpoints: `path` (unique across all endpoints), `kind` (see [Endpoint model](#endpoint-model)), `padded` (bool, default `false`, alias `padding`; see [Carrier padding](#carrier-padding)). `padded` can be changed through `PATCH /control/config` and takes effect after a restart; paths are read only at startup, see [Control plane](#control-plane) |
+| `[[endpoint]]` | none | Carrier endpoints: `path` (unique across all endpoints), `kind` (see [Endpoint model](#endpoint-model)), `padded` (bool, default `false`, alias `padding`; see [Carrier padding](#carrier-padding)). Endpoints (add/edit/remove) can be written to `config.toml` through `PATCH /control/config` and take effect after a restart; runtime routers only serve the endpoints loaded at startup, see [Control plane](#control-plane) |
 | `[http_root].auth` | `false` | HTTP Basic auth on `/` (OpenConnect-style); after 3 failed passwords (cookie + in-memory per-IP rate limiter) the server returns `403` for 5 minutes. Unmatched paths return `200 OK` (Caddy emptyHandler) or fallback |
 | `[http_root].realm` | `Authorization required` | Text shown in the password prompt for `/` |
-| `[access_keys]` | ignored | Read by the external `ops/access-keys` generator, not by this binary. The section is parsed so that existing configs still load under `deny_unknown_fields`, then ignored. Fields: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. See [Client config generation](#client-config-generation) |
+| `[access_keys]` | optional | Subscription/key generation metadata (`public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`, `nodes`). Editable at runtime via `GET`/`PATCH /control/config` without restarting (`requires_restart = false`) and read by `ops/access-keys` (or when invoked through `[control].access_keys_generator`). See [Client config generation](#client-config-generation) |
 | `[shadowsocks].method` | `chacha20-ietf-poly1305` | Default Shadowsocks cipher |
 | `[[users]]` `password` | none | Shadowsocks password |
 | `[[users]]` `vless_id` | none | VLESS UUID; must be unique across users |
 | `[[users]]` `aliases` | none | Source IP → alias map for accounting (metrics, NAT key, logs): `{ alias = "cidr-or-ip" \| ["cidr", ...] }`. Longest-prefix match, IPv4 and IPv6. Alias names must not collide with user ids or other aliases. Direct connections only. See [Per-source-IP aliases](#per-source-ip-aliases) |
 | `[[users]]` `enabled` | `true` | `false` blocks the user (no routes, no auth) without deleting the entry |
-| `[control]` | none | Runtime user-management HTTP API (cargo feature `control`, on by default). See [Control plane](#control-plane) |
+| `[control]` | none | Runtime user & config management HTTP API (cargo feature `control`, on by default). See [Control plane](#control-plane) |
 | `[control].listen` | none | Socket address of the control listener, for example `127.0.0.1:7001`. It is a separate socket; do not expose it to the internet |
 | `[control].token` | none | Bearer token required on every request. Prefer `token_file` |
 | `[control].token_file` | none | File with the bearer token; mutually exclusive with `token` |
+| `[control].access_keys_generator` | none | Optional path to `ops/access-keys/generate_keys.py`; enables `POST /control/access-keys/regenerate` and `GET /control/users/{id}/access-keys` |
+| `[control].access_keys_python` | `"python3"` | Python interpreter path passed directly to `Command::new` (no `/bin/sh`) when running `access_keys_generator` |
+| `[control].access_keys_timeout_secs` | `15` | Timeout in seconds (max `120`) for a single `access_keys_generator` invocation |
 | `[cluster]` | disabled | Mesh cluster membership (relay between nodes by shard). Fields: `enabled`, `shard_id` (`0..16`, unique in the cluster, required when enabled), `cluster_psk` (base64 shared secret), `mesh_listen` (`host:port` of the mesh QUIC listener), `mesh_relay_budget_ms` (default `4000`) and `[[cluster.peers]]` entries (`shard`, `addr`). See [`docs/CLUSTER.md`](../../docs/CLUSTER.md) and [`docs/CLUSTER-DEPLOY.md`](../../docs/CLUSTER-DEPLOY.md) |
 | `[session_resumption]` | disabled | Cross-transport session resumption: `enabled`, `orphan_ttl_tcp_secs`, `orphan_ttl_udp_secs`, `orphan_per_user_cap`, `orphan_global_cap`, `downlink_buffer_bytes` (default `0`, disables v2 downlink replay). See [`docs/SESSION-RESUMPTION.md`](docs/SESSION-RESUMPTION.md) |
 | `[padding]` | off | Padding frame and cover traffic parameters; which endpoints pad is set by `[[endpoint]] padded`. See [Carrier padding](#carrier-padding) |
@@ -438,16 +441,18 @@ The browser dashboard that used to run on a separate listener of this binary is 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/control/users` | List users (metadata only, no secrets) |
+| `GET` | `/control/users` | List users (metadata + 12-hex BLAKE3 secret fingerprints `password_fp` / `vless_id_fp`, no raw secrets) |
 | `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "enabled": true, "aliases": {...} }`; at least one of `password` / `vless_id` is required |
-| `GET` | `/control/users/{id}` | Get one user's metadata |
+| `GET` | `/control/users/{id}` | Get one user's metadata and secret fingerprints (`password_fp` / `vless_id_fp`) |
 | `PATCH` | `/control/users/{id}` | Change `password`, `vless_id`, `method`, `fwmark`, `enabled`, `aliases`; a field set to `null` is cleared, an absent field is left as is |
 | `DELETE` | `/control/users/{id}` | Remove the user |
 | `POST` | `/control/users/{id}/block` | Disable the user (`enabled = false`) without deleting |
 | `POST` | `/control/users/{id}/unblock` | Re-enable a blocked user |
 | `GET` | `/control/defaults` | Server-wide default cipher (`[shadowsocks].method`) |
-| `GET` | `/control/config` | Server configuration: mesh cluster, listeners/TLS, session resumption, outbound, padding, HTTP/SNI fallback, tuning profile, endpoints |
-| `PATCH` | `/control/config` | Write changes to those sections into the config file. Not applied to the running process: the response carries `"requires_restart": true`. Returns `400` when the server runs without a config file |
+| `GET` | `/control/config` | Full server configuration + status: mesh cluster (`psk_fingerprint`), listeners/TLS (`[[server.certs]]`, `[[server.h3.certs]]`), `[shadowsocks]`, `[http_root]`, `[access_keys]`, session resumption, outbound, all 11 `[padding]` fields, HTTP/SNI fallback, `tuning_profile`, all 23 `[tuning]` overrides, read-only `[metrics]`/`[control]`, `[[endpoint]]` list, and `restart_pending` |
+| `PATCH` | `/control/config` | Patch configuration sections (supports explicit `null` clearing and `[[endpoint]]` CRUD). Changes to `[access_keys]` alone return `"requires_restart": false` and apply immediately; runtime/socket/TLS/endpoint changes return `"requires_restart": true` until a manual restart (`400` without a config file) |
+| `POST` | `/control/access-keys/regenerate` | Invoke `[control].access_keys_generator` (`generate_keys.py --json-report`, `--prune` on by default) to write subscription artifacts and remove stale ones. Node order: `request.nodes` -> `[access_keys].nodes` -> `[access_keys].public_host`. Redacts `write_dir` in error output; returns `501` if unconfigured |
+| `GET` | `/control/users/{id}/access-keys` | Invoke `[control].access_keys_generator` with `--links-json --user <id>` (optional `?nodes=...`) without writing files to disk; returns URLs, share links, and artifact contents (`501` if unconfigured) |
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users
@@ -460,7 +465,7 @@ Each user change is written to the config file (`--config` / `OUTLINE_SS_CONFIG`
 
 When the server was started without a config file (users from `--user` / `OUTLINE_SS_USERS`), user changes apply to the running process only and are lost on restart; a warning is logged at startup.
 
-Endpoints (`[[endpoint]]`) are resolved once at startup: the Axum and H3 routers register only the paths known at boot. The control API can create, block and delete users on those endpoints but cannot add, remove or repath an endpoint; a new endpoint needs a restart.
+Endpoints (`[[endpoint]]`) are resolved by the running listeners once at startup: the Axum and H3 routers register only the paths known at boot. While `PATCH /control/config` can persist `[[endpoint]]` additions, edits, or deletions to `config.toml`, the running process does not rebind routers in place — `GET /control/config` sets `restart_pending: true` until the server is restarted.
 
 ### HTTP Basic auth on `/`
 
@@ -773,22 +778,25 @@ How it works:
 
 ## Client config generation
 
-This binary does not generate client artifacts. Generation moved to
-`ops/access-keys` (2026-08-11): a Python package that reads the same
-`config.toml` and writes three files per user into the directory the node
-serves: `<user>.conf` (Outline YAML), `<user>.json` (Xray-JSON subscription)
-and `<user>.txt` (all URLs of that user, one per line).
+This binary does not contain an inline link generator. Generation lives in
+`ops/access-keys` (a stdlib Python package) that reads the same
+`config.toml` and writes up to four files per user into the directory the node
+serves: `<user>.conf` (Outline YAML), `<user>.json` (Xray-JSON subscription),
+`<user>.toml` (`outline-client` Android config) and `<user>.txt` (all URLs of
+that user, one per line).
 
 See [`ops/access-keys/README.md`](../../ops/access-keys/README.md).
 
-The `[access_keys]` section stays in `config.toml`; the generator reads
-`public_host`, `public_scheme`, `url_base`, `file_extension` and `write_dir`
-from it. The server parses the section so that existing configs still load
-under `deny_unknown_fields`, and ignores every key. The `--print-access-keys`,
+The `[access_keys]` section stays in `config.toml` (`public_host`,
+`public_scheme`, `url_base`, `file_extension`, `write_dir`, and `nodes`). It can
+be updated live via `PATCH /control/config` without restarting the server. When
+`[control].access_keys_generator` is configured, `outline-server` invokes
+`ops/access-keys/generate_keys.py` directly via `tokio::process::Command`
+(never through `/bin/sh`) for `POST /control/access-keys/regenerate` and
+`GET /control/users/{id}/access-keys`. The legacy `--print-access-keys`,
 `--write-access-keys-dir`, `--public-host`, `--public-scheme`,
-`--access-key-url-base` and `--access-key-file-extension` flags have been
-removed, as have the control endpoint `GET /control/users/{id}/access-urls` and
-the dashboard buttons that used it.
+`--access-key-url-base` and `--access-key-file-extension` CLI flags and the old
+`GET /control/users/{id}/access-urls` endpoint remain removed.
 
 ## Observability
 

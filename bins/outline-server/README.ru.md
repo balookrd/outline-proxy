@@ -288,19 +288,22 @@ cargo server-release-musl-armv7
 | `tuning.dns_cache_max_entries` | `16384` / `65536` / `262144` | Лимит записей upstream DNS-кэша; при `262144` худший случай около 30–40 МиБ (около 120 байт плюс разрешённые адреса на запись). Ключ — `(port, prefer_ipv4_upstream, host)`, host приходит от клиента, поэтому без лимита клиент, резолвящий уникальные имена, растит кэш на TTL плюс часовое окно stale-fallback, а освобождается он только 5-минутным свипом. При достижении лимита вставка вытесняет по приближённому LRU, сначала протухшие записи. `0` отключает лимит |
 | `tuning.ws_data_channel_capacity` | `16` / `64` / `128` | Ёмкость канала на сессию, в чанках, между upstream-reader и WebSocket-writer (TCP-relay) или NAT-reader и WebSocket-writer (UDP-relay). Слишком мало — кратковременная задержка writer'а тормозит чтение upstream, это видно как опустевший буфер видеоплеера. Слишком много — растёт худший случай памяти на сессию (`capacity × 16 KiB` для TCP). Должно быть > 0 |
 | `tuning.h2_*` / `tuning.h3_*` | по профилю | Flow-control окна H2/H3, лимиты стримов, буфер записи и порог backpressure H3, UDP-буферы сокета H3; см. `TuningProfile` в [src/config/tuning.rs](src/config/tuning.rs) и [Лимиты QUIC](#лимиты-quic) |
-| `[[endpoint]]` | нет | Эндпоинты носителей: `path` (уникален среди всех эндпоинтов), `kind` (см. [Модель эндпоинтов](#модель-эндпоинтов)), `padded` (bool, по умолчанию `false`, алиас `padding`; см. [Carrier-padding](#carrier-padding)). `padded` можно поменять через `PATCH /control/config`, действует после рестарта; пути читаются только при старте, см. [Управляющий эндпоинт](#управляющий-эндпоинт) |
+| `[[endpoint]]` | нет | Эндпоинты носителей: `path` (уникален среди всех эндпоинтов), `kind` (см. [Модель эндпоинтов](#модель-эндпоинтов)), `padded` (bool, по умолчанию `false`, алиас `padding`; см. [Carrier-padding](#carrier-padding)). Добавление, изменение и удаление эндпоинтов можно сохранить в `config.toml` через `PATCH /control/config` (вступит в силу после рестарта); роутеры рантайма регистрируют пути только при старте, см. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `[http_root].auth` | `false` | HTTP Basic auth на `/` (как в OpenConnect); после 3 неверных паролей (cookie + серверный rate limiter по IP) сервер отдаёт `403` на 5 минут. Не совпавшие пути отдают `200 OK` (Caddy emptyHandler) или fallback |
 | `[http_root].realm` | `Authorization required` | Текст запроса пароля для `/` |
-| `[access_keys]` | игнорируется | Читается внешним генератором `ops/access-keys`, а не этим бинарём. Секция разбирается, чтобы существующие конфиги загружались при `deny_unknown_fields`, и игнорируется. Поля: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
+| `[access_keys]` | опциональна | Метаданные генерации подписок (`public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`, `nodes`). Редактируется на лету через `GET`/`PATCH /control/config` без рестарта (`requires_restart = false`) и читается внешним `ops/access-keys` (или при вызове через `[control].access_keys_generator`). См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | `[shadowsocks].method` | `chacha20-ietf-poly1305` | Шифр Shadowsocks по умолчанию |
 | `[[users]]` `password` | нет | Пароль Shadowsocks |
 | `[[users]]` `vless_id` | нет | VLESS UUID; должен быть уникален среди пользователей |
 | `[[users]]` `aliases` | нет | Карта source IP → alias для учёта (метрики, ключ NAT, логи): `{ alias = "cidr-или-ip" \| ["cidr", ...] }`. Longest-prefix match, IPv4 и IPv6. Имена alias не должны совпадать с id пользователей и другими alias. Только прямые подключения. См. [Алиасы по source IP](#алиасы-по-source-ip) |
 | `[[users]]` `enabled` | `true` | `false` блокирует пользователя (маршрутов и аутентификации нет), не удаляя запись |
-| `[control]` | нет | HTTP API управления пользователями в рантайме (cargo feature `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
+| `[control]` | нет | HTTP API управления пользователями и конфигом в рантайме (cargo feature `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `[control].listen` | нет | Адрес управляющего слушателя, например `127.0.0.1:7001`. Это отдельный сокет; не выставляйте его в интернет |
 | `[control].token` | нет | Bearer-токен, обязательный в каждом запросе. Предпочтительнее `token_file` |
 | `[control].token_file` | нет | Файл с bearer-токеном; взаимоисключим с `token` |
+| `[control].access_keys_generator` | нет | Опциональный путь к `ops/access-keys/generate_keys.py`; включает `POST /control/access-keys/regenerate` и `GET /control/users/{id}/access-keys` |
+| `[control].access_keys_python` | `"python3"` | Путь к интерпретатору Python (передаётся напрямую в `Command::new` без `/bin/sh`) |
+| `[control].access_keys_timeout_secs` | `15` | Таймаут в секундах (максимум `120`) на один запуск `access_keys_generator` |
 | `[cluster]` | выключен | Членство в mesh-кластере (relay между узлами по шардам). Поля: `enabled`, `shard_id` (`0..16`, уникален в кластере, обязателен при включении), `cluster_psk` (общий секрет в base64), `mesh_listen` (`host:port` mesh QUIC-слушателя), `mesh_relay_budget_ms` (по умолчанию `4000`) и записи `[[cluster.peers]]` (`shard`, `addr`). См. [`docs/CLUSTER.ru.md`](../../docs/CLUSTER.ru.md) и [`docs/CLUSTER-DEPLOY.ru.md`](../../docs/CLUSTER-DEPLOY.ru.md) |
 | `[session_resumption]` | выключен | Cross-transport session resumption: `enabled`, `orphan_ttl_tcp_secs`, `orphan_ttl_udp_secs`, `orphan_per_user_cap`, `orphan_global_cap`, `downlink_buffer_bytes` (по умолчанию `0`, отключает v2 downlink replay). См. [`docs/SESSION-RESUMPTION.ru.md`](docs/SESSION-RESUMPTION.ru.md) |
 | `[padding]` | выкл. | Параметры padding-кадров и cover-трафика; какие эндпоинты паддятся, задаёт `[[endpoint]] padded`. См. [Carrier-padding](#carrier-padding) |
@@ -437,16 +440,18 @@ token_file = "/etc/outline-server/control.token"
 
 | Метод | Путь | Назначение |
 | --- | --- | --- |
-| `GET` | `/control/users` | Список пользователей (только метаданные, без секретов) |
+| `GET` | `/control/users` | Список пользователей (метаданные + 12-hex BLAKE3-отпечатки `password_fp` / `vless_id_fp`, без сырых секретов) |
 | `POST` | `/control/users` | Создать пользователя. Тело: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "enabled": true, "aliases": {...} }`; нужно хотя бы одно из `password` / `vless_id` |
-| `GET` | `/control/users/{id}` | Метаданные одного пользователя |
+| `GET` | `/control/users/{id}` | Метаданные одного пользователя и отпечатки секретов (`password_fp` / `vless_id_fp`) |
 | `PATCH` | `/control/users/{id}` | Изменить `password`, `vless_id`, `method`, `fwmark`, `enabled`, `aliases`; поле со значением `null` очищается, отсутствующее поле не меняется |
 | `DELETE` | `/control/users/{id}` | Удалить пользователя |
 | `POST` | `/control/users/{id}/block` | Заблокировать (`enabled = false`) без удаления |
 | `POST` | `/control/users/{id}/unblock` | Разблокировать |
 | `GET` | `/control/defaults` | Шифр по умолчанию на весь сервер (`[shadowsocks].method`) |
-| `GET` | `/control/config` | Конфигурация сервера: mesh-кластер, слушатели/TLS, session resumption, outbound, padding, HTTP/SNI fallback, профиль тюнинга, эндпоинты |
-| `PATCH` | `/control/config` | Записать изменения этих секций в конфиг-файл. К работающему процессу не применяется: в ответе `"requires_restart": true`. Возвращает `400`, если сервер запущен без конфиг-файла |
+| `GET` | `/control/config` | Полная конфигурация и состояние: mesh-кластер (`psk_fingerprint`), слушатели/TLS (`[[server.certs]]`, `[[server.h3.certs]]`), `[shadowsocks]`, `[http_root]`, `[access_keys]`, session resumption, outbound, все 11 полей `[padding]`, HTTP/SNI fallback, `tuning_profile`, все 23 переопределения `[tuning]`, read-only `[metrics]`/`[control]`, список `[[endpoint]]` и `restart_pending` |
+| `PATCH` | `/control/config` | Записать изменения перечисленных секций в `config.toml` (поддерживает явный сброс полей в `null` и CRUD `[[endpoint]]`). Правки только `[access_keys]` возвращают `"requires_restart": false` и действуют сразу; изменения рантайма/сокетов/TLS/эндпоинтов возвращают `"requires_restart": true` до ручного рестарта (`400`, если сервер без конфиг-файла) |
+| `POST` | `/control/access-keys/regenerate` | Вызвать `[control].access_keys_generator` (`generate_keys.py --json-report`, `--prune` по умолчанию) для записи артефактов подписок и очистки удалённых пользователей. Приоритет узлов: `request.nodes` -> `[access_keys].nodes` -> `[access_keys].public_host`. Скрывает `write_dir` в ошибках; `501`, если генератор не настроен |
+| `GET` | `/control/users/{id}/access-keys` | Вызвать `[control].access_keys_generator` с `--links-json --user <id>` (опционально `?nodes=...`) без записи файлов на диск; возвращает ссылки, share-URI и тексты артефактов (`501`, если генератор не настроен) |
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users
@@ -459,7 +464,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 
 Если сервер запущен без конфиг-файла (пользователи из `--user` / `OUTLINE_SS_USERS`), изменения пользователей действуют только в текущем процессе и теряются при рестарте; на старте пишется предупреждение.
 
-Эндпоинты (`[[endpoint]]`) резолвятся один раз при старте: роутеры Axum и H3 регистрируют только пути, известные на старте. Control API может создавать, блокировать и удалять пользователей на этих эндпоинтах, но не может добавить, удалить или перепривязать эндпоинт; новый эндпоинт требует рестарта.
+Эндпоинты (`[[endpoint]]`) резолвятся работающими слушателями один раз при старте: роутеры Axum и H3 регистрируют только пути, известные на старте. Хотя `PATCH /control/config` умеет добавлять, править и удалять `[[endpoint]]` в `config.toml`, запущенный процесс не пересобирает роутеры на лету — `GET /control/config` держит `restart_pending: true` до ручного рестарта.
 
 ### HTTP Basic auth на `/`
 
@@ -774,22 +779,26 @@ listen = "0.0.0.0:443"
 
 ## Генерация клиентских конфигов
 
-Этот бинарь клиентские артефакты не генерирует. Генерация переехала в
-`ops/access-keys` (2026-08-11): Python-пакет читает тот же `config.toml` и
-пишет три файла на пользователя в каталог, который раздаёт узел: `<user>.conf`
-(Outline YAML), `<user>.json` (подписка Xray-JSON) и `<user>.txt` (все ссылки
-пользователя, по одной в строке).
+Встроенного генератора ссылок в этом бинаре нет. Генерация вынесена в
+`ops/access-keys` (Python-пакет на stdlib): он читает тот же `config.toml` и
+пишет до четырёх файлов на пользователя в каталог раздачи узла: `<user>.conf`
+(Outline YAML), `<user>.json` (подписка Xray-JSON), `<user>.toml` (конфиг
+Android `outline-client`) и `<user>.txt` (все ссылки пользователя, по одной в
+строке).
 
 См. [`ops/access-keys/README.md`](../../ops/access-keys/README.md).
 
-Секция `[access_keys]` остаётся в `config.toml`; генератор читает из неё
-`public_host`, `public_scheme`, `url_base`, `file_extension` и `write_dir`.
-Сервер разбирает секцию, чтобы существующие конфиги загружались при
-`deny_unknown_fields`, и игнорирует все её ключи. Флаги `--print-access-keys`,
-`--write-access-keys-dir`, `--public-host`, `--public-scheme`,
-`--access-key-url-base` и `--access-key-file-extension` удалены, как и
-control-эндпоинт `GET /control/users/{id}/access-urls` вместе с кнопками
-дашборда, которые его вызывали.
+Секция `[access_keys]` остаётся в `config.toml` (`public_host`,
+`public_scheme`, `url_base`, `file_extension`, `write_dir` и `nodes`). Её
+можно обновлять на лету через `PATCH /control/config` без рестарта сервера. Если
+в конфиге задан `[control].access_keys_generator`, `outline-server` безопасно
+вызывает внешний `ops/access-keys/generate_keys.py` напрямую через
+`tokio::process::Command` (никогда через `/bin/sh`) при обращениях к
+`POST /control/access-keys/regenerate` и `GET /control/users/{id}/access-keys`.
+Прежние CLI-флаги (`--print-access-keys`, `--write-access-keys-dir`,
+`--public-host`, `--public-scheme`, `--access-key-url-base`,
+`--access-key-file-extension`) и старый маршрут
+`GET /control/users/{id}/access-urls` остаются удалёнными.
 
 ## Наблюдаемость
 

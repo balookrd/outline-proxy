@@ -46,10 +46,15 @@ sudo /opt/outline/access-keys/generate_keys.py
 | `--config` | `/etc/outline-server/config.toml` |
 | `--out-dir` | из `[access_keys] write_dir`; своего дефолта нет |
 | `--file-extension` | из `[access_keys] file_extension`, иначе `.yaml` |
-| `--node` | `relay-a.fleet.example`, `relay-b.fleet.example`; повторяется на каждый узел |
+| `--node` | из `--node`, иначе `[access_keys].nodes`, иначе `relay-a.fleet.example`, `relay-b.fleet.example`; повторяется на каждый узел |
 | `--dry-run` | всё отрендерить, ничего не писать |
+| `--prune` | удалить с верхнего уровня `out_dir` устаревшие артефакты (`.conf`, `.yaml`, `.json`, `.toml`, `.txt`), отсутствующие среди отрендеренных пользователей; dotfiles и симлинки не трогает |
+| `--json-report` | вывести машиночитаемый JSON (`nodes`, `users`, `pruned`, `group_warnings`) в stdout вместо текстового отчёта |
+| `--user <id>` + `--links-json` | вывести JSON со ссылками (`outline_url`, `happ_url`, `ws_url`, `txt_url`, `share_links`), `artifacts` и `warnings` одного пользователя без записи на диск (коды `2` — отключён, `3` — не найден) |
 
-Генератор падает с ошибкой, если в конфиге нет ни одного включённого юзера.
+Без флагов `--prune` и `--links-json` генератор завершается с ошибкой, если в
+конфиге нет ни одного включённого юзера. При переданном `--prune` 0 активных
+юзеров — штатный режим: все старые файлы подписок в `out_dir` удаляются.
 
 ## Секция `[access_keys]`
 
@@ -58,6 +63,7 @@ sudo /opt/outline/access-keys/generate_keys.py
 public_host = "cloud.fleet.example"
 file_extension = ".conf"
 write_dir = "/var/www/html/<keys-dir>/"
+nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]
 ```
 
 | Ключ | По умолчанию | Что делает |
@@ -67,6 +73,7 @@ write_dir = "/var/www/html/<keys-dir>/"
 | `write_dir` | нет | куда пишутся артефакты; из него же выводится `url_base` |
 | `public_scheme` | `wss` | `wss` или `ws`; задаёт схему выведенного URL (`wss` → `https`, `ws` → `http`) и наличие TLS/ALPN в ссылках |
 | `url_base` | выводится | явный URL каталога раздачи; явное значение всегда побеждает |
+| `nodes` | нет (`DEFAULT_NODES` при отсутствии CLI `--node`) | список хостов для балансера `.json` и аплинков `.toml`, если не задан флаг `--node` |
 | `print` | — | генератор не читает |
 
 `url_base` выводится как `public_host` плюс путь `write_dir` относительно корня

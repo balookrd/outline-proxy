@@ -299,24 +299,26 @@ fn method_change_round_trips() {
 #[test]
 fn patch_toml_config_updates_cluster_and_preserves_comments() {
     let patch = ServerConfigPatch {
-        cluster: Some(ClusterConfigPatch {
-            enabled: Some(true),
-            shard_id: Some(2),
-            cluster_psk: Some("k5O0r1S0t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K=".to_string()),
-            mesh_listen: Some("[::]:9443".to_string()),
-            mesh_relay_budget_ms: Some(5000),
-            peers: Some(vec![
+        cluster: FieldPatch::Set(Some(ClusterConfigPatch {
+            enabled: FieldPatch::Set(Some(true)),
+            shard_id: FieldPatch::Set(Some(2)),
+            cluster_psk: FieldPatch::Set(Some(
+                "k5O0r1S0t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K=".to_string(),
+            )),
+            mesh_listen: FieldPatch::Set(Some("[::]:9443".to_string())),
+            mesh_relay_budget_ms: FieldPatch::Set(Some(5000)),
+            peers: FieldPatch::Set(Some(vec![
                 ClusterPeerPatch { shard: 0, addr: "node0:9443".to_string() },
                 ClusterPeerPatch { shard: 1, addr: "node1:9443".to_string() },
-            ]),
-        }),
-        session_resumption: Some(SessionResumptionPatch {
-            enabled: Some(true),
-            orphan_ttl_tcp_secs: Some(300),
-            orphan_ttl_udp_secs: Some(120),
+            ])),
+        })),
+        session_resumption: FieldPatch::Set(Some(SessionResumptionPatch {
+            enabled: FieldPatch::Set(Some(true)),
+            orphan_ttl_tcp_secs: FieldPatch::Set(Some(300)),
+            orphan_ttl_udp_secs: FieldPatch::Set(Some(120)),
             ..Default::default()
-        }),
-        tuning_profile: Some("throughput".to_string()),
+        })),
+        tuning_profile: FieldPatch::Set(Some("medium".to_string())),
         ..Default::default()
     };
 
@@ -329,10 +331,7 @@ fn patch_toml_config_updates_cluster_and_preserves_comments() {
     );
     assert!(out.contains(r#"mesh_listen = "[::]:9443""#), "mesh_listen missing:\n{out}");
     assert!(out.contains("mesh_relay_budget_ms = 5000"), "relay budget missing:\n{out}");
-    assert!(
-        out.contains(r#"tuning_profile = "throughput""#),
-        "tuning profile missing:\n{out}"
-    );
+    assert!(out.contains(r#"tuning_profile = "medium""#), "tuning profile missing:\n{out}");
     assert!(out.contains("[session_resumption]"), "session_resumption missing:\n{out}");
     // Verify comments and users are intact
     assert!(out.contains("# Users start here."));
@@ -344,18 +343,18 @@ fn patch_toml_config_updates_cluster_and_preserves_comments() {
 #[test]
 fn patch_toml_config_updates_server_listeners_and_outbound() {
     let patch = ServerConfigPatch {
-        server: Some(ServerListenerPatch {
-            listen: Some("0.0.0.0:8443".to_string()),
-            cert_path: Some("/etc/ssl/cert.pem".to_string()),
-            key_path: Some("/etc/ssl/key.pem".to_string()),
-            h3_listen: Some("0.0.0.0:8443".to_string()),
+        server: FieldPatch::Set(Some(ServerListenerPatch {
+            listen: FieldPatch::Set(Some("0.0.0.0:8443".to_string())),
+            cert_path: FieldPatch::Set(Some("/etc/ssl/cert.pem".to_string())),
+            key_path: FieldPatch::Set(Some("/etc/ssl/key.pem".to_string())),
+            h3_listen: FieldPatch::Set(Some("0.0.0.0:8443".to_string())),
             ..Default::default()
-        }),
-        outbound: Some(OutboundPatch {
-            prefer_ipv4: Some(true),
-            ipv6_prefix: Some("2001:db8::/64".to_string()),
+        })),
+        outbound: FieldPatch::Set(Some(OutboundPatch {
+            prefer_ipv4: FieldPatch::Set(Some(true)),
+            ipv6_prefix: FieldPatch::Set(Some("2001:db8::/64".to_string())),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 
@@ -363,7 +362,7 @@ fn patch_toml_config_updates_server_listeners_and_outbound() {
     let out = patch_toml_config(original, &patch).expect("patch server");
     assert!(out.contains(r#"listen = "0.0.0.0:8443""#), "listen updated:\n{out}");
     assert!(out.contains(r#"cert_path = "/etc/ssl/cert.pem""#), "cert_path updated:\n{out}");
-    assert!(out.contains(r#"prefer_ipv4 = true"#), "prefer_ipv4 updated:\n{out}");
+    assert!(out.contains("prefer_ipv4 = true"), "prefer_ipv4 updated:\n{out}");
     assert!(out.contains(r#"ipv6_prefix = "2001:db8::/64""#), "ipv6_prefix updated:\n{out}");
     assert!(out.contains("[server.h3]"), "h3 subtable created:\n{out}");
 }
@@ -371,33 +370,33 @@ fn patch_toml_config_updates_server_listeners_and_outbound() {
 #[test]
 fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
     let patch = ServerConfigPatch {
-        server: Some(ServerListenerPatch {
-            h3_initial_mtu: Some(1350),
-            h3_mtu_first_probe: Some(1452),
+        server: FieldPatch::Set(Some(ServerListenerPatch {
+            h3_initial_mtu: FieldPatch::Set(Some(1350)),
+            h3_mtu_first_probe: FieldPatch::Set(Some(1452)),
             ..Default::default()
-        }),
-        outbound: Some(OutboundPatch {
-            ipv6_prefix_interface: Some("eth0".to_string()),
-            ipv6_refresh_secs: Some(120),
+        })),
+        outbound: FieldPatch::Set(Some(OutboundPatch {
+            ipv6_prefix_interface: FieldPatch::Set(Some("eth0".to_string())),
+            ipv6_refresh_secs: FieldPatch::Set(Some(120)),
             ..Default::default()
-        }),
-        padding: Some(PaddingConfigPatch {
-            min_bytes: Some(16),
-            max_bytes: Some(512),
-            cover: Some(true),
-            throttle_detect_enabled: Some(true),
-            throttle_ratio_percent: Some(250),
+        })),
+        padding: FieldPatch::Set(Some(PaddingConfigPatch {
+            min_bytes: FieldPatch::Set(Some(16)),
+            max_bytes: FieldPatch::Set(Some(512)),
+            cover: FieldPatch::Set(Some(true)),
+            throttle_detect_enabled: FieldPatch::Set(Some(true)),
+            throttle_ratio_percent: FieldPatch::Set(Some(250)),
             ..Default::default()
-        }),
-        http_fallback: Some(HttpFallbackPatch {
-            backend: Some("127.0.0.1:8080".to_string()),
-            proxy_protocol: Some("v2".to_string()),
-            backend_proto: Some("h1".to_string()),
-            apply_to_h1: Some(true),
-            apply_to_h3: Some(false),
+        })),
+        http_fallback: FieldPatch::Set(Some(HttpFallbackPatch {
+            backend: FieldPatch::Set(Some("127.0.0.1:8080".to_string())),
+            proxy_protocol: FieldPatch::Set(Some("v2".to_string())),
+            backend_proto: FieldPatch::Set(Some("h1".to_string())),
+            apply_to_h1: FieldPatch::Set(Some(true)),
+            apply_to_h3: FieldPatch::Set(Some(false)),
             ..Default::default()
-        }),
-        tuning_profile: Some("medium".to_string()),
+        })),
+        tuning_profile: FieldPatch::Set(Some("medium".to_string())),
         ..Default::default()
     };
 
@@ -433,22 +432,22 @@ fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
 #[test]
 fn patch_toml_config_updates_sni_fallback_and_backends() {
     let patch = ServerConfigPatch {
-        sni_fallback: Some(SniFallbackPatch {
-            match_sni: Some(vec!["*.beerloga.su".to_string()]),
-            allow_no_sni: Some(false),
-            max_client_hello_bytes: Some(4096),
-            backends: Some(vec![SniBackendPatch {
+        sni_fallback: FieldPatch::Set(Some(SniFallbackPatch {
+            match_sni: FieldPatch::Set(Some(vec!["*.beerloga.su".to_string()])),
+            allow_no_sni: FieldPatch::Set(Some(false)),
+            max_client_hello_bytes: FieldPatch::Set(Some(4096)),
+            backends: FieldPatch::Set(Some(vec![SniBackendPatch {
                 backend: "127.0.0.1:11443".to_string(),
                 proxy_protocol: Some("v1".to_string()),
                 match_sni: None,
-            }]),
-        }),
-        http_fallback: Some(HttpFallbackPatch {
-            backend: Some("http://127.0.0.1:8080".to_string()),
-            proxy_protocol: Some("v2".to_string()),
-            apply_to_h3: Some(true),
+            }])),
+        })),
+        http_fallback: FieldPatch::Set(Some(HttpFallbackPatch {
+            backend: FieldPatch::Set(Some("http://127.0.0.1:8080".to_string())),
+            proxy_protocol: FieldPatch::Set(Some("v2".to_string())),
+            apply_to_h3: FieldPatch::Set(Some(true)),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     };
 
@@ -494,13 +493,18 @@ padding = true
 "#;
 
     let patch = ServerConfigPatch {
-        endpoints: Some(vec![
-            EndpointPatch { path: "/ss-ws".to_string(), padded: true },
+        endpoints: FieldPatch::Set(Some(vec![
+            EndpointPatch {
+                path: "/ss-ws".to_string(),
+                kind: None,
+                padded: true,
+            },
             EndpointPatch {
                 path: "/ss-xh".to_string(),
+                kind: None,
                 padded: false,
             },
-        ]),
+        ])),
         ..Default::default()
     };
 
@@ -515,6 +519,122 @@ padding = true
     assert!(endpoints[0].padded);
     assert_eq!(endpoints[1].path, "/ss-xh");
     assert!(!endpoints[1].padded);
+}
+
+#[test]
+fn patch_toml_config_supports_endpoint_crud_and_sections_before_users() {
+    let original = r#"[server]
+listen = "127.0.0.1:443"
+cert_path = "cert.pem"
+key_path = "key.pem"
+
+[server.h3]
+listen = "127.0.0.1:443"
+
+[[users]]
+id = "alice"
+password = "secret"
+"#;
+
+    let patch = ServerConfigPatch {
+        shadowsocks: FieldPatch::Set(Some(ShadowsocksPatch {
+            method: FieldPatch::Set(Some(CipherKind::Aes256Gcm2022)),
+        })),
+        http_root: FieldPatch::Set(Some(HttpRootPatch {
+            auth: FieldPatch::Set(Some(true)),
+            realm: FieldPatch::Set(Some("Relay".to_string())),
+        })),
+        access_keys: FieldPatch::Set(Some(AccessKeysPatch {
+            public_host: FieldPatch::Set(Some("edge.fleet.example".to_string())),
+            public_scheme: FieldPatch::Set(Some("wss".to_string())),
+            nodes: FieldPatch::Set(Some(vec![
+                "relay-a.fleet.example".to_string(),
+                "relay-b.fleet.example".to_string(),
+            ])),
+            ..Default::default()
+        })),
+        tuning: FieldPatch::Set(Some(TuningPatch {
+            dns_cache_max_entries: FieldPatch::Set(Some(4096)),
+            ws_data_channel_capacity: FieldPatch::Set(Some(64)),
+            ..Default::default()
+        })),
+        endpoints: FieldPatch::Set(Some(vec![
+            EndpointPatch {
+                path: "/ws".to_string(),
+                kind: Some(EndpointKind::WsSs),
+                padded: false,
+            },
+            EndpointPatch {
+                path: "/vless".to_string(),
+                kind: Some(EndpointKind::XhttpVless),
+                padded: true,
+            },
+        ])),
+        ..Default::default()
+    };
+
+    let out = patch_toml_config(original, &patch).expect("patch full sections");
+    let parsed = crate::config::parse_and_validate(&out).expect("valid config");
+    assert_eq!(parsed.method, CipherKind::Aes256Gcm2022);
+    assert!(parsed.http_root_auth);
+    assert_eq!(parsed.http_root_realm, "Relay");
+    assert_eq!(parsed.endpoints.len(), 2);
+    assert_eq!(parsed.endpoints[1].kind, EndpointKind::XhttpVless);
+    assert!(parsed.endpoints[1].padded);
+
+    let users_pos = out.find("[[users]]").expect("users section");
+    for section in ["[shadowsocks]", "[http_root]", "[access_keys]", "[tuning]", "[[endpoint]]"] {
+        let pos = out
+            .find(section)
+            .unwrap_or_else(|| panic!("missing {section} in:\n{out}"));
+        assert!(pos < users_pos, "{section} must be placed before [[users]]:\n{out}");
+    }
+}
+
+#[test]
+fn patch_toml_config_field_patch_null_clears_keys_and_whole_sections() {
+    let original = r#"[server]
+listen = "127.0.0.1:443"
+cert_path = "cert.pem"
+key_path = "key.pem"
+max_connections_per_ip = 32
+
+[access_keys]
+public_host = "edge.fleet.example"
+nodes = ["relay-a.fleet.example"]
+
+[http_fallback]
+backend = "http://127.0.0.1:8080"
+
+[padding]
+min_bytes = 10
+max_bytes = 128
+cover = true
+"#;
+
+    let patch = ServerConfigPatch {
+        server: FieldPatch::Set(Some(ServerListenerPatch {
+            max_connections_per_ip: FieldPatch::Set(None),
+            ..Default::default()
+        })),
+        access_keys: FieldPatch::Set(Some(AccessKeysPatch {
+            nodes: FieldPatch::Set(None),
+            ..Default::default()
+        })),
+        http_fallback: FieldPatch::Set(None),
+        padding: FieldPatch::Set(Some(PaddingConfigPatch {
+            cover: FieldPatch::Set(None),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+
+    let out = patch_toml_config(original, &patch).expect("clear via null");
+    assert!(!out.contains("max_connections_per_ip"), "field not cleared:\n{out}");
+    assert!(!out.contains("nodes"), "access_keys.nodes not cleared:\n{out}");
+    assert!(!out.contains("[http_fallback]"), "whole section not removed:\n{out}");
+    assert!(!out.contains("cover ="), "padding.cover not cleared:\n{out}");
+    assert!(out.contains("min_bytes = 10"), "sibling field lost:\n{out}");
 }
 
 #[test]
@@ -553,12 +673,13 @@ password = "secret-password"
 
     // Patch that attempts to set an invalid tuning profile name
     let patch = ServerConfigPatch {
-        tuning_profile: Some("invalid-profile-name".to_string()),
+        tuning_profile: FieldPatch::Set(Some("invalid-profile-name".to_string())),
         ..Default::default()
     };
 
     let err =
         persist_config_patch(&path, &patch).expect_err("should reject invalid tuning profile");
+    assert!(matches!(err, PersistConfigError::Validation(_)));
     assert!(err.to_string().contains("validation") || err.to_string().contains("failed"));
 
     // File content remains unchanged

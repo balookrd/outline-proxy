@@ -5,6 +5,7 @@
 //! runtime state.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::{
@@ -24,6 +25,7 @@ use crate::config::{ControlConfig, TuningProfile};
 
 use super::super::bootstrap::serve_plain_listener;
 use super::super::shutdown::ShutdownSignal;
+use super::access_keys::{AccessKeysRunnerConfig, get_user_access_keys, regenerate};
 use super::handlers::{
     ControlState, block_user, create_user, delete_user, get_config, get_defaults, get_user,
     list_users, patch_config, unblock_user, update_user,
@@ -54,10 +56,17 @@ async fn run(
         .with_context(|| format!("failed to bind control listener {}", config.listen))?;
     info!(listen = %config.listen, "control server started");
 
+    let access_keys = config.access_keys_generator.map(|generator| AccessKeysRunnerConfig {
+        generator,
+        python: config.access_keys_python,
+        timeout: Duration::from_secs(config.access_keys_timeout_secs),
+    });
+
     let state = ControlState {
         manager,
         config: server_config,
         token: Arc::from(config.token),
+        access_keys,
     };
 
     let router = Router::new()
@@ -65,6 +74,8 @@ async fn run(
         .route("/control/users/{id}", get(get_user).patch(update_user).delete(delete_user))
         .route("/control/users/{id}/block", post(block_user))
         .route("/control/users/{id}/unblock", post(unblock_user))
+        .route("/control/users/{id}/access-keys", get(get_user_access_keys))
+        .route("/control/access-keys/regenerate", post(regenerate))
         .route("/control/defaults", get(get_defaults))
         .route("/control/config", get(get_config).patch(patch_config))
         .fallback(any(not_found))

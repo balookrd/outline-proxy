@@ -35,6 +35,8 @@ fn instance(addr: SocketAddr) -> InstanceConfig {
         name: "probe".to_string(),
         control_url: format!("http://{addr}"),
         token: "inst-tok".to_string(),
+        public_host: None,
+        mesh_addr: None,
     }
 }
 
@@ -71,6 +73,8 @@ async fn unreachable_instance_errors_and_names_itself() {
         // Port 1 on loopback refuses immediately.
         control_url: "http://127.0.0.1:1".to_string(),
         token: "x".to_string(),
+        public_host: None,
+        mesh_addr: None,
     };
 
     let error = backend
@@ -124,6 +128,8 @@ async fn response_body_exceeding_limit_is_rejected() {
         name: "huge".to_string(),
         control_url: format!("http://{addr}"),
         token: "tok".to_string(),
+        public_host: None,
+        mesh_addr: None,
     };
     let error = backend
         .request(&inst, Method::GET, "/control/huge", None)

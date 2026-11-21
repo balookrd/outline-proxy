@@ -29,7 +29,7 @@ pub use user_entry::{CipherKind, ConfigError, UserEntry, validate_ip_aliases};
 // Surfaced for the control plane and tests; under `--no-default-features`
 // (control off) nothing in the binary consumes this re-export.
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
-pub(crate) use file::FileConfig;
+pub(crate) use file::{FileConfig, TlsCertSection};
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
 pub(crate) use loader::parse_and_validate;
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]

@@ -110,7 +110,93 @@ def render_report(written: Sequence[dict]) -> str:
     return "\n".join(blocks)
 
 
+def resolve_nodes(
+    cli_nodes: Sequence[str] | None, server: config_model.ServerConfig
+) -> tuple[str, ...]:
+    """Select balancer / subscription nodes: CLI --node -> [access_keys].nodes -> default."""
+    if cli_nodes:
+        return tuple(cli_nodes)
+    if server.access_keys.nodes:
+        return server.access_keys.nodes
+    return xray_json.DEFAULT_NODES
+
+
+def prune_stale_files(
+    out_dir: Path,
+    expected_names: set[str],
+    managed_extensions: set[str],
+    dry_run: bool,
+) -> list[str]:
+    """Remove stale artifact files from the top level of out_dir.
+
+    Skips dotfiles, symlinks, subdirectories, and files outside managed_extensions.
+    """
+    if not out_dir.exists() or not out_dir.is_dir():
+        return []
+    exts = tuple(ext for ext in managed_extensions if ext)
+    pruned: list[str] = []
+    for entry in sorted(out_dir.iterdir(), key=lambda p: p.name):
+        name = entry.name
+        if name.startswith("."):
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        if not name.endswith(exts):
+            continue
+        if name not in expected_names:
+            if not dry_run:
+                entry.unlink()
+            pruned.append(name)
+    return pruned
+
+
+def build_user_links_payload(
+    user: config_model.User,
+    nodes: Sequence[str],
+    server: config_model.ServerConfig,
+) -> dict:
+    """Build URLs, share links and full artifact texts for one user in memory."""
+    ak = server.access_keys
+    user_artifacts: dict[str, str] = {}
+
+    outline = artifacts.outline_artifact(user, server)
+    if outline is not None:
+        user_artifacts["conf"] = outline
+
+    has_sub = artifacts.has_subscription(user, server)
+    if has_sub:
+        document = xray_json.build_config(user, nodes, server)
+        user_artifacts["json"] = json.dumps([document], indent=2, ensure_ascii=False) + "\n"
+
+    toml_doc = ws_toml.build_config(user, nodes, server)
+    warnings: list[str] = []
+    if toml_doc is not None:
+        user_artifacts["toml"] = toml_doc
+        warnings = ws_toml.config_warnings(user, server)
+
+    urls = artifacts.user_urls(user, server)
+    if urls:
+        user_artifacts["txt"] = "\n".join(urls) + "\n"
+
+    share_links = [link for link in urls if link.startswith(("ss://", "vless://"))]
+
+    return {
+        "user": user.name,
+        "enabled": True,
+        "outline_url": artifacts.outline_url(user, ak)
+        if artifacts.has_outline(user, server)
+        else None,
+        "happ_url": artifacts.happ_url(user, server),
+        "ws_url": artifacts.ws_url(user, server),
+        "txt_url": artifacts.txt_url(user, server),
+        "share_links": share_links,
+        "artifacts": user_artifacts,
+        "warnings": warnings,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _GROUP_FAILURES.clear()
     parser = argparse.ArgumentParser(description="Generate access-key artifacts.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="outline-server config.toml")
     parser.add_argument(
@@ -136,16 +222,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="render everything but write nothing"
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="delete stale artifact files from out_dir (including when 0 users are enabled)",
+    )
+    parser.add_argument(
+        "--json-report",
+        action="store_true",
+        help="print machine-readable JSON report to stdout instead of plain text",
+    )
+    parser.add_argument(
+        "--user",
+        default=None,
+        help="target user id for --links-json",
+    )
+    parser.add_argument(
+        "--links-json",
+        action="store_true",
+        help="print URLs and artifact contents for --user as JSON without writing files",
+    )
     args = parser.parse_args(argv)
 
-    nodes = tuple(args.nodes) if args.nodes else xray_json.DEFAULT_NODES
+    if args.links_json and not args.user:
+        raise SystemExit("--links-json requires --user")
+
     server = config_model.load(args.config)
     if args.file_extension is not None:
         server = replace(
             server,
             access_keys=replace(server.access_keys, file_extension=args.file_extension),
         )
-    if not server.users:
+    nodes = resolve_nodes(args.nodes, server)
+
+    if args.links_json:
+        target_user = next((u for u in server.users if u.name == args.user), None)
+        if target_user is None:
+            if args.user in server.disabled_users:
+                print(f"user {args.user!r} is disabled", file=sys.stderr)
+                return 2
+            print(f"user {args.user!r} not found", file=sys.stderr)
+            return 3
+        payload = build_user_links_payload(target_user, nodes, server)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if not server.users and not args.prune:
         raise SystemExit(f"{args.config}: no enabled users")
 
     out_dir_raw = args.out_dir or server.access_keys.write_dir
@@ -164,8 +286,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ak = server.access_keys
     written: list[dict] = []
+    expected_names: set[str] = set()
     for user in server.users:
         record: dict = {"user": user.name}
+        written_names: list[str] = []
 
         outline = artifacts.outline_artifact(user, server)
         if outline is not None:
@@ -173,6 +297,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.dry_run:
                 write_atomic(target, outline)
             record["conf"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
 
         if artifacts.has_subscription(user, server):
             document = xray_json.build_config(user, nodes, server)
@@ -182,6 +308,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     target, json.dumps([document], indent=2, ensure_ascii=False) + "\n"
                 )
             record["json"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
 
         document = ws_toml.build_config(user, nodes, server)
         if document is not None:
@@ -190,6 +318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_atomic(target, document)
             record["toml"] = str(target)
             record["warnings"] = ws_toml.config_warnings(user, server)
+            expected_names.add(target.name)
+            written_names.append(target.name)
 
         urls = artifacts.user_urls(user, server)
         if urls:
@@ -197,25 +327,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.dry_run:
                 write_atomic(target, "\n".join(urls) + "\n")
             record["txt"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
 
+        record["written"] = written_names
         record["outline_url"] = (
             artifacts.outline_url(user, ak) if artifacts.has_outline(user, server) else None
         )
         record["happ_url"] = artifacts.happ_url(user, server)
         record["ws_url"] = artifacts.ws_url(user, server)
+        record["txt_url"] = artifacts.txt_url(user, server)
         written.append(record)
 
-    # Never a credential: paths and counts only.
-    print(render_report(written), end="")
-    print(f"\n{len(written)} user(s), {len(nodes)} balancer node(s)", file=sys.stderr)
+    pruned: list[str] = []
+    if args.prune:
+        managed_exts = {ak.file_extension, ".conf", ".yaml", ".json", ".toml", ".txt"}
+        pruned = prune_stale_files(out_dir, expected_names, managed_exts, args.dry_run)
+
+    group_warnings: list[str] = []
     if _GROUP_FAILURES:
-        print(
-            f"WARNING: could not set group {SERVING_GROUP!r} on "
-            f"{len(_GROUP_FAILURES)} artifact(s); at mode 0640 nginx cannot read "
-            "them and every subscription will answer 403. Run as root on a node "
-            f"where the {SERVING_GROUP} group exists.",
-            file=sys.stderr,
+        group_warnings.append(
+            f"could not set group {SERVING_GROUP!r} on {len(_GROUP_FAILURES)} artifact(s); "
+            f"at mode 0640 nginx cannot read them and every subscription will answer 403. "
+            f"Run as root on a node where the {SERVING_GROUP} group exists."
         )
+
+    if args.json_report:
+        json_payload = {
+            "nodes": list(nodes),
+            "users": [
+                {
+                    "user": rec["user"],
+                    "outline_url": rec.get("outline_url"),
+                    "happ_url": rec.get("happ_url"),
+                    "ws_url": rec.get("ws_url"),
+                    "txt_url": rec.get("txt_url"),
+                    "written": rec.get("written", []),
+                    "warnings": rec.get("warnings", []),
+                }
+                for rec in written
+            ],
+            "pruned": pruned,
+            "group_warnings": group_warnings,
+        }
+        print(json.dumps(json_payload, indent=2, ensure_ascii=False))
+    else:
+        # Never a credential: paths and counts only.
+        print(render_report(written), end="")
+
+    print(f"\n{len(written)} user(s), {len(nodes)} balancer node(s)", file=sys.stderr)
+    for warning_text in group_warnings:
+        print(f"WARNING: {warning_text}", file=sys.stderr)
     return 0
 
 

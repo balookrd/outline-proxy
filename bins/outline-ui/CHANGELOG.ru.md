@@ -8,6 +8,17 @@
 
 Формат следует [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Добавлено
+
+- **Управление кластерами SS, полные настройки сервера и генерация ссылок подписок:**
+  - Добавлена секция `[[ss.clusters]]` (`members`, `subscription_nodes`) и опциональные поля `public_host` / `mesh_addr` в `[[ss.instances]]`, а также автообнаружение кластеров по совпадению `psk_fingerprint` и `cluster.enabled = true`.
+  - Добавлены кластерные BFF-маршруты `/ss/dashboard/api/clusters` и `/clusters/{cluster}/{defaults,config,users,users/{id},users/{id}/block,users/{id}/unblock,users/{id}/access-keys,access-keys/regenerate}` с расчётом расхождений `drift`, проверкой здоровья `mesh_health`, pre-flight защитой от дубликатов `409`, откатом при частичном сбое `POST` и идемпотентным `DELETE` на `404`.
+  - Добавлен маршрут `GET /api/meta` (`Cache-Control: no-store`) и вывод версии `outline-ui` (`v<version>`) в подвале левого сайдбара и в мобильном topbar (`<= 900px`).
+  - Страница `/ss/settings` переработана в 5 горизонтальных вкладок (`Carriers & Endpoints`, `Network & TLS`, `Resumption & Camouflage`, `Subscriptions`, `Tuning & System`) с CRUD `[[endpoint]]`, бейджами `DriftBadge` и выравниванием по кластеру, инлайн-валидацией после взаимодействия, аккордеоном `<details>` для всех 23 параметров `[tuning]`, sticky save-bar и баннером `RegenerateBanner`.
+  - Добавлено модальное окно **Access links & subscriptions** (`<dialog>`) с локальной генерацией SVG QR-кодов (через `uqr`) для Outline, Happ/Xray, App Config и Share Links, а также кнопкой перегенерации подписок с `--prune`.
+
 ## [1.10.3] - 2026-10-04
 
 ### Добавлено

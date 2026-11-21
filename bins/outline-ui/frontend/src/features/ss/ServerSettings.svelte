@@ -1,908 +1,2567 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import { getServerConfig, patchServerConfig } from '../../lib/api';
+  import { onDestroy, tick } from 'svelte';
+  import {
+    ApiError,
+    getClusterConfig,
+    getServerConfig,
+    patchClusterConfig,
+    patchServerConfig,
+    regenerateAccessKeys,
+    regenerateClusterAccessKeys,
+  } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
+  import { ssTargetState, getClusterSummary } from '../../lib/ssTarget.svelte';
+  import {
+    CIPHER_KINDS,
+    ENDPOINT_KIND_OPTIONS,
+    TUNING_FIELD_SPECS,
+    TUNING_PRESETS,
+    buildPerNodePatch,
+    buildSharedPatch,
+    inferEndpointKind,
+    perNodeFromConfig,
+    sharedFromConfig,
+    splitListText,
+    validateEndpoints,
+    validateMtu,
+    validateNodeHostEntry,
+    validatePerNodeSettings,
+    validatePublicScheme,
+    validateSharedSettings,
+    validateSocketAddr,
+    type EditableEndpoint,
+    type PerNodeSettingsModel,
+    type SharedSettingsModel,
+    type TuningPresetName,
+  } from '../../lib/serverConfigForm';
   import type {
+    ClusterConfigResponse,
+    ClusterRegenerateResponse,
+    NodeActionResult,
+    ServerConfigPatch,
     ServerConfigResponse,
-    ServerListenersConfig,
-    SessionResumptionConfig,
-    OutboundConfig,
-    ServerPaddingConfig,
-    ServerHttpFallbackConfig,
-    ServerSniFallbackConfig,
-    EndpointConfigItem,
+    SsTarget,
   } from '../../lib/types';
-  import InstanceSelector from '../../components/layout/InstanceSelector.svelte';
+  import SsTargetSelector from '../../components/layout/SsTargetSelector.svelte';
   import ErrorBanner from '../../components/layout/ErrorBanner.svelte';
+  import ConfirmDialog from '../../components/layout/ConfirmDialog.svelte';
+  import ClusterStatusStrip from './ClusterStatusStrip.svelte';
+  import DriftBadge from './DriftBadge.svelte';
+  import PerNodeResultPanel from './PerNodeResultPanel.svelte';
+  import RegenerateBanner from './RegenerateBanner.svelte';
 
-  let instance = $state('');
-  let refreshSecs = $state(10);
-  const refreshMs = $derived(Math.max(1000, refreshSecs * 1000));
+  type SettingsTabId = 'carriers' | 'network' | 'camouflage' | 'subscriptions' | 'tuning';
+
+  const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTabId; label: string }> = [
+    { id: 'carriers', label: 'Carriers & Endpoints' },
+    { id: 'network', label: 'Network & TLS' },
+    { id: 'camouflage', label: 'Resumption & Camouflage' },
+    { id: 'subscriptions', label: 'Subscriptions' },
+    { id: 'tuning', label: 'Tuning & System' },
+  ];
+
+  const EMPTY_CFG: ServerConfigResponse = {
+    config_path: null,
+    cluster: null,
+    server: null,
+    session_resumption: null,
+    outbound: null,
+    tuning_profile: 'large',
+    endpoints: [],
+  };
+
+  function cloneShared(src: SharedSettingsModel): SharedSettingsModel {
+    return JSON.parse(JSON.stringify(src)) as SharedSettingsModel;
+  }
+
+  function clonePerNodeMap(
+    src: Record<string, PerNodeSettingsModel>,
+  ): Record<string, PerNodeSettingsModel> {
+    return JSON.parse(JSON.stringify(src)) as Record<string, PerNodeSettingsModel>;
+  }
+
+  const target = $derived(ssTargetState.target);
+  const isCluster = $derived(target?.kind === 'cluster');
+  const clusterSummary = $derived(
+    target?.kind === 'cluster' ? getClusterSummary(target.name) : null,
+  );
+  const refreshMs = $derived(Math.max(1000, ssTargetState.refreshSecs * 1000));
+
+  let activeTab = $state<SettingsTabId>('carriers');
+  let tabRefs: Record<SettingsTabId, HTMLButtonElement | undefined> = {
+    carriers: undefined,
+    network: undefined,
+    camouflage: undefined,
+    subscriptions: undefined,
+    tuning: undefined,
+  };
 
   let mutating = $state(false);
-  let formDirty = $state(false);
+  let regenerating = $state(false);
+  let showWriteDir = $state(false);
+  let submitAttempted = $state(false);
+  let touched = $state<Record<string, boolean>>({});
+  let h3AlpnText = $state('h3');
 
-  // Form states: Listeners
-  let listen = $state('');
-  let certPath = $state('');
-  let keyPath = $state('');
-  let h3Listen = $state('');
-  let h3CertPath = $state('');
-  let h3KeyPath = $state('');
-  let h3InitialMtu = $state<number | null>(null);
+  // Target switch confirmation when dirty
+  let pendingTarget = $state<SsTarget | null>(null);
+  let confirmSwitchOpen = $derived(pendingTarget !== null);
 
-  // Form states: Session Resumption
-  let resumeEnabled = $state(false);
-  let orphanTtlTcpSecs = $state(300);
-  let orphanTtlUdpSecs = $state(180);
-  let orphanPerUserCap = $state(8);
-  let orphanGlobalCap = $state(1024);
-  let downlinkBufferKib = $state(64);
+  // Saved snapshot vs editable state
+  let initialShared = $state<SharedSettingsModel>(sharedFromConfig(EMPTY_CFG));
+  let currShared = $state<SharedSettingsModel>(sharedFromConfig(EMPTY_CFG));
+  let initialPerNodeByHost = $state<Record<string, PerNodeSettingsModel>>({});
+  let currPerNodeByHost = $state<Record<string, PerNodeSettingsModel>>({});
+  let activeNode = $state('');
 
-  // Form states: Outbound
-  let outboundPreferIpv4 = $state(false);
-  let outboundIpv6Prefix = $state('');
-  let outboundIpv6Interface = $state('');
-  let outboundIpv6PrefixInterface = $state('');
-  let outboundIpv6Sticky = $state(false);
-  let outboundIpv6StickyTtl = $state(300);
-  let outboundIpv6RefreshSecs = $state<number | null>(null);
+  // Banners & action results
+  let actionResults = $state<NodeActionResult[]>([]);
+  let actionTitle = $state('');
+  let showRegenerateBanner = $state(false);
+  let bannerRestartNodes = $state<string[]>([]);
 
-  // Form states: Carrier Padding
-  let paddingCover = $state(false);
-  let paddingMinBytes = $state(0);
-  let paddingMaxBytes = $state(0);
-  let paddingCoverJitterMinMs = $state(0);
-  let paddingCoverJitterMaxMs = $state(0);
-  let paddingThrottleDetect = $state(false);
+  // Single polite live region for blur validation announcements
+  let liveAnnouncement = $state('');
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastAnnouncedKey = '';
 
-  // Form states: HTTP Camouflage & Fallback
-  let fallbackBackend = $state('');
-  let fallbackBackendProto = $state<'' | 'h1' | 'h2'>('');
-  let fallbackProxyProtocol = $state<'' | 'v1' | 'v2'>('');
-  let fallbackTimeoutSecs = $state(15);
-  let fallbackApplyH1 = $state(true);
-  let fallbackApplyH3 = $state(true);
-  let fallbackXFwdFor = $state(true);
-  let fallbackXFwdProto = $state(true);
-  let fallbackXFwdHost = $state(true);
+  type PollData =
+    | { kind: 'cluster'; payload: ClusterConfigResponse }
+    | { kind: 'single'; payload: ServerConfigResponse }
+    | null;
 
-  // Form states: Tuning profile (small, medium, large)
-  let tuningProfile = $state('large');
-
-  // Form states: SNI Fallback & Camouflage
-  let sniMatchSni = $state('');
-  let sniAllowNoSni = $state(false);
-  let sniMaxClientHelloBytes = $state(8192);
-  let sniBackends = $state<Array<{ backend: string; proxy_protocol: '' | 'v1' | 'v2'; match_sni: string }>>([]);
-
-  function addSniBackend() {
-    sniBackends = [...sniBackends, { backend: '', proxy_protocol: '', match_sni: '' }];
-    markDirty();
-  }
-
-  function removeSniBackend(index: number) {
-    sniBackends = sniBackends.filter((_, i) => i !== index);
-    markDirty();
-  }
-
-  const configPoll = createPoll<ServerConfigResponse | null>(
-    () => (instance ? getServerConfig(instance) : Promise.resolve(null)),
+  const configPoll = createPoll<PollData>(
+    async () => {
+      if (!target) return null;
+      if (target.kind === 'cluster') {
+        const payload = await getClusterConfig(target.name);
+        return { kind: 'cluster', payload };
+      }
+      const payload = await getServerConfig(target.name);
+      return { kind: 'single', payload };
+    },
     () => refreshMs,
   );
 
   $effect(() => {
-    void instance;
-    formDirty = false;
+    void target;
+    actionResults = [];
+    showRegenerateBanner = false;
+    bannerRestartNodes = [];
+    touched = {};
+    submitAttempted = false;
+    lastAnnouncedKey = '';
+    liveAnnouncement = '';
     configPoll.start();
   });
-  onDestroy(() => configPoll.stop());
 
-  const config = $derived(configPoll.data);
-  let editableEndpoints = $state<EndpointConfigItem[]>([]);
+  onDestroy(() => {
+    configPoll.stop();
+    if (liveTimer) clearTimeout(liveTimer);
+  });
 
-  // Sync state from server on fetch if clean
+  const clusterRes = $derived(
+    configPoll.data?.kind === 'cluster' ? configPoll.data.payload : null,
+  );
+  const singleRes = $derived(
+    configPoll.data?.kind === 'single' ? configPoll.data.payload : null,
+  );
+
+  const clusterNodes = $derived(clusterRes?.nodes ?? []);
+  const aliveClusterNodes = $derived(clusterNodes.filter((n) => n.ok && n.config));
+  const drift = $derived(clusterRes?.drift ?? []);
+  const restartPendingNodes = $derived.by(() => {
+    if (clusterRes) return clusterRes.mesh_health.restart_pending_nodes;
+    if (singleRes?.restart_pending && target?.kind === 'instance') return [target.name];
+    return [];
+  });
+
+  const sharedDirtyResult = $derived(buildSharedPatch(currShared, initialShared));
+  const dirtyPerNodeByHost = $derived.by(() => {
+    const out: Record<string, { patch: ServerConfigPatch; dirtySections: string[] }> = {};
+    for (const host of Object.keys(currPerNodeByHost)) {
+      const curr = currPerNodeByHost[host];
+      const init = initialPerNodeByHost[host];
+      if (!curr || !init) continue;
+      const res = buildPerNodePatch(curr, init);
+      if (res.dirtySections.length > 0) {
+        out[host] = res;
+      }
+    }
+    return out;
+  });
+
+  const dirtySectionLabels = $derived.by(() => {
+    const labels = [...sharedDirtyResult.dirtySections];
+    for (const host of Object.keys(dirtyPerNodeByHost)) {
+      labels.push(`node:${host}`);
+    }
+    return labels;
+  });
+
+  const formDirty = $derived(dirtySectionLabels.length > 0);
+
   $effect(() => {
-    if (config && !formDirty) {
-      if (config.server) {
-        listen = config.server.listen ?? '';
-        certPath = config.server.cert_path ?? '';
-        keyPath = config.server.key_path ?? '';
-        h3Listen = config.server.h3_listen ?? '';
-        h3CertPath = config.server.h3_cert_path ?? '';
-        h3KeyPath = config.server.h3_key_path ?? '';
-        h3InitialMtu = config.server.h3_initial_mtu ?? null;
+    if (formDirty) return;
+    if (clusterRes) {
+      const firstAlive = clusterRes.nodes.find((n) => n.ok && n.config)?.config;
+      const shared = sharedFromConfig(firstAlive ?? EMPTY_CFG);
+      initialShared = shared;
+      currShared = cloneShared(shared);
+      h3AlpnText = shared.h3Alpn.join(', ');
+
+      const perMap: Record<string, PerNodeSettingsModel> = {};
+      for (const n of clusterRes.nodes) {
+        if (n.ok && n.config) {
+          perMap[n.instance] = perNodeFromConfig(n.config);
+        }
       }
-      if (config.session_resumption) {
-        resumeEnabled = config.session_resumption.enabled;
-        orphanTtlTcpSecs = config.session_resumption.orphan_ttl_tcp_secs ?? 300;
-        orphanTtlUdpSecs = config.session_resumption.orphan_ttl_udp_secs ?? 180;
-        orphanPerUserCap = config.session_resumption.orphan_per_user_cap ?? 8;
-        orphanGlobalCap = config.session_resumption.orphan_global_cap ?? 1024;
-        const bytes = config.session_resumption.downlink_buffer_bytes ?? 65536;
-        downlinkBufferKib = Math.round(bytes / 1024);
+      initialPerNodeByHost = perMap;
+      currPerNodeByHost = clonePerNodeMap(perMap);
+
+      const hosts = Object.keys(perMap);
+      if (!activeNode || !perMap[activeNode]) {
+        activeNode = hosts[0] ?? '';
       }
-      if (config.outbound) {
-        outboundPreferIpv4 = config.outbound.prefer_ipv4 ?? false;
-        outboundIpv6Prefix = config.outbound.ipv6_prefix ?? '';
-        outboundIpv6Interface = config.outbound.ipv6_interface ?? '';
-        outboundIpv6PrefixInterface = config.outbound.ipv6_prefix_interface ?? '';
-        outboundIpv6Sticky = config.outbound.ipv6_sticky ?? false;
-        outboundIpv6StickyTtl = config.outbound.ipv6_sticky_ttl_secs ?? 300;
-        outboundIpv6RefreshSecs = config.outbound.ipv6_refresh_secs ?? null;
-      }
-      if (config.padding) {
-        paddingCover = config.padding.cover ?? false;
-        paddingMinBytes = config.padding.min_bytes ?? 0;
-        paddingMaxBytes = config.padding.max_bytes ?? 0;
-        paddingCoverJitterMinMs = config.padding.cover_jitter_min_ms ?? 0;
-        paddingCoverJitterMaxMs = config.padding.cover_jitter_max_ms ?? 0;
-        paddingThrottleDetect = config.padding.throttle_detect_enabled ?? false;
-      }
-      if (config.http_fallback) {
-        fallbackBackend = config.http_fallback.backend ?? '';
-        const proto = config.http_fallback.backend_proto;
-        fallbackBackendProto = proto === 'h1' || proto === 'h2' ? proto : '';
-        const pp = config.http_fallback.proxy_protocol;
-        fallbackProxyProtocol = pp === 'v1' || pp === 'v2' ? pp : '';
-        fallbackTimeoutSecs = config.http_fallback.request_timeout_secs ?? 15;
-        fallbackApplyH1 = config.http_fallback.apply_to_h1 ?? true;
-        fallbackApplyH3 = config.http_fallback.apply_to_h3 ?? true;
-        fallbackXFwdFor = config.http_fallback.add_x_forwarded_for ?? true;
-        fallbackXFwdProto = config.http_fallback.add_x_forwarded_proto ?? true;
-        fallbackXFwdHost = config.http_fallback.add_x_forwarded_host ?? true;
-      }
-      if (config.sni_fallback) {
-        sniMatchSni = (config.sni_fallback.match_sni ?? []).join(', ');
-        sniAllowNoSni = config.sni_fallback.allow_no_sni ?? false;
-        sniMaxClientHelloBytes = config.sni_fallback.max_client_hello_bytes ?? 8192;
-        sniBackends = (config.sni_fallback.backends ?? []).map((b) => ({
-          backend: b.backend ?? '',
-          proxy_protocol: (b.proxy_protocol === 'v1' || b.proxy_protocol === 'v2') ? b.proxy_protocol : '',
-          match_sni: (b.match_sni ?? []).join(', '),
-        }));
-      } else {
-        sniMatchSni = '';
-        sniAllowNoSni = false;
-        sniMaxClientHelloBytes = 8192;
-        sniBackends = [];
-      }
-      if (config.tuning_profile) {
-        tuningProfile = config.tuning_profile;
-      }
-      editableEndpoints = (config.endpoints ?? []).map((ep) => ({ ...ep }));
+    } else if (singleRes && target?.kind === 'instance') {
+      const shared = sharedFromConfig(singleRes);
+      initialShared = shared;
+      currShared = cloneShared(shared);
+      h3AlpnText = shared.h3Alpn.join(', ');
+
+      const per = perNodeFromConfig(singleRes);
+      initialPerNodeByHost = { [target.name]: per };
+      currPerNodeByHost = { [target.name]: clonePerNodeMap({ x: per }).x };
+      activeNode = target.name;
     }
   });
 
-  function markDirty() {
-    formDirty = true;
+  const activePerNode = $derived<PerNodeSettingsModel | null>(
+    activeNode && currPerNodeByHost[activeNode] ? currPerNodeByHost[activeNode] : null,
+  );
+
+  // Field-level client validation mapped to key -> error text + target tab
+  interface ValidationEntry {
+    key: string;
+    tab: SettingsTabId;
+    node?: string;
+    message: string;
+  }
+
+  const validationEntries = $derived.by<ValidationEntry[]>(() => {
+    const list: ValidationEntry[] = [];
+
+    currShared.endpoints.forEach((ep, idx) => {
+      const p = ep.path.trim();
+      let msg: string | null = null;
+      if (!p) msg = 'Path cannot be empty.';
+      else if (!p.startsWith('/')) msg = 'Path must start with "/".';
+      else if (/\s/.test(p)) msg = 'Path cannot contain spaces.';
+      else if (currShared.endpoints.findIndex((other) => other.path.trim() === p) !== idx) {
+        msg = `Duplicate endpoint path "${p}".`;
+      }
+      if (msg) {
+        list.push({ key: `ep:${idx}:path`, tab: 'carriers', message: msg });
+      }
+    });
+
+    const epWholeErr = validateEndpoints(currShared.endpoints);
+    if (epWholeErr && list.length === 0) {
+      list.push({ key: 'endpoints', tab: 'carriers', message: epWholeErr });
+    }
+
+    const mtuErr = validateMtu(currShared.h3InitialMtu);
+    if (mtuErr) list.push({ key: 'h3_initial_mtu', tab: 'network', message: mtuErr });
+
+    const probeErr = validateMtu(currShared.h3MtuFirstProbe);
+    if (probeErr) list.push({ key: 'h3_mtu_first_probe', tab: 'network', message: probeErr });
+
+    for (const [host, nodeModel] of Object.entries(currPerNodeByHost)) {
+      if (!nodeModel.listen.trim()) {
+        list.push({
+          key: `node:${host}:listen`,
+          tab: 'network',
+          node: host,
+          message: 'TCP/TLS listen address is required.',
+        });
+      } else {
+        const lErr = validateSocketAddr(nodeModel.listen);
+        if (lErr) {
+          list.push({ key: `node:${host}:listen`, tab: 'network', node: host, message: lErr });
+        }
+      }
+
+      const h3Err = validateSocketAddr(nodeModel.h3_listen);
+      if (h3Err) {
+        list.push({ key: `node:${host}:h3_listen`, tab: 'network', node: host, message: h3Err });
+      }
+
+      nodeModel.certs.forEach((c, idx) => {
+        if (!c.cert_path.trim() || !c.key_path.trim()) {
+          list.push({
+            key: `node:${host}:cert:${idx}`,
+            tab: 'network',
+            node: host,
+            message: 'Both cert_path and key_path are required.',
+          });
+        } else {
+          for (const s of splitListText(c.sniText)) {
+            if (s.includes('*')) {
+              list.push({
+                key: `node:${host}:cert:${idx}`,
+                tab: 'network',
+                node: host,
+                message: `Explicit SNI resolver does not support wildcards ("${s}").`,
+              });
+              break;
+            }
+          }
+        }
+      });
+
+      if (nodeModel.h3CertsCustom) {
+        nodeModel.h3_certs.forEach((c, idx) => {
+          if (!c.cert_path.trim() || !c.key_path.trim()) {
+            list.push({
+              key: `node:${host}:h3cert:${idx}`,
+              tab: 'network',
+              node: host,
+              message: 'Both cert_path and key_path are required.',
+            });
+          } else {
+            for (const s of splitListText(c.sniText)) {
+              if (s.includes('*')) {
+                list.push({
+                  key: `node:${host}:h3cert:${idx}`,
+                  tab: 'network',
+                  node: host,
+                  message: `Explicit SNI resolver does not support wildcards ("${s}").`,
+                });
+                break;
+              }
+            }
+          }
+        });
+      }
+    }
+
+    if (
+      currShared.padding.min_bytes != null &&
+      currShared.padding.max_bytes != null &&
+      currShared.padding.min_bytes > currShared.padding.max_bytes
+    ) {
+      list.push({
+        key: 'padding.max_bytes',
+        tab: 'camouflage',
+        message: 'Padding max_bytes must be >= min_bytes.',
+      });
+    }
+
+    if (
+      currShared.padding.cover_jitter_min_ms != null &&
+      currShared.padding.cover_jitter_max_ms != null &&
+      currShared.padding.cover_jitter_min_ms > currShared.padding.cover_jitter_max_ms
+    ) {
+      list.push({
+        key: 'padding.jitter_max',
+        tab: 'camouflage',
+        message: 'Padding cover_jitter_max_ms must be >= cover_jitter_min_ms.',
+      });
+    }
+
+    if (
+      currShared.httpFallback.backend.trim() &&
+      !currShared.httpFallback.backend.trim().startsWith('http://')
+    ) {
+      list.push({
+        key: 'http_fallback.backend',
+        tab: 'camouflage',
+        message: 'Backend URL must start with "http://".',
+      });
+    }
+
+    if (
+      currShared.sniFallback.max_client_hello_bytes != null &&
+      currShared.sniFallback.max_client_hello_bytes < 256
+    ) {
+      list.push({
+        key: 'sni_fallback.max_hello',
+        tab: 'camouflage',
+        message: 'max_client_hello_bytes must be >= 256.',
+      });
+    }
+
+    const hasSniConfig =
+      splitListText(currShared.sniFallback.matchSniText).length > 0 ||
+      currShared.sniFallback.backends.length > 0;
+    if (hasSniConfig) {
+      if (splitListText(currShared.sniFallback.matchSniText).length === 0) {
+        list.push({
+          key: 'sni_fallback.match_sni',
+          tab: 'camouflage',
+          message: 'Specify at least one SNI pattern when SNI fallback backends are configured.',
+        });
+      }
+      if (currShared.sniFallback.backends.length === 0) {
+        list.push({
+          key: 'sni_fallback.match_sni',
+          tab: 'camouflage',
+          message: 'Add at least one SNI backend when match_sni is configured.',
+        });
+      }
+      currShared.sniFallback.backends.forEach((b, idx) => {
+        if (!b.backend.trim()) {
+          list.push({
+            key: `sni_fallback.backend:${idx}`,
+            tab: 'camouflage',
+            message: 'Backend host:port is required.',
+          });
+        } else if (
+          splitListText(b.matchSniText).length === 0 &&
+          idx !== currShared.sniFallback.backends.length - 1
+        ) {
+          list.push({
+            key: `sni_fallback.backend:${idx}`,
+            tab: 'camouflage',
+            message: 'Empty match_sni (catch-all) is only allowed on the last backend.',
+          });
+        }
+      });
+    }
+
+    const schemeErr = validatePublicScheme(currShared.accessKeys.public_scheme);
+    if (schemeErr) {
+      list.push({ key: 'access_keys.public_scheme', tab: 'subscriptions', message: schemeErr });
+    }
+
+    for (const nodeHost of splitListText(currShared.accessKeys.nodesText)) {
+      const nodeErr = validateNodeHostEntry(nodeHost);
+      if (nodeErr) {
+        list.push({ key: 'access_keys.nodes', tab: 'subscriptions', message: nodeErr });
+        break;
+      }
+    }
+
+    return list;
+  });
+
+  const errorMap = $derived.by(() => {
+    const map: Record<string, string> = {};
+    for (const item of validationEntries) {
+      if (!map[item.key]) map[item.key] = item.message;
+    }
+    return map;
+  });
+
+  function fieldError(key: string): string | null {
+    if (!touched[key] && !submitAttempted) return null;
+    return errorMap[key] ?? null;
+  }
+
+  const padBytesErr = $derived(fieldError('padding.max_bytes'));
+  const padJitterErr = $derived(fieldError('padding.jitter_max'));
+  const hfErr = $derived(fieldError('http_fallback.backend'));
+  const sniMatchErr = $derived(fieldError('sni_fallback.match_sni'));
+  const sniHelloErr = $derived(fieldError('sni_fallback.max_hello'));
+  const schemeErr = $derived(fieldError('access_keys.public_scheme'));
+  const nodesErr = $derived(fieldError('access_keys.nodes'));
+
+  function describedBy(...ids: Array<string | null | undefined>): string | undefined {
+    const list = ids.filter((id): id is string => Boolean(id));
+    return list.length ? list.join(' ') : undefined;
+  }
+
+  function onFieldBlur(key: string, label?: string) {
+    touched = { ...touched, [key]: true };
+    const msg = errorMap[key];
+    if (msg) {
+      if (lastAnnouncedKey !== `${key}:${msg}`) {
+        lastAnnouncedKey = `${key}:${msg}`;
+        if (liveTimer) clearTimeout(liveTimer);
+        liveAnnouncement = '';
+        const prefix = label ? `${label}: ` : '';
+        liveTimer = setTimeout(() => {
+          liveAnnouncement = `${prefix}Error: ${msg}`;
+        }, 400);
+      }
+    } else if (lastAnnouncedKey.startsWith(`${key}:`)) {
+      if (liveTimer) clearTimeout(liveTimer);
+      liveAnnouncement = '';
+      lastAnnouncedKey = '';
+    }
+  }
+
+  function optInt(raw: string): number | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+
+  function onH3AlpnInput(raw: string) {
+    h3AlpnText = raw;
+    const parsed = splitListText(raw);
+    currShared.h3Alpn = parsed.length ? parsed : ['h3'];
+  }
+
+  async function selectTab(id: SettingsTabId) {
+    activeTab = id;
+    await tick();
+    tabRefs[id]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  function onTabKeyDown(e: KeyboardEvent, idx: number) {
+    let nextIdx = -1;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % SETTINGS_TABS.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = SETTINGS_TABS.length - 1;
+    if (nextIdx >= 0) {
+      e.preventDefault();
+      const next = SETTINGS_TABS[nextIdx];
+      void selectTab(next.id).then(() => tabRefs[next.id]?.focus());
+    }
+  }
+
+  function onBeforeTargetChange(next: SsTarget): boolean {
+    if (!formDirty) return true;
+    pendingTarget = next;
+    return false;
+  }
+
+  function confirmDiscardTargetSwitch() {
+    const next = pendingTarget;
+    pendingTarget = null;
+    if (!next) return;
+    currShared = cloneShared(initialShared);
+    currPerNodeByHost = clonePerNodeMap(initialPerNodeByHost);
+    h3AlpnText = initialShared.h3Alpn.join(', ');
+    touched = {};
+    submitAttempted = false;
+    ssTargetState.target = next;
+  }
+
+  function discardChanges() {
+    currShared = cloneShared(initialShared);
+    currPerNodeByHost = clonePerNodeMap(initialPerNodeByHost);
+    h3AlpnText = initialShared.h3Alpn.join(', ');
+    touched = {};
+    submitAttempted = false;
+    liveAnnouncement = 'Unsaved settings discarded.';
+  }
+
+  function addEndpoint() {
+    const existing = new Set(currShared.endpoints.map((e) => e.path));
+    let candidate = '/ws';
+    let idx = 2;
+    while (existing.has(candidate)) {
+      candidate = `/ws-${idx++}`;
+    }
+    currShared.endpoints.push({ path: candidate, kind: 'ws_ss', padded: false });
+  }
+
+  function removeEndpoint(index: number) {
+    currShared.endpoints.splice(index, 1);
+  }
+
+  function addCert(list: 'certs' | 'h3_certs') {
+    if (!activePerNode) return;
+    activePerNode[list].push({ cert_path: '', key_path: '', sniText: '' });
+  }
+
+  function removeCert(list: 'certs' | 'h3_certs', index: number) {
+    if (!activePerNode) return;
+    activePerNode[list].splice(index, 1);
+  }
+
+  function addSniBackend() {
+    currShared.sniFallback.backends.push({
+      backend: '',
+      proxy_protocol: '',
+      matchSniText: '',
+    });
+  }
+
+  function removeSniBackend(index: number) {
+    currShared.sniFallback.backends.splice(index, 1);
+  }
+
+  function clearAllTuningOverrides() {
+    for (const spec of TUNING_FIELD_SPECS) {
+      currShared.tuningOverrides[spec.key] = null;
+    }
+  }
+
+  function fillNodesFromCluster() {
+    if (!clusterSummary?.subscription_nodes.length) return;
+    currShared.accessKeys.nodesText = clusterSummary.subscription_nodes.join('\n');
+    onFieldBlur('access_keys.nodes', 'Subscription nodes');
+  }
+
+  async function focusFirstValidationError() {
+    const first = validationEntries[0];
+    if (!first) return;
+    activeTab = first.tab;
+    if (first.node && currPerNodeByHost[first.node]) {
+      activeNode = first.node;
+    }
+    await tick();
+    const el = document.querySelector<HTMLElement>(`[data-val-key="${CSS.escape(first.key)}"]`);
+    el?.focus();
+    el?.scrollIntoView({ block: 'center', inline: 'nearest' });
   }
 
   async function save() {
-    if (!instance) return;
+    if (!target || mutating) return;
+    submitAttempted = true;
 
-    if (!listen.trim()) {
-      toast('TCP/TLS listen address cannot be empty.', 'error');
+    const sharedErr = validateSharedSettings(currShared);
+    let perErr: string | null = null;
+    for (const [host, model] of Object.entries(currPerNodeByHost)) {
+      const e = validatePerNodeSettings(model);
+      if (e) {
+        perErr = `${host}: ${e}`;
+        break;
+      }
+    }
+
+    if (validationEntries.length > 0 || sharedErr || perErr) {
+      const summary = validationEntries[0]?.message ?? sharedErr ?? perErr ?? 'Fix validation errors before saving.';
+      toast(summary, 'error');
+      liveAnnouncement = `Cannot save. Error: ${summary}`;
+      await focusFirstValidationError();
+      return;
+    }
+
+    if (!formDirty) {
+      toast('No changes to save.');
       return;
     }
 
     mutating = true;
+    actionResults = [];
     try {
-      const serverPatch: Partial<ServerListenersConfig> = {
-        listen: listen.trim(),
-        cert_path: certPath.trim() ? certPath.trim() : null,
-        key_path: keyPath.trim() ? keyPath.trim() : null,
-        h3_listen: h3Listen.trim() ? h3Listen.trim() : null,
-        h3_cert_path: h3CertPath.trim() ? h3CertPath.trim() : null,
-        h3_key_path: h3KeyPath.trim() ? h3KeyPath.trim() : null,
-        h3_initial_mtu: h3InitialMtu && h3InitialMtu > 0 ? h3InitialMtu : null,
-      };
+      if (target.kind === 'cluster') {
+        const per_node: Record<string, ServerConfigPatch> = {};
+        for (const [host, item] of Object.entries(dirtyPerNodeByHost)) {
+          per_node[host] = item.patch;
+        }
+        const shared =
+          sharedDirtyResult.dirtySections.length > 0 ? sharedDirtyResult.patch : undefined;
 
-      const resumePatch: Partial<SessionResumptionConfig> = {
-        enabled: resumeEnabled,
-        orphan_ttl_tcp_secs: orphanTtlTcpSecs,
-        orphan_ttl_udp_secs: orphanTtlUdpSecs,
-        orphan_per_user_cap: orphanPerUserCap,
-        orphan_global_cap: orphanGlobalCap,
-        downlink_buffer_bytes: downlinkBufferKib * 1024,
-      };
-
-      const outboundPatch: Partial<OutboundConfig> = {
-        prefer_ipv4: outboundPreferIpv4,
-        ipv6_prefix: outboundIpv6Prefix.trim() ? outboundIpv6Prefix.trim() : null,
-        ipv6_interface: outboundIpv6Interface.trim() ? outboundIpv6Interface.trim() : null,
-        ipv6_prefix_interface: outboundIpv6PrefixInterface.trim() ? outboundIpv6PrefixInterface.trim() : null,
-        ipv6_sticky: outboundIpv6Sticky,
-        ipv6_sticky_ttl_secs: outboundIpv6StickyTtl,
-        ipv6_refresh_secs: outboundIpv6RefreshSecs && outboundIpv6RefreshSecs > 0 ? outboundIpv6RefreshSecs : null,
-      };
-
-      const paddingPatch: Partial<ServerPaddingConfig> = {
-        cover: paddingCover,
-        min_bytes: paddingMinBytes,
-        max_bytes: paddingMaxBytes,
-        cover_jitter_min_ms: paddingCoverJitterMinMs,
-        cover_jitter_max_ms: paddingCoverJitterMaxMs,
-        throttle_detect_enabled: paddingThrottleDetect,
-      };
-
-      const fallbackPatch: Partial<ServerHttpFallbackConfig> = {
-        backend: fallbackBackend.trim() ? fallbackBackend.trim() : null,
-        backend_proto: fallbackBackendProto || null,
-        proxy_protocol: fallbackProxyProtocol || null,
-        request_timeout_secs: fallbackTimeoutSecs,
-        apply_to_h1: fallbackApplyH1,
-        apply_to_h3: fallbackApplyH3,
-        add_x_forwarded_for: fallbackXFwdFor,
-        add_x_forwarded_proto: fallbackXFwdProto,
-        add_x_forwarded_host: fallbackXFwdHost,
-      };
-
-      let sniPatch: ServerSniFallbackConfig | null = null;
-      const parsedMatchSni = sniMatchSni
-        .split(/[,\n]/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-
-      const parsedBackends = sniBackends
-        .filter((b) => b.backend.trim().length > 0)
-        .map((b) => {
-          const bMatchSni = b.match_sni
-            .split(/[,\n]/)
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0);
-          return {
-            backend: b.backend.trim(),
-            proxy_protocol: b.proxy_protocol || null,
-            match_sni: bMatchSni.length > 0 ? bMatchSni : null,
-          };
+        const res = await patchClusterConfig(target.name, {
+          ...(shared ? { shared } : {}),
+          ...(Object.keys(per_node).length ? { per_node } : {}),
         });
+        actionTitle = `Config save · ${target.name}`;
+        actionResults = res.results;
 
-      if (parsedMatchSni.length > 0 || parsedBackends.length > 0) {
-        sniPatch = {
-          match_sni: parsedMatchSni.length > 0 ? parsedMatchSni : null,
-          allow_no_sni: sniAllowNoSni,
-          max_client_hello_bytes: sniMaxClientHelloBytes > 0 ? sniMaxClientHelloBytes : null,
-          backends: parsedBackends.length > 0 ? parsedBackends : null,
-        };
-      }
+        const restartNodes = res.results
+          .filter((r) => r.ok && r.requires_restart)
+          .map((r) => r.instance);
+        bannerRestartNodes = restartNodes;
+        showRegenerateBanner = true;
 
-      const res = await patchServerConfig(instance, {
-        server: serverPatch,
-        session_resumption: resumePatch,
-        outbound: outboundPatch,
-        padding: paddingPatch,
-        http_fallback: fallbackPatch,
-        sni_fallback: sniPatch,
-        tuning_profile: tuningProfile.trim() ? tuningProfile.trim() : null,
-        endpoints: editableEndpoints.map((ep) => ({
-          path: ep.path,
-          padded: ep.padded,
-        })),
-      });
-
-      formDirty = false;
-      if (res.requires_restart) {
-        toast('Server settings saved. Restart outline-server to apply socket/TLS changes.');
+        if (res.ok) {
+          initialShared = cloneShared(currShared);
+          initialPerNodeByHost = clonePerNodeMap(currPerNodeByHost);
+          touched = {};
+          submitAttempted = false;
+          toast(
+            restartNodes.length
+              ? `Saved to cluster. Restart pending on: ${restartNodes.join(', ')}.`
+              : 'Saved to cluster (applied immediately, no server restart needed).',
+          );
+          await configPoll.refresh();
+        } else {
+          toast(res.error ?? 'Cluster settings save partially failed.', 'error');
+        }
       } else {
-        toast('Server settings saved.');
+        const singlePer = dirtyPerNodeByHost[target.name]?.patch ?? {};
+        const merged: ServerConfigPatch = {
+          ...sharedDirtyResult.patch,
+          ...singlePer,
+          ...(sharedDirtyResult.patch.server || singlePer.server
+            ? { server: { ...(sharedDirtyResult.patch.server ?? {}), ...(singlePer.server ?? {}) } }
+            : {}),
+          ...(sharedDirtyResult.patch.outbound || singlePer.outbound
+            ? {
+                outbound: {
+                  ...(sharedDirtyResult.patch.outbound ?? {}),
+                  ...(singlePer.outbound ?? {}),
+                },
+              }
+            : {}),
+        };
+
+        const res = await patchServerConfig(target.name, merged);
+        bannerRestartNodes = res.requires_restart ? [target.name] : [];
+        showRegenerateBanner = true;
+        initialShared = cloneShared(currShared);
+        initialPerNodeByHost = clonePerNodeMap(currPerNodeByHost);
+        touched = {};
+        submitAttempted = false;
+        toast(
+          res.requires_restart
+            ? 'Settings saved. Restart outline-server to apply listener/TLS/tuning changes.'
+            : 'Settings saved (applied immediately, no server restart needed).',
+        );
+        await configPoll.refresh();
       }
-      await configPoll.refresh();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof ApiError || e instanceof Error ? e.message : String(e);
       toast(msg, 'error');
     } finally {
       mutating = false;
     }
   }
+
+  async function regenerateNow() {
+    if (!target || regenerating) return;
+    regenerating = true;
+    try {
+      if (target.kind === 'cluster') {
+        const nodes = clusterSummary?.subscription_nodes?.length
+          ? clusterSummary.subscription_nodes
+          : undefined;
+        const res: ClusterRegenerateResponse = await regenerateClusterAccessKeys(target.name, {
+          prune: true,
+          ...(nodes ? { nodes } : {}),
+        });
+        actionTitle = `Regenerate subscriptions · ${target.name}`;
+        actionResults = res.results;
+        if (res.ok) {
+          toast('Subscriptions regenerated across cluster (deleted users pruned).');
+          showRegenerateBanner = false;
+        } else {
+          toast('Subscription regeneration had errors on some nodes.', 'error');
+        }
+      } else {
+        const nodes = splitListText(currShared.accessKeys.nodesText);
+        const rep = await regenerateAccessKeys(target.name, {
+          prune: true,
+          ...(nodes.length ? { nodes } : {}),
+        });
+        const written = rep.written?.length ?? 0;
+        const pruned = rep.pruned?.length ?? 0;
+        toast(`Subscriptions regenerated (${written} written, ${pruned} pruned).`);
+        showRegenerateBanner = false;
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      regenerating = false;
+    }
+  }
+
+  function applyAlignedOutboundField(key: keyof SharedSettingsModel['outboundShared'], value: unknown) {
+    if (key === 'allowedSubnetsText') {
+      currShared.outboundShared.allowedSubnetsText = Array.isArray(value)
+        ? value.map(String).join(', ')
+        : '';
+    } else if (key === 'prefer_ipv4' || key === 'ipv6_sticky' || key === 'block_private_ips') {
+      currShared.outboundShared[key] = Boolean(value);
+    } else {
+      currShared.outboundShared[key] = typeof value === 'number' ? value : null;
+    }
+  }
 </script>
 
 <section class="view active">
+  <div class="sr-only" aria-live="polite">{liveAnnouncement}</div>
+
   <div class="page-head">
     <div>
       <h1>Server Settings</h1>
-      <p>Configure listening ports, TLS certificates, session resumption, and outbound routing.</p>
+      <p>
+        Manage endpoints, listeners, TLS, camouflage, subscriptions, and runtime tuning
+        {#if isCluster}across the cluster{:else}for the selected server{/if}.
+      </p>
     </div>
     <div class="toolbar">
-      <InstanceSelector base="/ss" bind:selected={instance} bind:refreshSecs={refreshSecs} />
-      <button class="btn primary sm" disabled={!instance || mutating || !formDirty} onclick={save}>
+      <SsTargetSelector onBeforeChange={onBeforeTargetChange} />
+      <button
+        type="button"
+        class="btn primary sm"
+        disabled={!target || mutating || !formDirty}
+        onclick={save}
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-        Save changes
+        {#if mutating}
+          Saving…
+        {:else if isCluster}
+          Save to cluster ({aliveClusterNodes.length} nodes)
+        {:else}
+          Save changes
+        {/if}
       </button>
     </div>
   </div>
 
-  {#if !instance}
-    <div class="empty">Select a server to view and configure its settings.</div>
+  {#if !target}
+    <div class="empty">Select a cluster or server to inspect and configure its settings.</div>
   {:else}
+    {#if isCluster && clusterRes}
+      <ClusterStatusStrip
+        cluster={clusterSummary}
+        reachableNodes={aliveClusterNodes.length}
+        totalNodes={clusterNodes.length}
+        {restartPendingNodes}
+        {regenerating}
+        onRegenerate={regenerateNow}
+      />
+    {:else if restartPendingNodes.length > 0}
+      <div class="applybar" role="status" aria-live="polite">
+        <span class="pill">RESTART PENDING</span>
+        <span>Config has changes waiting for a manual <code>outline-server</code> restart.</span>
+      </div>
+    {/if}
+
     <ErrorBanner message={configPoll.error} />
 
-    {#if config}
-      {#if formDirty}
-        <div class="applybar">
-          <span class="pill">MODIFIED</span>
-          <span>You have unsaved changes. Remember to click "Save changes" above.</span>
-        </div>
-      {/if}
+    {#if isCluster && clusterNodes.some((n) => !n.ok)}
+      <div class="error-banner" role="alert">
+        <span>
+          Offline nodes:
+          {clusterNodes
+            .filter((n) => !n.ok)
+            .map((n) => `${n.instance} (${n.error ?? `HTTP ${n.status}`})`)
+            .join(', ')}
+        </span>
+      </div>
+    {/if}
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--sp-4);">
-        <!-- Listeners & TLS -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Listeners & TLS
-          </h3>
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label for="tcp-listen-input">TCP / TLS Listen Address</label>
-              <input
-                id="tcp-listen-input"
-                type="text"
-                placeholder="0.0.0.0:443 or [::]:443"
-                bind:value={listen}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Primary listening socket for WebSocket / XHTTP and raw Shadowsocks connections.</span>
-            </div>
+    <RegenerateBanner
+      visible={showRegenerateBanner}
+      restartPendingNodes={bannerRestartNodes}
+      {regenerating}
+      onRegenerate={regenerateNow}
+      onDismiss={() => (showRegenerateBanner = false)}
+    />
 
-            <div class="fieldrow">
-              <label for="cert-path-input">TLS Certificate Fullchain Path</label>
-              <input
-                id="cert-path-input"
-                type="text"
-                placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"
-                bind:value={certPath}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Path to the PEM-encoded TLS certificate fullchain file.</span>
-            </div>
+    <PerNodeResultPanel
+      title={actionTitle}
+      results={actionResults}
+      onDismiss={() => (actionResults = [])}
+    />
 
-            <div class="fieldrow">
-              <label for="key-path-input">TLS Private Key Path</label>
-              <input
-                id="key-path-input"
-                type="text"
-                placeholder="/etc/letsencrypt/live/example.com/privkey.pem"
-                bind:value={keyPath}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Path to the PEM-encoded RSA or ECC private key file.</span>
-            </div>
+    {#if clusterRes || singleRes}
+      <div class="tablist-row" role="tablist" aria-label="Server configuration sections">
+        {#each SETTINGS_TABS as tab, idx (tab.id)}
+          <button
+            bind:this={tabRefs[tab.id]}
+            type="button"
+            role="tab"
+            id={`settings-tab-${tab.id}`}
+            class="tab-btn"
+            aria-selected={activeTab === tab.id}
+            tabindex={activeTab === tab.id ? 0 : -1}
+            onclick={() => void selectTab(tab.id)}
+            onkeydown={(e) => onTabKeyDown(e, idx)}
+          >
+            {tab.label}
+          </button>
+        {/each}
+      </div>
 
-            <div class="fieldrow">
-              <label for="h3-listen-input">HTTP/3 QUIC Listen Address (Optional)</label>
-              <input
-                id="h3-listen-input"
-                type="text"
-                placeholder="0.0.0.0:443 or [::]:443 (leave blank to disable)"
-                bind:value={h3Listen}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">UDP socket for HTTP/3 carrier traffic. Usually the same port as TCP.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="h3-mtu-input">HTTP/3 Initial MTU (Optional)</label>
-              <input
-                id="h3-mtu-input"
-                type="number"
-                min="1200"
-                max="1500"
-                placeholder="1252 (leave blank for QUIC default 1200)"
-                bind:value={h3InitialMtu}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Initial UDP packet size for HTTP/3 QUIC handshakes (1200–1450).</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Session Resumption -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Session Resumption (0-RTT)
-          </h3>
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label class="switch">
-                <input type="checkbox" bind:checked={resumeEnabled} onchange={markDirty} />
-                <span>Enable fast session resumption</span>
-              </label>
-              <span class="hint">Allows clients to quickly resume interrupted sessions without full crypto handshake.</span>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label for="ttl-tcp-input">TCP TTL (sec)</label>
-                <input
-                  id="ttl-tcp-input"
-                  type="number"
-                  min="10"
-                  max="86400"
-                  bind:value={orphanTtlTcpSecs}
-                  oninput={markDirty}
-                  disabled={!resumeEnabled}
-                  class="field-mono"
-                />
-              </div>
-              <div class="fieldrow">
-                <label for="ttl-udp-input">UDP TTL (sec)</label>
-                <input
-                  id="ttl-udp-input"
-                  type="number"
-                  min="10"
-                  max="86400"
-                  bind:value={orphanTtlUdpSecs}
-                  oninput={markDirty}
-                  disabled={!resumeEnabled}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label for="per-user-cap-input">Per-User Cap</label>
-                <input
-                  id="per-user-cap-input"
-                  type="number"
-                  min="1"
-                  max="64"
-                  bind:value={orphanPerUserCap}
-                  oninput={markDirty}
-                  disabled={!resumeEnabled}
-                  class="field-mono"
-                />
-              </div>
-              <div class="fieldrow">
-                <label for="global-cap-input">Global Cap</label>
-                <input
-                  id="global-cap-input"
-                  type="number"
-                  min="16"
-                  max="65536"
-                  bind:value={orphanGlobalCap}
-                  oninput={markDirty}
-                  disabled={!resumeEnabled}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <div class="fieldrow">
-              <label for="downlink-buf-input">Downlink Buffer (KiB)</label>
-              <input
-                id="downlink-buf-input"
-                type="number"
-                min="0"
-                max="1024"
-                bind:value={downlinkBufferKib}
-                oninput={markDirty}
-                disabled={!resumeEnabled}
-                class="field-mono"
-              />
-              <span class="hint">Buffer size to hold downstream packets while a client briefly reconnects.</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Outbound Routing & Tuning -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Outbound Traffic & Tuning
-          </h3>
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label class="switch">
-                <input type="checkbox" bind:checked={outboundPreferIpv4} onchange={markDirty} />
-                <span>Prefer IPv4 for upstream targets</span>
-              </label>
-              <span class="hint">When target domain resolves to both IPv4 and IPv6, connect via IPv4 first.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label class="switch">
-                <input type="checkbox" bind:checked={outboundIpv6Sticky} onchange={markDirty} />
-                <span>Sticky IPv6 sessions</span>
-              </label>
-              <span class="hint">Keeps the same source IP for the same client session across connections.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="outbound-prefix-input">IPv6 Prefix Pool (Optional)</label>
-              <input
-                id="outbound-prefix-input"
-                type="text"
-                placeholder="2001:db8:1234::/64"
-                bind:value={outboundIpv6Prefix}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Subnet prefix for outbound IPv6 address rotation.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="outbound-iface-input">Bind Outbound Interface (Optional)</label>
-              <input
-                id="outbound-iface-input"
-                type="text"
-                placeholder="eth0 or wg0"
-                bind:value={outboundIpv6Interface}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Network interface device to bind all upstream outbound sockets.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="outbound-prefix-iface-input">IPv6 Dynamic Prefix Interface (Optional)</label>
-              <input
-                id="outbound-prefix-iface-input"
-                type="text"
-                placeholder="eth0 or ens3"
-                bind:value={outboundIpv6PrefixInterface}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Interface from which to discover the dynamic /64 prefix pool.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="outbound-refresh-secs-input">IPv6 Prefix Refresh Interval (sec)</label>
-              <input
-                id="outbound-refresh-secs-input"
-                type="number"
-                min="10"
-                placeholder="300 (leave blank for default)"
-                bind:value={outboundIpv6RefreshSecs}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Periodic interval to rediscover dynamic IPv6 prefix from network interface.</span>
-            </div>
-
-            <div class="fieldrow">
-              <label for="tuning-profile-input">Tuning Profile</label>
-              <select id="tuning-profile-input" bind:value={tuningProfile} onchange={markDirty}>
-                <option value="large">large (Production default — 64-bit fast crypto, large socket & ring buffers)</option>
-                <option value="medium">medium (Balanced memory footprint and buffer sizes)</option>
-                <option value="small">small (Low-memory footprint, embedded/constrained environments)</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <!-- Carrier Padding & Jitter -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Carrier Padding & Jitter
-          </h3>
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label class="switch">
-                <input type="checkbox" bind:checked={paddingCover} onchange={markDirty} />
-                <span>Cover mode (pad payload up to max bytes)</span>
-              </label>
-              <span class="hint">If enabled, pads payloads up to max bytes rather than adding random bytes.</span>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label for="pad-min-input">Min Padding (bytes)</label>
-                <input
-                  id="pad-min-input"
-                  type="number"
-                  min="0"
-                  max="65535"
-                  bind:value={paddingMinBytes}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-              <div class="fieldrow">
-                <label for="pad-max-input">Max Padding (bytes)</label>
-                <input
-                  id="pad-max-input"
-                  type="number"
-                  min="0"
-                  max="65535"
-                  bind:value={paddingMaxBytes}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label for="pad-req-jitter-input">Cover Jitter Min (ms)</label>
-                <input
-                  id="pad-req-jitter-input"
-                  type="number"
-                  min="0"
-                  max="10000"
-                  bind:value={paddingCoverJitterMinMs}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-              <div class="fieldrow">
-                <label for="pad-resp-jitter-input">Cover Jitter Max (ms)</label>
-                <input
-                  id="pad-resp-jitter-input"
-                  type="number"
-                  min="0"
-                  max="10000"
-                  bind:value={paddingCoverJitterMaxMs}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <div class="fieldrow">
-              <label class="switch">
-                <input type="checkbox" bind:checked={paddingThrottleDetect} onchange={markDirty} />
-                <span>Throttle detection</span>
-              </label>
-              <span class="hint">Dynamically adapts padding behavior when carrier throttling is detected.</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- SNI Camouflage & Fallback -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-3);">
-            <div>
-              <h3 style="font-size: 14px; font-weight: 600; margin: 0;">
-                SNI Camouflage & Fallback
-              </h3>
-              <p class="desc" style="margin-top: 4px; margin-bottom: 0; font-size: 12px;">
-                Peek ClientHello on TCP listener: route legitimate proxy SNIs locally, splice foreign or non-SNI TLS probes to camouflage backends.
-              </p>
-            </div>
-            <button class="btn sm" type="button" onclick={addSniBackend}>
-              + Add Backend
-            </button>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label for="sni-match-input">Local Allowed SNI Whitelist (match_sni)</label>
-              <input
-                id="sni-match-input"
-                type="text"
-                placeholder="*.beerloga.su, myproxy.domain.com"
-                bind:value={sniMatchSni}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">SNIs handled locally by this proxy listener. Wildcards supported (*.example.com). Separated by commas.</span>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={sniAllowNoSni} onchange={markDirty} />
-                  <span>Allow connections without SNI</span>
-                </label>
-                <span class="hint">If unchecked, connections lacking SNI are forwarded to the fallback backend.</span>
-              </div>
-              <div class="fieldrow">
-                <label for="sni-max-hello-input">Max ClientHello Bytes</label>
-                <input
-                  id="sni-max-hello-input"
-                  type="number"
-                  min="256"
-                  max="65535"
-                  bind:value={sniMaxClientHelloBytes}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <!-- Backends list -->
-            <div>
-              <span style="font-size: 12px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: var(--sp-2);">
-                Fallback Backends ([[sni_fallback.backends]]):
-              </span>
-              {#if sniBackends.length === 0}
-                <div class="empty" style="padding: var(--sp-2); font-size: 12px;">
-                  No fallback backends configured. Click "+ Add Backend" above to add one.
+      <div class="tabpanels-host">
+        <!-- Tab 1: Carriers & Endpoints -->
+        <div
+          role="tabpanel"
+          aria-labelledby="settings-tab-carriers"
+          hidden={activeTab === 'carriers' ? undefined : ('until-found' as unknown as boolean)}
+          tabindex={activeTab === 'carriers' ? 0 : undefined}
+          onbeforematch={() => (activeTab = 'carriers')}
+        >
+          <div class="tabpanel-inner">
+            <div class="settings-two-col">
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>[[endpoint]] Endpoints</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="endpoints"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) =>
+                        (c.endpoints ?? []).map((ep) => ({
+                          path: ep.path,
+                          kind: inferEndpointKind(ep),
+                          padded: Boolean(ep.padded),
+                        }))}
+                      onAlign={(v) => {
+                        currShared.endpoints = (v as EditableEndpoint[]).map((ep) => ({ ...ep }));
+                      }}
+                    />
+                  {/if}
+                  <span class="spacer"></span>
+                  <button type="button" class="btn ghost sm" onclick={addEndpoint}>
+                    + Add endpoint
+                  </button>
                 </div>
-              {:else}
-                <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
-                  {#each sniBackends as b, idx}
-                    <div style="display: grid; grid-template-columns: 2fr 1.2fr 2fr auto; gap: var(--sp-2); align-items: end; background: var(--bg-surface-2, rgba(0,0,0,0.1)); padding: var(--sp-2); border-radius: var(--radius-sm, 6px); border: 1px solid var(--border-subtle, rgba(255,255,255,0.05));">
-                      <div class="fieldrow" style="margin: 0;">
-                        <label for={`sni-b-target-${idx}`} style="font-size: 11px;">Backend Target</label>
-                        <input
-                          id={`sni-b-target-${idx}`}
-                          type="text"
-                          placeholder="127.0.0.1:11443"
-                          bind:value={b.backend}
-                          oninput={markDirty}
-                          class="field-mono sm"
-                        />
+                <p class="hint" style="margin-bottom: var(--sp-3);">
+                  Path-independent carrier routes. Changing endpoint paths or kinds requires restarting the server and regenerating subscriptions.
+                </p>
+
+                {#if currShared.endpoints.length === 0}
+                  <div class="empty">No endpoints configured. Add at least one WebSocket or XHTTP endpoint.</div>
+                {:else}
+                  <div class="stack-form">
+                    {#each currShared.endpoints as ep, idx (idx)}
+                      {@const epKey = `ep:${idx}:path`}
+                      {@const epErr = fieldError(epKey)}
+                      <div class="subcard">
+                        <div class="subcard-row">
+                          <div class="fieldrow" style="flex: 2 1 180px;">
+                            <label for={`ep-path-${idx}`}>Path</label>
+                            <span id={`ep-path-hint-${idx}`} class="hint">Must start with <code>/</code> without whitespace.</span>
+                            <input
+                              id={`ep-path-${idx}`}
+                              data-val-key={epKey}
+                              type="text"
+                              class="field-mono"
+                              placeholder="/ws-ss"
+                              bind:value={ep.path}
+                              aria-invalid={epErr ? 'true' : 'false'}
+                              aria-describedby={describedBy(`ep-path-hint-${idx}`, epErr ? `ep-path-err-${idx}` : null)}
+                              onblur={() => onFieldBlur(epKey, `Endpoint #${idx + 1} path`)}
+                            />
+                            {#if epErr}
+                              <div id={`ep-path-err-${idx}`} class="field-error">
+                                <span class="err-prefix" aria-hidden="true">Error:</span> {epErr}
+                              </div>
+                            {/if}
+                          </div>
+
+                          <div class="fieldrow" style="flex: 2 1 200px;">
+                            <label for={`ep-kind-${idx}`}>Carrier &amp; Protocol (kind)</label>
+                            <select
+                              id={`ep-kind-${idx}`}
+                              class="field-mono"
+                              bind:value={ep.kind}
+                            >
+                              {#each ENDPOINT_KIND_OPTIONS as opt (opt.kind)}
+                                <option value={opt.kind}>{opt.label}</option>
+                              {/each}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div class="subcard-foot">
+                          <label class="switch">
+                            <input type="checkbox" bind:checked={ep.padded} />
+                            <span>Padding enabled (<code>padded</code>)</span>
+                          </label>
+                          <button
+                            type="button"
+                            class="btn danger sm"
+                            onclick={() => removeEndpoint(idx)}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
-                      <div class="fieldrow" style="margin: 0;">
-                        <label for={`sni-b-pp-${idx}`} style="font-size: 11px;">PROXY Protocol</label>
-                        <select id={`sni-b-pp-${idx}`} bind:value={b.proxy_protocol} onchange={markDirty} class="sm">
-                          <option value="">Disabled</option>
-                          <option value="v1">v1 (text)</option>
-                          <option value="v2">v2 (binary)</option>
-                        </select>
-                      </div>
-                      <div class="fieldrow" style="margin: 0;">
-                        <label for={`sni-b-match-${idx}`} style="font-size: 11px;">Route SNIs (Empty = Catch-all)</label>
-                        <input
-                          id={`sni-b-match-${idx}`}
-                          type="text"
-                          placeholder="Empty for catch-all default"
-                          bind:value={b.match_sni}
-                          oninput={markDirty}
-                          class="field-mono sm"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        class="btn sm danger"
-                        style="height: 32px; padding: 0 8px;"
-                        title="Remove backend"
-                        onclick={() => removeSniBackend(idx)}
-                      >
-                        ✕
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+
+              <div class="stack-form">
+                <div class="panel panel-pad">
+                  <div class="section-head-row">
+                    <h3>[shadowsocks] Cipher Method</h3>
+                    {#if isCluster}
+                      <DriftBadge
+                        fieldKey="shadowsocks.method"
+                        {drift}
+                        nodes={clusterNodes}
+                        extractValue={(c) => c.shadowsocks?.method ?? ''}
+                        onAlign={(v) => {
+                          currShared.shadowsocksMethod = String(v ?? '');
+                        }}
+                      />
+                    {/if}
+                  </div>
+                  <div class="fieldrow">
+                    <label for="ss-method-select">Shadowsocks AEAD / 2022 Method</label>
+                    <span id="ss-method-hint" class="hint">
+                      Shared server cipher method for Shadowsocks endpoints. Empty if running VLESS-only.
+                    </span>
+                    <select
+                      id="ss-method-select"
+                      class="field-mono"
+                      bind:value={currShared.shadowsocksMethod}
+                      aria-describedby="ss-method-hint"
+                    >
+                      <option value="">Not configured (VLESS-only)</option>
+                      {#each CIPHER_KINDS as kind (kind)}
+                        <option value={kind}>{kind}</option>
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+
+                <div class="panel panel-pad">
+                  <div class="section-head-row">
+                    <h3>[http_root] HTTP Root Probe</h3>
+                    {#if isCluster}
+                      <DriftBadge
+                        fieldKey="http_root"
+                        {drift}
+                        nodes={clusterNodes}
+                        extractValue={(c) => ({
+                          auth: Boolean(c.http_root?.auth),
+                          realm: c.http_root?.realm ?? '',
+                        })}
+                        onAlign={(v) => {
+                          const x = v as { auth: boolean; realm: string };
+                          currShared.httpRootAuth = Boolean(x.auth);
+                          currShared.httpRootRealm = x.realm ?? '';
+                        }}
+                      />
+                    {/if}
+                  </div>
+                  <div class="stack-form">
+                    <label class="switch">
+                      <input type="checkbox" bind:checked={currShared.httpRootAuth} />
+                      <span>Require HTTP auth / 401 camouflage on <code>/</code></span>
+                    </label>
+                    <div class="fieldrow">
+                      <label for="http-root-realm">WWW-Authenticate Realm</label>
+                      <span id="http-root-realm-hint" class="hint">
+                        Optional realm string returned when HTTP root auth is enabled.
+                      </span>
+                      <input
+                        id="http-root-realm"
+                        type="text"
+                        placeholder="Restricted Area"
+                        bind:value={currShared.httpRootRealm}
+                        aria-describedby="http-root-realm-hint"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Network & TLS -->
+        <div
+          role="tabpanel"
+          aria-labelledby="settings-tab-network"
+          hidden={activeTab === 'network' ? undefined : ('until-found' as unknown as boolean)}
+          tabindex={activeTab === 'network' ? 0 : undefined}
+          onbeforematch={() => (activeTab = 'network')}
+        >
+          <div class="tabpanel-inner">
+            {#if isCluster && clusterNodes.length > 0}
+              <div class="node-switcher panel panel-pad" style="margin-bottom: var(--sp-4);">
+                <span class="hint" style="font-size: 12px; font-weight: 600;">
+                  Per-node network settings (editing node):
+                </span>
+                <div class="health-chips">
+                  {#each clusterNodes as n (n.instance)}
+                    {@const nodeDirty = Boolean(dirtyPerNodeByHost[n.instance])}
+                    <button
+                      type="button"
+                      class="btn sm"
+                      class:primary={activeNode === n.instance}
+                      disabled={!n.ok || !currPerNodeByHost[n.instance]}
+                      onclick={() => (activeNode = n.instance)}
+                    >
+                      <span class="mono">{n.instance}</span>
+                      {#if nodeDirty}<span>*</span>{/if}
+                      {#if !n.ok}<span class="muted">(offline)</span>{/if}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            <div class="settings-two-col">
+              <!-- TCP/TLS Listener + Certs (Per-node) + Shared limit -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>TCP / TLS Listener {#if isCluster && activeNode}· <span class="mono">{activeNode}</span>{/if}</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="server.max_connections_per_ip"
+                      label="max_conn drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.server?.max_connections_per_ip ?? null}
+                      onAlign={(v) => {
+                        currShared.maxConnectionsPerIp = typeof v === 'number' ? v : null;
+                      }}
+                    />
+                  {/if}
+                </div>
+
+                {#if activePerNode}
+                  {@const listenKey = `node:${activeNode}:listen`}
+                  {@const listenErr = fieldError(listenKey)}
+                  <div class="stack-form">
+                    <div class="fieldrow">
+                      <label for="srv-listen">Listen address (per-node)</label>
+                      <span id="srv-listen-hint" class="hint">
+                        Format: <code>0.0.0.0:443</code> or <code>[::]:443</code>.
+                      </span>
+                      <input
+                        id="srv-listen"
+                        data-val-key={listenKey}
+                        type="text"
+                        class="field-mono"
+                        placeholder="0.0.0.0:443"
+                        bind:value={activePerNode.listen}
+                        aria-invalid={listenErr ? 'true' : 'false'}
+                        aria-describedby={describedBy('srv-listen-hint', listenErr ? 'srv-listen-err' : null)}
+                        onblur={() => onFieldBlur(listenKey, 'Listen address')}
+                      />
+                      {#if listenErr}
+                        <div id="srv-listen-err" class="field-error">
+                          <span class="err-prefix" aria-hidden="true">Error:</span> {listenErr}
+                        </div>
+                      {/if}
+                    </div>
+
+                    <div class="fieldrow">
+                      <label for="srv-cert-path">Default cert_path (per-node)</label>
+                      <span id="srv-cert-hint" class="hint">
+                        Setting TCP cert_path/key_path is also inherited by HTTP/3 unless <code>[[server.h3.certs]]</code> overrides it as empty.
+                      </span>
+                      <input
+                        id="srv-cert-path"
+                        type="text"
+                        class="field-mono"
+                        placeholder="/etc/letsencrypt/live/fleet.example/fullchain.pem"
+                        bind:value={activePerNode.cert_path}
+                        aria-describedby="srv-cert-hint"
+                      />
+                    </div>
+
+                    <div class="fieldrow">
+                      <label for="srv-key-path">Default key_path (per-node)</label>
+                      <input
+                        id="srv-key-path"
+                        type="text"
+                        class="field-mono"
+                        placeholder="/etc/letsencrypt/live/fleet.example/privkey.pem"
+                        bind:value={activePerNode.key_path}
+                      />
+                    </div>
+
+                    <div class="fieldrow">
+                      <label for="srv-max-conn">max_connections_per_ip (shared)</label>
+                      <span id="srv-max-conn-hint" class="hint">
+                        Leave empty for server default / unlimited. Applies to all nodes in cluster.
+                      </span>
+                      <input
+                        id="srv-max-conn"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.maxConnectionsPerIp ?? ''}
+                        aria-describedby="srv-max-conn-hint"
+                        oninput={(e) => (currShared.maxConnectionsPerIp = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+
+                    <div class="section-head-row" style="margin-top: var(--sp-2);">
+                      <strong>[[server.certs]] Multi-SNI Certificates</strong>
+                      <span class="spacer"></span>
+                      <button type="button" class="btn ghost sm" onclick={() => addCert('certs')}>
+                        + Add cert
                       </button>
+                    </div>
+                    {#each activePerNode.certs as cert, idx (idx)}
+                      {@const cKey = `node:${activeNode}:cert:${idx}`}
+                      {@const cErr = fieldError(cKey)}
+                      <div class="subcard">
+                        <div class="stack-form">
+                          <div class="fieldrow">
+                            <label for={`cert-path-${idx}`}>cert_path</label>
+                            <input
+                              id={`cert-path-${idx}`}
+                              data-val-key={cKey}
+                              type="text"
+                              class="field-mono"
+                              bind:value={cert.cert_path}
+                              aria-invalid={cErr ? 'true' : 'false'}
+                              aria-describedby={describedBy(cErr ? `cert-err-${idx}` : null)}
+                              onblur={() => onFieldBlur(cKey, `TCP cert #${idx + 1}`)}
+                            />
+                          </div>
+                          <div class="fieldrow">
+                            <label for={`cert-key-${idx}`}>key_path</label>
+                            <input
+                              id={`cert-key-${idx}`}
+                              type="text"
+                              class="field-mono"
+                              bind:value={cert.key_path}
+                              onblur={() => onFieldBlur(cKey, `TCP cert #${idx + 1}`)}
+                            />
+                          </div>
+                          <div class="fieldrow">
+                            <label for={`cert-sni-${idx}`}>SNI hostnames (comma-separated, no wildcards)</label>
+                            <input
+                              id={`cert-sni-${idx}`}
+                              type="text"
+                              class="field-mono"
+                              placeholder="edge-a.fleet.example, cdn.fleet.example"
+                              bind:value={cert.sniText}
+                              onblur={() => onFieldBlur(cKey, `TCP cert #${idx + 1} SNI`)}
+                            />
+                          </div>
+                          {#if cErr}
+                            <div id={`cert-err-${idx}`} class="field-error">
+                              <span class="err-prefix" aria-hidden="true">Error:</span> {cErr}
+                            </div>
+                          {/if}
+                          <div class="subcard-foot">
+                            <span class="spacer"></span>
+                            <button
+                              type="button"
+                              class="btn danger sm"
+                              onclick={() => removeCert('certs', idx)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- HTTP/3 & QUIC -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>HTTP/3 &amp; QUIC {#if isCluster && activeNode}· <span class="mono">{activeNode}</span>{/if}</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="server.h3_alpn"
+                      label="h3 drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.server?.h3_alpn ?? ['h3']}
+                      onAlign={(v) => {
+                        const arr = Array.isArray(v) ? v.map(String) : ['h3'];
+                        currShared.h3Alpn = arr.length ? arr : ['h3'];
+                        h3AlpnText = currShared.h3Alpn.join(', ');
+                      }}
+                    />
+                  {/if}
+                </div>
+
+                {#if activePerNode}
+                  {@const h3ListenKey = `node:${activeNode}:h3_listen`}
+                  {@const h3ListenErr = fieldError(h3ListenKey)}
+                  {@const mtuErr = fieldError('h3_initial_mtu')}
+                  {@const probeErr = fieldError('h3_mtu_first_probe')}
+                  <div class="stack-form">
+                    <div class="fieldrow">
+                      <label for="h3-listen">h3_listen (UDP socket, per-node)</label>
+                      <span id="h3-listen-hint" class="hint">
+                        Leave empty to disable HTTP/3 listener (only valid when H3 does not inherit TCP certs).
+                      </span>
+                      <input
+                        id="h3-listen"
+                        data-val-key={h3ListenKey}
+                        type="text"
+                        class="field-mono"
+                        placeholder="0.0.0.0:443"
+                        bind:value={activePerNode.h3_listen}
+                        aria-invalid={h3ListenErr ? 'true' : 'false'}
+                        aria-describedby={describedBy('h3-listen-hint', h3ListenErr ? 'h3-listen-err' : null)}
+                        onblur={() => onFieldBlur(h3ListenKey, 'H3 listen address')}
+                      />
+                      {#if h3ListenErr}
+                        <div id="h3-listen-err" class="field-error">
+                          <span class="err-prefix" aria-hidden="true">Error:</span> {h3ListenErr}
+                        </div>
+                      {/if}
+                    </div>
+
+                    <div class="fieldrow">
+                      <label for="h3-cert-path">h3_cert_path override (per-node)</label>
+                      <input
+                        id="h3-cert-path"
+                        type="text"
+                        class="field-mono"
+                        placeholder="Inherit server.cert_path"
+                        bind:value={activePerNode.h3_cert_path}
+                      />
+                    </div>
+
+                    <div class="fieldrow">
+                      <label for="h3-key-path">h3_key_path override (per-node)</label>
+                      <input
+                        id="h3-key-path"
+                        type="text"
+                        class="field-mono"
+                        placeholder="Inherit server.key_path"
+                        bind:value={activePerNode.h3_key_path}
+                      />
+                    </div>
+
+                    <label class="switch">
+                      <input type="checkbox" bind:checked={activePerNode.h3CertsCustom} />
+                      <span>Override <code>[[server.h3.certs]]</code> independently from TCP certs</span>
+                    </label>
+
+                    {#if activePerNode.h3CertsCustom}
+                      <div class="section-head-row">
+                        <strong>[[server.h3.certs]] Custom H3 Certs</strong>
+                        <span class="spacer"></span>
+                        <button type="button" class="btn ghost sm" onclick={() => addCert('h3_certs')}>
+                          + Add H3 cert
+                        </button>
+                      </div>
+                      {#each activePerNode.h3_certs as cert, idx (idx)}
+                        {@const hcKey = `node:${activeNode}:h3cert:${idx}`}
+                        {@const hcErr = fieldError(hcKey)}
+                        <div class="subcard">
+                          <div class="stack-form">
+                            <div class="fieldrow">
+                              <label for={`h3cert-path-${idx}`}>cert_path</label>
+                              <input
+                                id={`h3cert-path-${idx}`}
+                                data-val-key={hcKey}
+                                type="text"
+                                class="field-mono"
+                                bind:value={cert.cert_path}
+                                aria-invalid={hcErr ? 'true' : 'false'}
+                                aria-describedby={describedBy(hcErr ? `h3cert-err-${idx}` : null)}
+                                onblur={() => onFieldBlur(hcKey, `H3 cert #${idx + 1}`)}
+                              />
+                            </div>
+                            <div class="fieldrow">
+                              <label for={`h3cert-key-${idx}`}>key_path</label>
+                              <input
+                                id={`h3cert-key-${idx}`}
+                                type="text"
+                                class="field-mono"
+                                bind:value={cert.key_path}
+                                onblur={() => onFieldBlur(hcKey, `H3 cert #${idx + 1}`)}
+                              />
+                            </div>
+                            <div class="fieldrow">
+                              <label for={`h3cert-sni-${idx}`}>SNI hostnames (comma-separated)</label>
+                              <input
+                                id={`h3cert-sni-${idx}`}
+                                type="text"
+                                class="field-mono"
+                                bind:value={cert.sniText}
+                                onblur={() => onFieldBlur(hcKey, `H3 cert #${idx + 1} SNI`)}
+                              />
+                            </div>
+                            {#if hcErr}
+                              <div id={`h3cert-err-${idx}`} class="field-error">
+                                <span class="err-prefix" aria-hidden="true">Error:</span> {hcErr}
+                              </div>
+                            {/if}
+                            <div class="subcard-foot">
+                              <span class="spacer"></span>
+                              <button
+                                type="button"
+                                class="btn danger sm"
+                                onclick={() => removeCert('h3_certs', idx)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      {/each}
+                    {/if}
+
+                    <div class="fieldrow">
+                      <label for="h3-alpn">h3_alpn protocols (shared)</label>
+                      <span id="h3-alpn-hint" class="hint">Comma-separated ALPN tokens, default: <code>h3</code>.</span>
+                      <input
+                        id="h3-alpn"
+                        type="text"
+                        class="field-mono"
+                        value={h3AlpnText}
+                        aria-describedby="h3-alpn-hint"
+                        oninput={(e) => onH3AlpnInput(e.currentTarget.value)}
+                      />
+                    </div>
+
+                    <div class="section-head-row">
+                      <label class="switch">
+                        <input type="checkbox" bind:checked={currShared.h3UdpDatagrams} />
+                        <span>Enable QUIC H3 datagrams (<code>h3_udp_datagrams</code>, shared)</span>
+                      </label>
+                      {#if isCluster}
+                        <DriftBadge
+                          fieldKey="server.h3_udp_datagrams"
+                          {drift}
+                          nodes={clusterNodes}
+                          extractValue={(c) => c.server?.h3_udp_datagrams ?? true}
+                          onAlign={(v) => (currShared.h3UdpDatagrams = Boolean(v))}
+                        />
+                      {/if}
+                    </div>
+
+                    <div class="subcard-row">
+                      <div class="fieldrow" style="flex: 1 1 160px;">
+                        <div class="section-head-row">
+                          <label for="h3-init-mtu">h3_initial_mtu (shared)</label>
+                          {#if isCluster}
+                            <DriftBadge
+                              fieldKey="server.h3_initial_mtu"
+                              {drift}
+                              nodes={clusterNodes}
+                              extractValue={(c) => c.server?.h3_initial_mtu ?? null}
+                              onAlign={(v) => (currShared.h3InitialMtu = typeof v === 'number' ? v : null)}
+                            />
+                          {/if}
+                        </div>
+                        <span id="h3-init-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
+                        <input
+                          id="h3-init-mtu"
+                          data-val-key="h3_initial_mtu"
+                          type="number"
+                          min="1200"
+                          max="1452"
+                          class="field-mono"
+                          value={currShared.h3InitialMtu ?? ''}
+                          aria-invalid={mtuErr ? 'true' : 'false'}
+                          aria-describedby={describedBy('h3-init-mtu-hint', mtuErr ? 'h3-init-mtu-err' : null)}
+                          oninput={(e) => (currShared.h3InitialMtu = optInt(e.currentTarget.value))}
+                          onblur={() => onFieldBlur('h3_initial_mtu', 'H3 initial MTU')}
+                        />
+                        {#if mtuErr}
+                          <div id="h3-init-mtu-err" class="field-error">
+                            <span class="err-prefix" aria-hidden="true">Error:</span> {mtuErr}
+                          </div>
+                        {/if}
+                      </div>
+
+                      <div class="fieldrow" style="flex: 1 1 160px;">
+                        <div class="section-head-row">
+                          <label for="h3-probe-mtu">h3_mtu_first_probe (shared)</label>
+                          {#if isCluster}
+                            <DriftBadge
+                              fieldKey="server.h3_mtu_first_probe"
+                              {drift}
+                              nodes={clusterNodes}
+                              extractValue={(c) => c.server?.h3_mtu_first_probe ?? null}
+                              onAlign={(v) => (currShared.h3MtuFirstProbe = typeof v === 'number' ? v : null)}
+                            />
+                          {/if}
+                        </div>
+                        <span id="h3-probe-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
+                        <input
+                          id="h3-probe-mtu"
+                          data-val-key="h3_mtu_first_probe"
+                          type="number"
+                          min="1200"
+                          max="1452"
+                          class="field-mono"
+                          value={currShared.h3MtuFirstProbe ?? ''}
+                          aria-invalid={probeErr ? 'true' : 'false'}
+                          aria-describedby={describedBy('h3-probe-mtu-hint', probeErr ? 'h3-probe-mtu-err' : null)}
+                          oninput={(e) => (currShared.h3MtuFirstProbe = optInt(e.currentTarget.value))}
+                          onblur={() => onFieldBlur('h3_mtu_first_probe', 'H3 first MTU probe')}
+                        />
+                        {#if probeErr}
+                          <div id="h3-probe-mtu-err" class="field-error">
+                            <span class="err-prefix" aria-hidden="true">Error:</span> {probeErr}
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Outbound Routing -->
+              <div class="panel panel-pad" style="grid-column: 1 / -1;">
+                <div class="section-head-row">
+                  <h3>[outbound] Outbound Routing &amp; IPv6</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="outbound.prefer_ipv4"
+                      label="prefer_ipv4 drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => Boolean(c.outbound?.prefer_ipv4)}
+                      onAlign={(v) => applyAlignedOutboundField('prefer_ipv4', v)}
+                    />
+                    <DriftBadge
+                      fieldKey="outbound.block_private_ips"
+                      label="block_private_ips drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => Boolean(c.outbound?.block_private_ips)}
+                      onAlign={(v) => applyAlignedOutboundField('block_private_ips', v)}
+                    />
+                    <DriftBadge
+                      fieldKey="outbound.allowed_subnets"
+                      label="allowed_subnets drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.outbound?.allowed_subnets ?? []}
+                      onAlign={(v) => applyAlignedOutboundField('allowedSubnetsText', v)}
+                    />
+                  {/if}
+                </div>
+
+                <div class="settings-two-col">
+                  <div class="stack-form">
+                    <label class="switch">
+                      <input type="checkbox" bind:checked={currShared.outboundShared.prefer_ipv4} />
+                      <span>Prefer IPv4 DNS targets (<code>prefer_ipv4</code>, shared)</span>
+                    </label>
+                    <label class="switch">
+                      <input type="checkbox" bind:checked={currShared.outboundShared.ipv6_sticky} />
+                      <span>Sticky IPv6 source per destination (<code>ipv6_sticky</code>, shared)</span>
+                    </label>
+                    <label class="switch">
+                      <input type="checkbox" bind:checked={currShared.outboundShared.block_private_ips} />
+                      <span>Block outbound private/loopback IP ranges (SSRF guard, shared)</span>
+                    </label>
+                    <div class="subcard-row">
+                      <div class="fieldrow" style="flex: 1 1 160px;">
+                        <label for="out-sticky-ttl">ipv6_sticky_ttl_secs</label>
+                        <input
+                          id="out-sticky-ttl"
+                          type="number"
+                          min="1"
+                          class="field-mono"
+                          value={currShared.outboundShared.ipv6_sticky_ttl_secs ?? ''}
+                          oninput={(e) =>
+                            (currShared.outboundShared.ipv6_sticky_ttl_secs = optInt(e.currentTarget.value))}
+                        />
+                      </div>
+                      <div class="fieldrow" style="flex: 1 1 160px;">
+                        <label for="out-refresh">ipv6_refresh_secs</label>
+                        <input
+                          id="out-refresh"
+                          type="number"
+                          min="0"
+                          class="field-mono"
+                          value={currShared.outboundShared.ipv6_refresh_secs ?? ''}
+                          oninput={(e) =>
+                            (currShared.outboundShared.ipv6_refresh_secs = optInt(e.currentTarget.value))}
+                        />
+                      </div>
+                    </div>
+                    <div class="fieldrow">
+                      <label for="out-subnets">allowed_subnets (shared CIDR whitelist override)</label>
+                      <span id="out-subnets-hint" class="hint">
+                        Comma- or newline-separated CIDRs permitted even when <code>block_private_ips</code> is active.
+                      </span>
+                      <textarea
+                        id="out-subnets"
+                        rows="2"
+                        class="field-mono"
+                        placeholder="198.51.100.0/24"
+                        bind:value={currShared.outboundShared.allowedSubnetsText}
+                        aria-describedby="out-subnets-hint"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  {#if activePerNode}
+                    <div class="stack-form">
+                      <div class="fieldrow">
+                        <label for="out-v6-prefix">ipv6_prefix ({activeNode || 'node'} per-node)</label>
+                        <input
+                          id="out-v6-prefix"
+                          type="text"
+                          class="field-mono"
+                          placeholder="2001:db8:1::/48"
+                          bind:value={activePerNode.ipv6_prefix}
+                        />
+                      </div>
+                      <div class="fieldrow">
+                        <label for="out-v6-iface">ipv6_interface ({activeNode || 'node'} per-node)</label>
+                        <input
+                          id="out-v6-iface"
+                          type="text"
+                          class="field-mono"
+                          placeholder="eth0"
+                          bind:value={activePerNode.ipv6_interface}
+                        />
+                      </div>
+                      <div class="fieldrow">
+                        <label for="out-v6-piface">ipv6_prefix_interface ({activeNode || 'node'} per-node)</label>
+                        <input
+                          id="out-v6-piface"
+                          type="text"
+                          class="field-mono"
+                          placeholder="eth0"
+                          bind:value={activePerNode.ipv6_prefix_interface}
+                        />
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Resumption & Camouflage -->
+        <div
+          role="tabpanel"
+          aria-labelledby="settings-tab-camouflage"
+          hidden={activeTab === 'camouflage' ? undefined : ('until-found' as unknown as boolean)}
+          tabindex={activeTab === 'camouflage' ? 0 : undefined}
+          onbeforematch={() => (activeTab = 'camouflage')}
+        >
+          <div class="tabpanel-inner">
+            <div class="settings-two-col">
+              <!-- Session Resumption -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>[session_resumption] Session Resumption</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="session_resumption"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.session_resumption}
+                      onAlign={(v) => {
+                        const sr = sharedFromConfig({
+                          ...EMPTY_CFG,
+                          session_resumption: v as ServerConfigResponse['session_resumption'],
+                        }).sessionResumption;
+                        currShared.sessionResumption = sr;
+                      }}
+                    />
+                  {/if}
+                </div>
+                <div class="stack-form">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.sessionResumption.enabled} />
+                    <span>Enable cross-carrier session resumption</span>
+                  </label>
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 150px;">
+                      <label for="sr-ttl-tcp">orphan_ttl_tcp_secs</label>
+                      <input
+                        id="sr-ttl-tcp"
+                        type="number"
+                        min="1"
+                        class="field-mono"
+                        value={currShared.sessionResumption.orphan_ttl_tcp_secs ?? ''}
+                        oninput={(e) =>
+                          (currShared.sessionResumption.orphan_ttl_tcp_secs = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 150px;">
+                      <label for="sr-ttl-udp">orphan_ttl_udp_secs</label>
+                      <input
+                        id="sr-ttl-udp"
+                        type="number"
+                        min="1"
+                        class="field-mono"
+                        value={currShared.sessionResumption.orphan_ttl_udp_secs ?? ''}
+                        oninput={(e) =>
+                          (currShared.sessionResumption.orphan_ttl_udp_secs = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                  </div>
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 150px;">
+                      <label for="sr-user-cap">orphan_per_user_cap</label>
+                      <input
+                        id="sr-user-cap"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.sessionResumption.orphan_per_user_cap ?? ''}
+                        oninput={(e) =>
+                          (currShared.sessionResumption.orphan_per_user_cap = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 150px;">
+                      <label for="sr-global-cap">orphan_global_cap</label>
+                      <input
+                        id="sr-global-cap"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.sessionResumption.orphan_global_cap ?? ''}
+                        oninput={(e) =>
+                          (currShared.sessionResumption.orphan_global_cap = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                  </div>
+                  <div class="fieldrow">
+                    <label for="sr-downlink">downlink_buffer_bytes</label>
+                    <span id="sr-downlink-hint" class="hint">
+                      Per-session orphan buffer in bytes{#if currShared.sessionResumption.downlink_buffer_bytes != null} ({Math.round(currShared.sessionResumption.downlink_buffer_bytes / 1024)} KiB){/if}.
+                    </span>
+                    <input
+                      id="sr-downlink"
+                      type="number"
+                      min="1024"
+                      class="field-mono"
+                      value={currShared.sessionResumption.downlink_buffer_bytes ?? ''}
+                      aria-describedby="sr-downlink-hint"
+                      oninput={(e) =>
+                        (currShared.sessionResumption.downlink_buffer_bytes = optInt(e.currentTarget.value))}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Padding (all 11 fields) -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>[padding] Traffic Padding &amp; Throttle Guard</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="padding"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.padding}
+                      onAlign={(v) => {
+                        currShared.padding = sharedFromConfig({
+                          ...EMPTY_CFG,
+                          padding: v as ServerConfigResponse['padding'],
+                        }).padding;
+                      }}
+                    />
+                  {/if}
+                </div>
+                <div class="stack-form">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.padding.cover} />
+                    <span>Enable periodic cover traffic (<code>cover</code>)</span>
+                  </label>
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-min">min_bytes</label>
+                      <input
+                        id="pad-min"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.padding.min_bytes ?? ''}
+                        oninput={(e) => (currShared.padding.min_bytes = optInt(e.currentTarget.value))}
+                        onblur={() => onFieldBlur('padding.max_bytes', 'Padding min/max bytes')}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-max">max_bytes</label>
+                      <input
+                        id="pad-max"
+                        data-val-key="padding.max_bytes"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.padding.max_bytes ?? ''}
+                        aria-invalid={padBytesErr ? 'true' : 'false'}
+                        aria-describedby={describedBy(padBytesErr ? 'pad-bytes-err' : null)}
+                        oninput={(e) => (currShared.padding.max_bytes = optInt(e.currentTarget.value))}
+                        onblur={() => onFieldBlur('padding.max_bytes', 'Padding max_bytes')}
+                      />
+                    </div>
+                  </div>
+                  {#if padBytesErr}
+                    <div id="pad-bytes-err" class="field-error">
+                      <span class="err-prefix" aria-hidden="true">Error:</span> {padBytesErr}
+                    </div>
+                  {/if}
+
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-jmin">cover_jitter_min_ms</label>
+                      <input
+                        id="pad-jmin"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.padding.cover_jitter_min_ms ?? ''}
+                        oninput={(e) =>
+                          (currShared.padding.cover_jitter_min_ms = optInt(e.currentTarget.value))}
+                        onblur={() => onFieldBlur('padding.jitter_max', 'Padding jitter min/max')}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-jmax">cover_jitter_max_ms</label>
+                      <input
+                        id="pad-jmax"
+                        data-val-key="padding.jitter_max"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.padding.cover_jitter_max_ms ?? ''}
+                        aria-invalid={padJitterErr ? 'true' : 'false'}
+                        aria-describedby={describedBy(padJitterErr ? 'pad-jitter-err' : null)}
+                        oninput={(e) =>
+                          (currShared.padding.cover_jitter_max_ms = optInt(e.currentTarget.value))}
+                        onblur={() => onFieldBlur('padding.jitter_max', 'Padding cover_jitter_max_ms')}
+                      />
+                    </div>
+                  </div>
+                  {#if padJitterErr}
+                    <div id="pad-jitter-err" class="field-error">
+                      <span class="err-prefix" aria-hidden="true">Error:</span> {padJitterErr}
+                    </div>
+                  {/if}
+
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.padding.throttle_detect_enabled} />
+                    <span>Detect provider throttling (<code>throttle_detect_enabled</code>)</span>
+                  </label>
+
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-tratio">throttle_ratio_percent</label>
+                      <input
+                        id="pad-tratio"
+                        type="number"
+                        min="1"
+                        max="100"
+                        class="field-mono"
+                        value={currShared.padding.throttle_ratio_percent ?? ''}
+                        oninput={(e) =>
+                          (currShared.padding.throttle_ratio_percent = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-twindow">throttle_window_secs</label>
+                      <input
+                        id="pad-twindow"
+                        type="number"
+                        min="1"
+                        class="field-mono"
+                        value={currShared.padding.throttle_window_secs ?? ''}
+                        oninput={(e) =>
+                          (currShared.padding.throttle_window_secs = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                  </div>
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-tsustain">throttle_sustain_windows</label>
+                      <input
+                        id="pad-tsustain"
+                        type="number"
+                        min="1"
+                        class="field-mono"
+                        value={currShared.padding.throttle_sustain_windows ?? ''}
+                        oninput={(e) =>
+                          (currShared.padding.throttle_sustain_windows = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 140px;">
+                      <label for="pad-tminbps">throttle_min_bytes_per_sec</label>
+                      <input
+                        id="pad-tminbps"
+                        type="number"
+                        min="0"
+                        class="field-mono"
+                        value={currShared.padding.throttle_min_bytes_per_sec ?? ''}
+                        oninput={(e) =>
+                          (currShared.padding.throttle_min_bytes_per_sec = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                  </div>
+                  <div class="fieldrow">
+                    <label for="pad-tcooldown">throttle_signal_cooldown_secs</label>
+                    <input
+                      id="pad-tcooldown"
+                      type="number"
+                      min="0"
+                      class="field-mono"
+                      value={currShared.padding.throttle_signal_cooldown_secs ?? ''}
+                      oninput={(e) =>
+                        (currShared.padding.throttle_signal_cooldown_secs = optInt(e.currentTarget.value))}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <!-- HTTP Fallback -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>[http_fallback] Reverse Proxy Fallback</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="http_fallback"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.http_fallback}
+                      onAlign={(v) => {
+                        currShared.httpFallback = sharedFromConfig({
+                          ...EMPTY_CFG,
+                          http_fallback: v as ServerConfigResponse['http_fallback'],
+                        }).httpFallback;
+                      }}
+                    />
+                  {/if}
+                </div>
+                <div class="stack-form">
+                  <div class="fieldrow">
+                    <label for="hf-backend">Backend URL</label>
+                    <span id="hf-backend-hint" class="hint">
+                      Plain HTTP upstream (e.g. <code>http://127.0.0.1:8080</code>). Leave blank to disable HTTP fallback.
+                    </span>
+                    <input
+                      id="hf-backend"
+                      data-val-key="http_fallback.backend"
+                      type="text"
+                      class="field-mono"
+                      placeholder="http://127.0.0.1:8080"
+                      bind:value={currShared.httpFallback.backend}
+                      aria-invalid={hfErr ? 'true' : 'false'}
+                      aria-describedby={describedBy('hf-backend-hint', hfErr ? 'hf-backend-err' : null)}
+                      onblur={() => onFieldBlur('http_fallback.backend', 'HTTP fallback backend')}
+                    />
+                    {#if hfErr}
+                      <div id="hf-backend-err" class="field-error">
+                        <span class="err-prefix" aria-hidden="true">Error:</span> {hfErr}
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="subcard-row">
+                    <div class="fieldrow" style="flex: 1 1 130px;">
+                      <label for="hf-proto">backend_proto</label>
+                      <select id="hf-proto" bind:value={currShared.httpFallback.backend_proto}>
+                        <option value="">auto</option>
+                        <option value="h1">h1</option>
+                        <option value="h2">h2</option>
+                      </select>
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 130px;">
+                      <label for="hf-proxy">proxy_protocol</label>
+                      <select id="hf-proxy" bind:value={currShared.httpFallback.proxy_protocol}>
+                        <option value="">none</option>
+                        <option value="v1">v1</option>
+                        <option value="v2">v2</option>
+                      </select>
+                    </div>
+                    <div class="fieldrow" style="flex: 1 1 130px;">
+                      <label for="hf-timeout">request_timeout_secs</label>
+                      <input
+                        id="hf-timeout"
+                        type="number"
+                        min="1"
+                        class="field-mono"
+                        value={currShared.httpFallback.request_timeout_secs ?? ''}
+                        oninput={(e) =>
+                          (currShared.httpFallback.request_timeout_secs = optInt(e.currentTarget.value))}
+                      />
+                    </div>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.httpFallback.apply_to_h1} />
+                    <span>Apply to HTTP/1.1 &amp; HTTP/2 (<code>apply_to_h1</code>)</span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.httpFallback.apply_to_h3} />
+                    <span>Apply to HTTP/3 (<code>apply_to_h3</code>)</span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.httpFallback.add_x_forwarded_for} />
+                    <span>Add X-Forwarded-For</span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.httpFallback.add_x_forwarded_proto} />
+                    <span>Add X-Forwarded-Proto</span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.httpFallback.add_x_forwarded_host} />
+                    <span>Add X-Forwarded-Host</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- SNI Fallback -->
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>[sni_fallback] TLS Passthrough</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="sni_fallback"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.sni_fallback}
+                      onAlign={(v) => {
+                        currShared.sniFallback = sharedFromConfig({
+                          ...EMPTY_CFG,
+                          sni_fallback: v as ServerConfigResponse['sni_fallback'],
+                        }).sniFallback;
+                      }}
+                    />
+                  {/if}
+                  <span class="spacer"></span>
+                  <button type="button" class="btn ghost sm" onclick={addSniBackend}>
+                    + Add SNI backend
+                  </button>
+                </div>
+                <div class="stack-form">
+                  <div class="fieldrow">
+                    <label for="sni-match">match_sni patterns (comma/newline-separated)</label>
+                    <span id="sni-match-hint" class="hint">
+                      SNI hostnames or patterns intercepted before local TLS termination. Clear both lists to disable SNI fallback.
+                    </span>
+                    <textarea
+                      id="sni-match"
+                      data-val-key="sni_fallback.match_sni"
+                      rows="2"
+                      class="field-mono"
+                      placeholder="decoy.fleet.example"
+                      bind:value={currShared.sniFallback.matchSniText}
+                      aria-invalid={sniMatchErr ? 'true' : 'false'}
+                      aria-describedby={describedBy('sni-match-hint', sniMatchErr ? 'sni-match-err' : null)}
+                      onblur={() => onFieldBlur('sni_fallback.match_sni', 'SNI fallback match_sni')}
+                    ></textarea>
+                    {#if sniMatchErr}
+                      <div id="sni-match-err" class="field-error">
+                        <span class="err-prefix" aria-hidden="true">Error:</span> {sniMatchErr}
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="subcard-row">
+                    <label class="switch" style="flex: 1 1 200px;">
+                      <input type="checkbox" bind:checked={currShared.sniFallback.allow_no_sni} />
+                      <span>allow_no_sni</span>
+                    </label>
+                    <div class="fieldrow" style="flex: 1 1 180px;">
+                      <label for="sni-hello-bytes">max_client_hello_bytes (&gt;= 256)</label>
+                      <input
+                        id="sni-hello-bytes"
+                        data-val-key="sni_fallback.max_hello"
+                        type="number"
+                        min="256"
+                        class="field-mono"
+                        value={currShared.sniFallback.max_client_hello_bytes ?? ''}
+                        aria-invalid={sniHelloErr ? 'true' : 'false'}
+                        aria-describedby={describedBy(sniHelloErr ? 'sni-hello-err' : null)}
+                        oninput={(e) =>
+                          (currShared.sniFallback.max_client_hello_bytes = optInt(e.currentTarget.value))}
+                        onblur={() => onFieldBlur('sni_fallback.max_hello', 'max_client_hello_bytes')}
+                      />
+                      {#if sniHelloErr}
+                        <div id="sni-hello-err" class="field-error">
+                          <span class="err-prefix" aria-hidden="true">Error:</span> {sniHelloErr}
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+
+                  {#each currShared.sniFallback.backends as b, idx (idx)}
+                    {@const sbKey = `sni_fallback.backend:${idx}`}
+                    {@const sbErr = fieldError(sbKey)}
+                    <div class="subcard">
+                      <div class="stack-form">
+                        <div class="subcard-row">
+                          <div class="fieldrow" style="flex: 2 1 170px;">
+                            <label for={`sni-b-addr-${idx}`}>Backend host:port</label>
+                            <input
+                              id={`sni-b-addr-${idx}`}
+                              data-val-key={sbKey}
+                              type="text"
+                              class="field-mono"
+                              placeholder="127.0.0.1:8443"
+                              bind:value={b.backend}
+                              aria-invalid={sbErr ? 'true' : 'false'}
+                              aria-describedby={describedBy(sbErr ? `sni-b-err-${idx}` : null)}
+                              onblur={() => onFieldBlur(sbKey, `SNI backend #${idx + 1}`)}
+                            />
+                          </div>
+                          <div class="fieldrow" style="flex: 1 1 110px;">
+                            <label for={`sni-b-pp-${idx}`}>proxy_protocol</label>
+                            <select id={`sni-b-pp-${idx}`} bind:value={b.proxy_protocol}>
+                              <option value="">none</option>
+                              <option value="v1">v1</option>
+                              <option value="v2">v2</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="fieldrow">
+                          <label for={`sni-b-match-${idx}`}>match_sni (optional for last catch-all backend)</label>
+                          <input
+                            id={`sni-b-match-${idx}`}
+                            type="text"
+                            class="field-mono"
+                            placeholder="decoy.fleet.example"
+                            bind:value={b.matchSniText}
+                            onblur={() => onFieldBlur(sbKey, `SNI backend #${idx + 1} match_sni`)}
+                          />
+                        </div>
+                        {#if sbErr}
+                          <div id={`sni-b-err-${idx}`} class="field-error">
+                            <span class="err-prefix" aria-hidden="true">Error:</span> {sbErr}
+                          </div>
+                        {/if}
+                        <div class="subcard-foot">
+                          <span class="spacer"></span>
+                          <button
+                            type="button"
+                            class="btn danger sm"
+                            onclick={() => removeSniBackend(idx)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   {/each}
                 </div>
-              {/if}
-            </div>
-          </div>
-        </div>
-
-        <!-- HTTP Camouflage & Fallback -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            HTTP Camouflage & Fallback
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px;">
-            Reverse proxy unauthenticated HTTP probes to a real website to camouflage proxy listeners.
-          </p>
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div class="fieldrow">
-              <label for="fallback-backend-input">Fallback Backend Target (Optional)</label>
-              <input
-                id="fallback-backend-input"
-                type="text"
-                placeholder="http://127.0.0.1:8080"
-                bind:value={fallbackBackend}
-                oninput={markDirty}
-                class="field-mono"
-              />
-              <span class="hint">Scheme and host:port of camouflage website (e.g. http://127.0.0.1:8080).</span>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label for="fallback-proto-input">Backend Protocol</label>
-                <select id="fallback-proto-input" bind:value={fallbackBackendProto} onchange={markDirty}>
-                  <option value="">auto (HTTP/1.1)</option>
-                  <option value="h1">HTTP/1.1</option>
-                  <option value="h2">HTTP/2</option>
-                </select>
-              </div>
-              <div class="fieldrow">
-                <label for="fallback-timeout-input">Timeout (sec)</label>
-                <input
-                  id="fallback-timeout-input"
-                  type="number"
-                  min="1"
-                  max="300"
-                  bind:value={fallbackTimeoutSecs}
-                  oninput={markDirty}
-                  class="field-mono"
-                />
-              </div>
-            </div>
-
-            <div class="fieldrow">
-              <label for="fallback-proxy-proto-input">PROXY Protocol</label>
-              <select id="fallback-proxy-proto-input" bind:value={fallbackProxyProtocol} onchange={markDirty}>
-                <option value="">Disabled</option>
-                <option value="v1">PROXY Protocol v1 (text)</option>
-                <option value="v2">PROXY Protocol v2 (binary)</option>
-              </select>
-              <span class="hint">Pass real client IP to backend via PROXY protocol header. (Note: apply_to_h3 requires v2 or Disabled).</span>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={fallbackApplyH1} onchange={markDirty} />
-                  <span>Apply to HTTP/1.1 & H2</span>
-                </label>
-              </div>
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={fallbackApplyH3} onchange={markDirty} />
-                  <span>Apply to HTTP/3</span>
-                </label>
-              </div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: var(--sp-1);">
-              <span style="font-size: 12px; font-weight: 500; color: var(--text-muted);">Forwarding Headers:</span>
-              <div style="display: flex; gap: var(--sp-3); flex-wrap: wrap;">
-                <label class="switch" style="font-size: 12px;">
-                  <input type="checkbox" bind:checked={fallbackXFwdFor} onchange={markDirty} />
-                  <span>X-Forwarded-For</span>
-                </label>
-                <label class="switch" style="font-size: 12px;">
-                  <input type="checkbox" bind:checked={fallbackXFwdProto} onchange={markDirty} />
-                  <span>X-Forwarded-Proto</span>
-                </label>
-                <label class="switch" style="font-size: 12px;">
-                  <input type="checkbox" bind:checked={fallbackXFwdHost} onchange={markDirty} />
-                  <span>X-Forwarded-Host</span>
-                </label>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Configured Carrier Endpoints -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-3);">
-            Carrier Endpoints
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px;">
-            Active transport pathways configured on this server for proxy traffic.
-          </p>
+        <!-- Tab 4: Subscriptions -->
+        <div
+          role="tabpanel"
+          aria-labelledby="settings-tab-subscriptions"
+          hidden={activeTab === 'subscriptions' ? undefined : ('until-found' as unknown as boolean)}
+          tabindex={activeTab === 'subscriptions' ? 0 : undefined}
+          onbeforematch={() => (activeTab = 'subscriptions')}
+        >
+          <div class="tabpanel-inner">
+            <div class="panel panel-pad">
+              <div class="section-head-row">
+                <h3>[access_keys] Subscription Generation &amp; Links</h3>
+                {#if isCluster}
+                  <DriftBadge
+                    fieldKey="access_keys.nodes"
+                    label="nodes drift"
+                    {drift}
+                    nodes={clusterNodes}
+                    extractValue={(c) => c.access_keys?.nodes ?? []}
+                    onAlign={(v) => {
+                      currShared.accessKeys.nodesText = Array.isArray(v) ? v.map(String).join('\n') : '';
+                    }}
+                  />
+                {/if}
+                <span class="spacer"></span>
+                {#if !isCluster}
+                  <button
+                    type="button"
+                    class="btn sm"
+                    disabled={regenerating || !singleRes?.control?.access_keys_enabled}
+                    onclick={regenerateNow}
+                    title={singleRes?.control?.access_keys_enabled
+                      ? 'Run generator with --prune now'
+                      : 'Configure [control].access_keys_generator first'}
+                  >
+                    {regenerating ? 'Regenerating…' : 'Regenerate subscriptions'}
+                  </button>
+                {/if}
+              </div>
+              <p class="hint" style="margin-bottom: var(--sp-3);">
+                Changes inside <code>[access_keys]</code> apply immediately without restarting <code>outline-server</code>. Always regenerate subscriptions afterward to publish updated links and prune removed users.
+              </p>
 
-          {#if editableEndpoints.length === 0}
-            <div class="empty" style="padding: var(--sp-3);">No carrier endpoints configured.</div>
-          {:else}
-            <table>
-              <thead>
-                <tr>
-                  <th>Path</th>
-                  <th>Transport</th>
-                  <th>Protocol</th>
-                  <th>Padding</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each editableEndpoints as ep}
-                  <tr>
-                    <td><span class="field-mono" style="font-weight: 600;">{ep.path}</span></td>
-                    <td><span class="chip info">{ep.transport}</span></td>
-                    <td><span class="chip ok">{ep.protocol}</span></td>
-                    <td>
-                      <label class="switch" style="cursor: pointer; margin: 0; display: inline-flex; align-items: center; gap: var(--sp-2);">
-                        <input
-                          type="checkbox"
-                          bind:checked={ep.padded}
-                          onchange={markDirty}
+              <div class="settings-two-col">
+                <div class="stack-form">
+                  <div class="fieldrow">
+                    <div class="section-head-row">
+                      <label for="ak-public-host">public_host</label>
+                      {#if isCluster}
+                        <DriftBadge
+                          fieldKey="access_keys.public_host"
+                          {drift}
+                          nodes={clusterNodes}
+                          extractValue={(c) => c.access_keys?.public_host ?? ''}
+                          onAlign={(v) => (currShared.accessKeys.public_host = String(v ?? ''))}
                         />
-                        <span class="chip" class:pos={ep.padded} class:off={!ep.padded}>
-                          {ep.padded ? 'Padded' : 'Plain'}
-                        </span>
-                      </label>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
+                      {/if}
+                    </div>
+                    <span id="ak-public-host-hint" class="hint">
+                      Public domain or address clients connect to for single-node links.
+                    </span>
+                    <input
+                      id="ak-public-host"
+                      type="text"
+                      class="field-mono"
+                      placeholder="edge.fleet.example"
+                      bind:value={currShared.accessKeys.public_host}
+                      aria-describedby="ak-public-host-hint"
+                    />
+                  </div>
+
+                  <div class="fieldrow">
+                    <div class="section-head-row">
+                      <label for="ak-public-scheme">public_scheme</label>
+                      {#if isCluster}
+                        <DriftBadge
+                          fieldKey="access_keys.public_scheme"
+                          {drift}
+                          nodes={clusterNodes}
+                          extractValue={(c) => c.access_keys?.public_scheme ?? ''}
+                          onAlign={(v) => {
+                            const s = String(v ?? '');
+                            currShared.accessKeys.public_scheme = s === 'ws' || s === 'wss' ? s : '';
+                          }}
+                        />
+                      {/if}
+                    </div>
+                    <select
+                      id="ak-public-scheme"
+                      data-val-key="access_keys.public_scheme"
+                      class="field-mono"
+                      bind:value={currShared.accessKeys.public_scheme}
+                      aria-invalid={schemeErr ? 'true' : 'false'}
+                      aria-describedby={describedBy(schemeErr ? 'ak-scheme-err' : null)}
+                      onblur={() => onFieldBlur('access_keys.public_scheme', 'public_scheme')}
+                    >
+                      <option value="">auto (infer from TLS config)</option>
+                      <option value="wss">wss</option>
+                      <option value="ws">ws</option>
+                    </select>
+                    {#if schemeErr}
+                      <div id="ak-scheme-err" class="field-error">
+                        <span class="err-prefix" aria-hidden="true">Error:</span> {schemeErr}
+                      </div>
+                    {/if}
+                  </div>
+
+                  <div class="fieldrow">
+                    <div class="section-head-row">
+                      <label for="ak-url-base">url_base</label>
+                      {#if isCluster}
+                        <DriftBadge
+                          fieldKey="access_keys.url_base"
+                          {drift}
+                          nodes={clusterNodes}
+                          extractValue={(c) => c.access_keys?.url_base ?? ''}
+                          onAlign={(v) => (currShared.accessKeys.url_base = String(v ?? ''))}
+                        />
+                      {/if}
+                    </div>
+                    <span id="ak-url-base-hint" class="hint">
+                      Base HTTP URL serving generated subscription artifacts (for <code>ssconf://</code> / <code>wsconf://</code> / <code>happ://</code> links).
+                    </span>
+                    <input
+                      id="ak-url-base"
+                      type="text"
+                      class="field-mono"
+                      placeholder="https://sub.fleet.example/keys"
+                      bind:value={currShared.accessKeys.url_base}
+                      aria-describedby="ak-url-base-hint"
+                    />
+                  </div>
+
+                  <div class="fieldrow">
+                    <div class="section-head-row">
+                      <label for="ak-file-ext">file_extension</label>
+                      {#if isCluster}
+                        <DriftBadge
+                          fieldKey="access_keys.file_extension"
+                          {drift}
+                          nodes={clusterNodes}
+                          extractValue={(c) => c.access_keys?.file_extension ?? ''}
+                          onAlign={(v) => (currShared.accessKeys.file_extension = String(v ?? ''))}
+                        />
+                      {/if}
+                    </div>
+                    <input
+                      id="ak-file-ext"
+                      type="text"
+                      class="field-mono"
+                      placeholder=".txt or leave blank"
+                      bind:value={currShared.accessKeys.file_extension}
+                    />
+                  </div>
+                </div>
+
+                <div class="stack-form">
+                  <div class="fieldrow">
+                    <label for="ak-write-dir">write_dir (filesystem output directory)</label>
+                    <span id="ak-write-dir-hint" class="hint">
+                      Server-side directory where subscription artifacts are written. Hidden by default.
+                    </span>
+                    <div class="secret-row">
+                      <input
+                        id="ak-write-dir"
+                        type={showWriteDir ? 'text' : 'password'}
+                        class="field-mono"
+                        placeholder="<keys-dir>"
+                        bind:value={currShared.accessKeys.write_dir}
+                        aria-describedby="ak-write-dir-hint"
+                      />
+                      <button
+                        type="button"
+                        class="btn ghost sm"
+                        onclick={() => (showWriteDir = !showWriteDir)}
+                      >
+                        {showWriteDir ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="fieldrow">
+                    <div class="section-head-row">
+                      <label for="ak-nodes">nodes (subscription uplink/balancer hosts)</label>
+                      {#if isCluster && clusterSummary?.subscription_nodes.length}
+                        <button
+                          type="button"
+                          class="btn ghost sm"
+                          onclick={fillNodesFromCluster}
+                        >
+                          Fill from cluster subscription_nodes
+                        </button>
+                      {/if}
+                    </div>
+                    <span id="ak-nodes-hint" class="hint">
+                      One host per line (or comma-separated). Empty = single-server subscription without balancer group; &gt;=1 host = multi-node subscription with active/fallback balancer.
+                    </span>
+                    <textarea
+                      id="ak-nodes"
+                      data-val-key="access_keys.nodes"
+                      rows="5"
+                      class="field-mono"
+                      placeholder={"exit-a.fleet.example\nexit-b.fleet.example"}
+                      bind:value={currShared.accessKeys.nodesText}
+                      aria-invalid={nodesErr ? 'true' : 'false'}
+                      aria-describedby={describedBy('ak-nodes-hint', nodesErr ? 'ak-nodes-err' : null)}
+                      onblur={() => onFieldBlur('access_keys.nodes', 'Subscription nodes')}
+                    ></textarea>
+                    {#if nodesErr}
+                      <div id="ak-nodes-err" class="field-error">
+                        <span class="err-prefix" aria-hidden="true">Error:</span> {nodesErr}
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Tuning & System -->
+        <div
+          role="tabpanel"
+          aria-labelledby="settings-tab-tuning"
+          hidden={activeTab === 'tuning' ? undefined : ('until-found' as unknown as boolean)}
+          tabindex={activeTab === 'tuning' ? 0 : undefined}
+          onbeforematch={() => (activeTab = 'tuning')}
+        >
+          <div class="tabpanel-inner">
+            <div class="stack-form">
+              <div class="panel panel-pad">
+                <div class="section-head-row">
+                  <h3>tuning_profile &amp; [tuning] Overrides</h3>
+                  {#if isCluster}
+                    <DriftBadge
+                      fieldKey="tuning_profile"
+                      label="profile drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.tuning_profile ?? 'large'}
+                      onAlign={(v) => {
+                        const tp = String(v ?? 'large');
+                        currShared.tuningProfile =
+                          tp === 'small' || tp === 'medium' || tp === 'large' ? tp : 'large';
+                      }}
+                    />
+                    <DriftBadge
+                      fieldKey="tuning"
+                      label="overrides drift"
+                      {drift}
+                      nodes={clusterNodes}
+                      extractValue={(c) => c.tuning ?? null}
+                      onAlign={(v) => {
+                        currShared.tuningOverrides = sharedFromConfig({
+                          ...EMPTY_CFG,
+                          tuning: v as ServerConfigResponse['tuning'],
+                        }).tuningOverrides;
+                      }}
+                    />
+                  {/if}
+                </div>
+
+                <div class="fieldrow" style="max-width: 420px; margin-bottom: var(--sp-3);">
+                  <label for="tuning-profile-select">tuning_profile (VPS sizing preset)</label>
+                  <span id="tuning-profile-hint" class="hint">
+                    Selects baseline buffer sizes and connection table caps (<code>small</code>, <code>medium</code>, or <code>large</code>). Empty override fields below inherit this preset.
+                  </span>
+                  <select
+                    id="tuning-profile-select"
+                    class="field-mono"
+                    bind:value={currShared.tuningProfile}
+                    aria-describedby="tuning-profile-hint"
+                  >
+                    <option value="small">small (1 vCPU / &le;1 GB RAM)</option>
+                    <option value="medium">medium (2 vCPU / 2–4 GB RAM)</option>
+                    <option value="large">large (4+ vCPU / 8+ GB RAM)</option>
+                  </select>
+                </div>
+
+                <!-- Do not put headings inside <summary> per accordion accessibility guidance -->
+                <details class="tuning-details">
+                  <summary>
+                    Advanced [tuning] overrides (23 parameters · effective defaults shown as placeholders)
+                  </summary>
+                  <div class="tuning-details-body">
+                    <div class="section-head-row" style="margin-bottom: var(--sp-3);">
+                      <span class="hint">
+                        Leave a field blank to clear its explicit override and inherit the <code>{currShared.tuningProfile}</code> preset value.
+                      </span>
+                      <span class="spacer"></span>
+                      <button
+                        type="button"
+                        class="btn ghost sm"
+                        onclick={clearAllTuningOverrides}
+                      >
+                        Clear all overrides
+                      </button>
+                    </div>
+                    <div class="tuning-grid">
+                      {#each TUNING_FIELD_SPECS as spec (spec.key)}
+                        {@const presetDefault = TUNING_PRESETS[currShared.tuningProfile as TuningPresetName][spec.key]}
+                        <div class="fieldrow">
+                          <label for={`tuning-${spec.key}`}>{spec.label}</label>
+                          {#if spec.zeroOptOut}
+                            <span id={`tuning-hint-${spec.key}`} class="hint"><code>0</code> disables limit; blank = preset ({presetDefault}).</span>
+                          {:else}
+                            <span id={`tuning-hint-${spec.key}`} class="hint">Preset default: <code>{presetDefault}</code>.</span>
+                          {/if}
+                          <input
+                            id={`tuning-${spec.key}`}
+                            type="number"
+                            min={spec.zeroOptOut ? '0' : '1'}
+                            class="field-mono"
+                            placeholder={String(presetDefault)}
+                            value={currShared.tuningOverrides[spec.key] ?? ''}
+                            aria-describedby={`tuning-hint-${spec.key}`}
+                            oninput={(e) =>
+                              (currShared.tuningOverrides[spec.key] = optInt(e.currentTarget.value))}
+                          />
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <!-- Read-only System Status -->
+              <div class="panel">
+                <div class="panel-pad" style="border-bottom: 1px solid var(--border-soft);">
+                  <h3 style="margin: 0; font-size: 15px; font-weight: 600;">
+                    System, Control &amp; Metrics (Read-Only)
+                  </h3>
+                </div>
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <div
+                  tabindex="0"
+                  role="region"
+                  aria-label="Read-only server control and metrics status"
+                  class="table-wrapper"
+                >
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Node</th>
+                        <th>Config path</th>
+                        <th>Control listen</th>
+                        <th>Generator</th>
+                        <th>Metrics</th>
+                        <th>Restart</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#if isCluster}
+                        {#each clusterNodes as n (n.instance)}
+                          <tr>
+                            <td class="mono">{n.instance}</td>
+                            {#if n.ok && n.config}
+                              <td class="mono muted">{n.config.config_path ?? '—'}</td>
+                              <td class="mono">{n.config.control?.listen ?? '—'}</td>
+                              <td>
+                                {#if n.config.control?.access_keys_enabled}
+                                  <span class="chip ok">enabled</span>
+                                {:else}
+                                  <span class="chip off">disabled</span>
+                                {/if}
+                              </td>
+                              <td class="mono">
+                                {n.config.metrics?.listen ?? '—'}{n.config.metrics?.path ?? ''}
+                              </td>
+                              <td>
+                                {#if n.config.restart_pending}
+                                  <span class="chip warn">pending</span>
+                                {:else}
+                                  <span class="chip ok">clean</span>
+                                {/if}
+                              </td>
+                            {:else}
+                              <td colspan="5" class="muted">Offline ({n.error ?? `HTTP ${n.status}`})</td>
+                            {/if}
+                          </tr>
+                        {/each}
+                      {:else if singleRes && target}
+                        <tr>
+                          <td class="mono">{target.name}</td>
+                          <td class="mono muted">{singleRes.config_path ?? '—'}</td>
+                          <td class="mono">{singleRes.control?.listen ?? '—'}</td>
+                          <td>
+                            {#if singleRes.control?.access_keys_enabled}
+                              <span class="chip ok">enabled</span>
+                            {:else}
+                              <span class="chip off">disabled</span>
+                            {/if}
+                          </td>
+                          <td class="mono">
+                            {singleRes.metrics?.listen ?? '—'}{singleRes.metrics?.path ?? ''}
+                          </td>
+                          <td>
+                            {#if singleRes.restart_pending}
+                              <span class="chip warn">pending</span>
+                            {:else}
+                              <span class="chip ok">clean</span>
+                            {/if}
+                          </td>
+                        </tr>
+                      {/if}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
+
+      {#if formDirty}
+        <div class="sticky-savebar" role="region" aria-label="Unsaved settings bar">
+          <span class="chip warn">
+            Unsaved changes ({dirtySectionLabels.length}):
+            <span class="mono">{dirtySectionLabels.join(', ')}</span>
+          </span>
+          <span class="spacer"></span>
+          <button type="button" class="btn ghost sm" disabled={mutating} onclick={discardChanges}>
+            Discard
+          </button>
+          <button type="button" class="btn primary sm" disabled={mutating} onclick={save}>
+            {#if mutating}
+              Saving…
+            {:else if isCluster}
+              Save to cluster ({aliveClusterNodes.length} nodes)
+            {:else}
+              Save changes
+            {/if}
+          </button>
+        </div>
+      {/if}
     {/if}
   {/if}
+
+  <ConfirmDialog
+    open={confirmSwitchOpen}
+    title="Discard unsaved settings?"
+    message={`You have unsaved changes in ${dirtySectionLabels.join(', ')}. Switch target and discard them?`}
+    confirmLabel="Discard and switch"
+    cancelLabel="Stay here"
+    danger={true}
+    onconfirm={confirmDiscardTargetSwitch}
+    oncancel={() => (pendingTarget = null)}
+  />
 </section>

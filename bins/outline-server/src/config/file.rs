@@ -235,6 +235,7 @@ pub(crate) struct AccessKeysSection {
     pub file_extension: Option<String>,
     pub print: Option<bool>,
     pub write_dir: Option<PathBuf>,
+    pub nodes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -249,6 +250,9 @@ pub(crate) struct ControlFileConfig {
     pub listen: Option<SocketAddr>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    pub access_keys_generator: Option<PathBuf>,
+    pub access_keys_python: Option<PathBuf>,
+    pub access_keys_timeout_secs: Option<u64>,
 }
 
 /// `[http_fallback]` block. When present, requests that do not match a

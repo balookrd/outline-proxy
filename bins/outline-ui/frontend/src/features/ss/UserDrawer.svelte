@@ -8,17 +8,14 @@
   import type { UserFormFields } from '../../lib/userForm';
   import { toast } from '../../lib/toast.svelte';
 
-  // Always mounted (not `{#if open}`) so the `.backdrop`/`.drawer` CSS
-  // transitions from docs/superpowers/specs/...-prototype.html (opacity +
-  // translateX, gated on an `.open` class) actually animate — an `{#if}`
-  // would insert the drawer already in its open state instead of sliding it
-  // in. Field values reset from `editingUser` (or blank, for create) each
-  // time `open` flips to true; see the $effect below.
   let {
     open,
     editingUser = null,
     seedFields = null,
     seedNeedsPassword = false,
+    defaultMethod = '',
+    clusterName = null,
+    clusterMembers = [],
     onclose,
     onsave,
   }: {
@@ -26,20 +23,16 @@
     editingUser?: User | null;
     seedFields?: UserFormFields | null;
     seedNeedsPassword?: boolean;
+    defaultMethod?: string;
+    clusterName?: string | null;
+    clusterMembers?: string[];
     onclose: () => void;
-    // Parent (Users.svelte) owns the actual API call, its success/error
-    // toast, and the post-mutation refresh — this component only builds and
-    // validates the payload. `editingId` is passed separately (rather than
-    // making the caller re-derive it from `editingUser`) because `id` itself
-    // is deliberately excluded from the built payload on edit.
     onsave: (payload: NewUser | PatchUser, editingId: string | null) => Promise<void>;
   } = $props();
 
   const editing = $derived(editingUser !== null);
   const hasPassword = $derived(Boolean(editingUser?.has_password));
   const hasVlessId = $derived(Boolean(editingUser?.has_vless_id));
-  // Clone mode = create (no editingUser) seeded from a template. Drives the
-  // header label, the open-secret display, and the regenerate/show controls.
   const cloning = $derived(!editing && seedFields != null);
   let showSecret = $state(false);
 
@@ -48,7 +41,8 @@
   let idInput: HTMLInputElement | undefined;
 
   function regeneratePassword() {
-    const pw = generatePassword(fields.method, webCryptoBytes);
+    const effectiveMethod = fields.method || defaultMethod;
+    const pw = generatePassword(effectiveMethod, webCryptoBytes);
     if (pw === null) {
       toast('Choose a method to generate a password.', 'error');
       return;
@@ -56,41 +50,27 @@
     fields.password = pw;
     showSecret = true;
   }
+
   function regenerateVlessId() {
     fields.vlessId = generateVlessId();
     showSecret = true;
   }
 
-  // Spec §3: in clone mode the shown password must always match the selected
-  // cipher, so regenerate it whenever the operator changes the method. Reads
-  // the new value from the event (not `fields.method`) to avoid depending on
-  // bind-vs-handler ordering. `onchange` never fires for the programmatic
-  // prefill on open, so this only reacts to real user changes. A default
-  // (empty) method clears the password back to blank (the UI cannot generate
-  // for the server-default cipher).
   function onMethodChange(e: Event) {
     if (!cloning) return;
     const method = (e.currentTarget as HTMLSelectElement).value;
-    const pw = generatePassword(method, webCryptoBytes);
+    const pw = generatePassword(method || defaultMethod, webCryptoBytes);
     fields.password = pw ?? '';
     showSecret = pw !== null;
   }
 
-  // editingUser is stable for as long as `open` stays true (Users.svelte
-  // snapshots it once, at the moment the drawer opens, and doesn't reassign
-  // it from later poll refreshes) — so this only actually repopulates the
-  // form at the open transition, never mid-edit out from under the user.
   $effect(() => {
     if (!open) return;
-    // Copy the seed so editing the form never mutates the parent's snapshot.
     fields = editingUser ? fieldsFromUser(editingUser) : (seedFields ? { ...seedFields } : emptyUserFields());
-    // Clone secrets are meant to be read and copied out — show them by default.
     showSecret = !editingUser && seedFields != null;
     tick().then(() => idInput?.focus());
   });
 
-  // Matches dashboard.html's drawer (Escape closes it); backdrop click below
-  // covers the click-outside case.
   $effect(() => {
     if (!open) return;
     const onKeydown = (e: KeyboardEvent) => {
@@ -124,7 +104,12 @@
 <div class="backdrop" class:open onclick={onBackdropClick} role="presentation"></div>
 <aside class="drawer" class:open aria-hidden={!open}>
   <header>
-    <h3>{editing ? 'Edit user' : cloning ? 'Clone user' : 'Add user'}</h3>
+    <div>
+      <h3>{editing ? 'Edit user' : cloning ? 'Clone user' : 'Add user'}</h3>
+      {#if clusterName}
+        <span class="hint">Applies across cluster <strong class="mono">{clusterName}</strong> ({clusterMembers.join(', ')})</span>
+      {/if}
+    </div>
     <span class="spacer"></span>
     <button class="iconbtn" type="button" aria-label="Close" onclick={onclose}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -144,7 +129,7 @@
         autocomplete="off"
         placeholder="team-madrid"
       />
-      <span class="hint">Unique key id on this server.</span>
+      <span class="hint">Unique key id{clusterName ? ` across ${clusterName}` : ' on this server'}.</span>
     </div>
     <div class="fieldrow">
       <label for="user-password">Password</label>
@@ -155,18 +140,16 @@
           type={showSecret ? 'text' : 'password'}
           bind:value={fields.password}
           autocomplete="new-password"
-          placeholder={editing ? (hasPassword ? 'keep current password' : 'add Shadowsocks password') : 'for Shadowsocks'}
+          placeholder={editing ? (hasPassword ? 'keep current or enter new' : 'add Shadowsocks password') : 'for Shadowsocks'}
         />
-        {#if cloning}
-          <button class="iconbtn" type="button" title="Show/hide" aria-label="Show or hide password" onclick={() => (showSecret = !showSecret)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
-          <button class="iconbtn" type="button" title="Regenerate password" aria-label="Regenerate password" onclick={regeneratePassword}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-          </button>
-        {/if}
+        <button class="iconbtn" type="button" title="Show/hide" aria-label="Show or hide password" onclick={() => (showSecret = !showSecret)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <button class="iconbtn" type="button" title={editing ? 'Rotate password' : 'Generate password'} aria-label="Generate password" onclick={regeneratePassword}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        </button>
       </div>
-      <span class="hint">{cloning && !fields.method && seedNeedsPassword ? 'Choose a method to generate the password.' : 'password or vless_id is required.'}</span>
+      <span class="hint">{cloning && !fields.method && !defaultMethod && seedNeedsPassword ? 'Choose a method to generate the password.' : 'password or vless_id is required.'}</span>
     </div>
     <div class="fieldrow">
       <label for="user-vless-id">VLESS UUID</label>
@@ -177,19 +160,17 @@
           type="text"
           bind:value={fields.vlessId}
           autocomplete="off"
-          placeholder={editing ? (hasVlessId ? 'keep current UUID' : 'add VLESS UUID') : 'xxxxxxxx-xxxx-...'}
+          placeholder={editing ? (hasVlessId ? 'keep current or enter new' : 'add VLESS UUID') : 'xxxxxxxx-xxxx-...'}
         />
-        {#if cloning}
-          <button class="iconbtn" type="button" title="Regenerate UUID" aria-label="Regenerate VLESS UUID" onclick={regenerateVlessId}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-          </button>
-        {/if}
+        <button class="iconbtn" type="button" title={editing ? 'Rotate UUID' : 'Generate UUID'} aria-label="Generate VLESS UUID" onclick={regenerateVlessId}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        </button>
       </div>
     </div>
     <div class="fieldrow">
       <label for="user-method">Method</label>
       <select id="user-method" class="field-mono" bind:value={fields.method} onchange={onMethodChange}>
-        <option value="">default</option>
+        <option value="">default{defaultMethod ? ` (${defaultMethod})` : ''}</option>
         <option value="aes-128-gcm">aes-128-gcm</option>
         <option value="aes-256-gcm">aes-256-gcm</option>
         <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>

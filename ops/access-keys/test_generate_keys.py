@@ -369,5 +369,165 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(report, "user: a\nwritten_txt: /a.txt\n\nuser: b\nwritten_txt: /b.txt\n")
 
 
+class PruneAndJsonReportTest(unittest.TestCase):
+    def _write_config(self, tmp: str, extra_ak: str = "", users_override: str | None = None) -> Path:
+        base = GOLDEN.read_text(encoding="utf-8")
+        if extra_ak:
+            base = base.replace("[access_keys]\n", f"[access_keys]\n{extra_ak}\n", 1)
+        if users_override is not None:
+            idx = base.index("[[users]]")
+            base = base[:idx] + users_override
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text(base, encoding="utf-8")
+        return cfg
+
+    def test_prune_removes_stale_artifacts_and_preserves_other_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            (out / "removed.conf").write_text("stale", encoding="utf-8")
+            (out / "removed.json").write_text("stale", encoding="utf-8")
+            (out / "removed.toml").write_text("stale", encoding="utf-8")
+            (out / "removed.txt").write_text("stale", encoding="utf-8")
+            (out / "disabled.conf").write_text("stale", encoding="utf-8")
+            (out / "index.html").write_text("keep", encoding="utf-8")
+            (out / ".hidden.conf").write_text("keep", encoding="utf-8")
+            sub = out / "subdir.json"
+            sub.mkdir()
+            sym = out / "sym.conf"
+            sym.symlink_to(out / "index.html")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                rc = run(out, "--prune", "--json-report")
+            self.assertEqual(rc, 0)
+
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(
+                payload["pruned"],
+                [
+                    "disabled.conf",
+                    "removed.conf",
+                    "removed.json",
+                    "removed.toml",
+                    "removed.txt",
+                ],
+            )
+            self.assertFalse((out / "removed.conf").exists())
+            self.assertFalse((out / "disabled.conf").exists())
+            self.assertTrue((out / "index.html").exists())
+            self.assertTrue((out / ".hidden.conf").exists())
+            self.assertTrue(sub.is_dir())
+            self.assertTrue(sym.is_symlink())
+            # Ensure no secrets leak in JSON report
+            raw_json = buf.getvalue()
+            self.assertNotIn("secret-pw", raw_json)
+            for rec in payload["users"]:
+                self.assertIn("txt_url", rec)
+                self.assertIn("written", rec)
+
+    def test_prune_dry_run_reports_candidates_without_deleting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            stale = out / "ghost.json"
+            stale.write_text("stale", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                rc = run(out, "--prune", "--dry-run", "--json-report")
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["pruned"], ["ghost.json"])
+            self.assertTrue(stale.exists())
+
+    def test_prune_allows_zero_enabled_users(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(
+                tmp,
+                users_override='[[users]]\nid = "blocked"\npassword = "pw"\nenabled = false\n',
+            )
+            out = Path(tmp) / "out"
+            out.mkdir()
+            (out / "blocked.conf").write_text("old", encoding="utf-8")
+
+            # Without --prune it still rejects empty active users
+            with self.assertRaises(SystemExit):
+                gk.main(["--config", str(cfg), "--out-dir", str(out)])
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                rc = gk.main(["--config", str(cfg), "--out-dir", str(out), "--prune", "--json-report"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["users"], [])
+            self.assertEqual(payload["pruned"], ["blocked.conf"])
+            self.assertFalse((out / "blocked.conf").exists())
+
+    def test_node_priority_cli_wins_over_config_nodes_wins_over_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(
+                tmp,
+                extra_ak='nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]',
+            )
+            out1 = Path(tmp) / "out1"
+            buf1 = io.StringIO()
+            with contextlib.redirect_stdout(buf1), contextlib.redirect_stderr(io.StringIO()):
+                gk.main(["--config", str(cfg), "--out-dir", str(out1), "--json-report"])
+            p1 = json.loads(buf1.getvalue())
+            self.assertEqual(p1["nodes"], ["relay-a.fleet.example", "relay-b.fleet.example"])
+            doc = json.loads((out1 / "both.json").read_text(encoding="utf-8"))
+            self.assertEqual(doc[0]["outbounds"][0]["tag"], "relay-a-xhttp-h3")
+
+            out2 = Path(tmp) / "out2"
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2), contextlib.redirect_stderr(io.StringIO()):
+                gk.main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "--out-dir",
+                        str(out2),
+                        "--node",
+                        "exit-a.fleet.example",
+                        "--json-report",
+                    ]
+                )
+            p2 = json.loads(buf2.getvalue())
+            self.assertEqual(p2["nodes"], ["exit-a.fleet.example"])
+
+    def test_links_json_for_active_disabled_and_missing_user(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = gk.main(["--config", str(GOLDEN), "--user", "both", "--links-json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["user"], "both")
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["outline_url"], "ssconf://keys.example.com/SECRET/both.conf")
+        self.assertEqual(payload["happ_url"], "https://keys.example.com/SECRET/both.json")
+        self.assertEqual(payload["ws_url"], "https://keys.example.com/SECRET/both.toml")
+        self.assertEqual(payload["txt_url"], "https://keys.example.com/SECRET/both.txt")
+        self.assertTrue(any(u.startswith("ss://") for u in payload["share_links"]))
+        self.assertTrue(any(u.startswith("vless://") for u in payload["share_links"]))
+        self.assertIn("conf", payload["artifacts"])
+        self.assertIn("json", payload["artifacts"])
+        self.assertIn("toml", payload["artifacts"])
+        self.assertIn("txt", payload["artifacts"])
+
+        # Disabled user -> exit 2
+        err_disabled = io.StringIO()
+        with contextlib.redirect_stderr(err_disabled):
+            rc_dis = gk.main(["--config", str(GOLDEN), "--user", "disabled", "--links-json"])
+        self.assertEqual(rc_dis, 2)
+        self.assertIn("disabled", err_disabled.getvalue())
+
+        # Missing user -> exit 3
+        err_missing = io.StringIO()
+        with contextlib.redirect_stderr(err_missing):
+            rc_miss = gk.main(["--config", str(GOLDEN), "--user", "nonexistent", "--links-json"])
+        self.assertEqual(rc_miss, 3)
+        self.assertIn("not found", err_missing.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

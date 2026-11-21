@@ -1,5 +1,6 @@
 <script lang="ts">
   import { toggleTheme, theme } from '../../lib/theme.svelte';
+  import { meta } from '../../lib/meta.svelte';
   import logoDark from '../../assets/outline-logo-dark.png';
   import logoLight from '../../assets/outline-logo-light.png';
 
@@ -29,7 +30,7 @@
       <img class="light" src={logoLight} alt="outline" width="22" height="22" />
       <img class="dark" src={logoDark} alt="outline" width="22" height="22" />
     </span>
-    outline <small>fleet UI</small>
+    outline <small>fleet UI</small>{#if meta.version}<small class="ver-mobile mono">v{meta.version}</small>{/if}
   </div>
   <span class="env-pill">{host}</span>
   <div class="spacer"></div>

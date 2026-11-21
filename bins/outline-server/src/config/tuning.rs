@@ -431,7 +431,7 @@ impl Default for TuningProfile {
 /// Per-field overrides for [`TuningProfile`], parsed from the `[tuning]`
 /// section of the config file. Any field left `None` is inherited from the
 /// selected `tuning_profile` preset.
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TuningOverrides {
     #[serde(default)]

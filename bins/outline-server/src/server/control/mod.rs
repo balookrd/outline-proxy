@@ -16,6 +16,7 @@
 //! - The implicit user synthesized from the top-level `password` field cannot
 //!   be mutated via the control plane.
 
+mod access_keys;
 mod handlers;
 mod manager;
 mod persist;
@@ -23,3 +24,16 @@ mod server;
 
 pub(in crate::server) use manager::UserManager;
 pub(in crate::server) use server::spawn_control_server;
+
+/// Truncated 12-hex-char BLAKE3 fingerprint for drift comparison without
+/// exposing raw secrets across the control plane.
+pub(super) fn blake3_fingerprint(domain: &[u8], parts: &[&[u8]]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    for part in parts {
+        hasher.update(part);
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    digest.as_bytes()[..6].iter().map(|b| format!("{b:02x}")).collect()
+}

@@ -14,6 +14,10 @@
 
 ### Добавлено
 
+- **Полное редактирование `/control/config`, отпечатки секретов и опциональный раннер генератора подписок:**
+  - `GET`/`PATCH /control/config` расширены сбросом полей через `FieldPatch` (`null`), полным CRUD для `[[endpoint]]`, секциями `[shadowsocks].method`, `[http_root]`, `[access_keys]` (`public_host`, `public_scheme`, `url_base`, `file_extension`, `write_dir`, `nodes`), `[[server.certs]]` / `[[server.h3.certs]]`, всеми 23 полями `[tuning]`, полями `psk_fingerprint` / `restart_pending` и умным `requires_restart` (`false` при правке только `[access_keys]`).
+  - В `UserView` (`/control/users`) добавлены BLAKE3-отпечатки `password_fp` и `vless_id_fp` (12 hex-символов) без раскрытия самих секретов.
+  - Добавлены параметры `[control].access_keys_generator`, `access_keys_python` и `access_keys_timeout_secs`, а также эндпоинты `POST /control/access-keys/regenerate` (`--json-report`, `--prune` по умолчанию, редактирование `write_dir` в ошибках) и `GET /control/users/{id}/access-keys` (`--links-json --user <id>`), запускающие `ops/access-keys/generate_keys.py` напрямую через `tokio::process::Command` (без `/bin/sh`).
 - **Серверный in-memory rate-limiting для `http_root_auth` по IP.** Защита от подбора пароля на `GET /` теперь ведёт потокобезопасный in-memory LRU-кэш IP-адресов (до 1024 активных записей) с окном блокировки 300 секунд, общий для TCP- (axum) и HTTP/3-слушателей. Число неудачных попыток вычисляется как `max(cookie_attempts, server_attempts)`: после 3 неудач с одного IP (даже при сбросе или удалении cookies атакующим) сервер отвечает `403 Forbidden` в течение 5 минут. Успешная аутентификация сбрасывает историю попыток для данного IP.
 - **Эмуляция Caddy на сервере (Этап 3): H3 SETTINGS, ID GREASE-параметра и настраиваемый лимит соединений на IP на TLS.**
   - Новый параметр конфигурации `[server].max_connections_per_ip` (по умолчанию `None`, без ограничения) ограничивает число одновременных активных TCP-соединений с одного удалённого IP-адреса на TLS-слушателе. Соединения сверх лимита немедленно сбрасываются при accept с записью предупреждения в журнал.

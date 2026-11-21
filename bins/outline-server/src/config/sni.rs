@@ -12,7 +12,7 @@ use super::{
 /// it wins as-is; otherwise the loader extracts SANs (and CN as a
 /// last-resort fallback) from the certificate. See
 /// `crate::server::bootstrap::tls`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsCertEntry {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
@@ -53,7 +53,7 @@ impl TlsCertEntry {
 
 /// Resolved `[sni_fallback]` block. Always carries a non-empty
 /// `match_sni` whitelist and at least one backend.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SniFallbackConfig {
     /// SNIs handled locally (our own TLS terminator). Non-empty.
     pub match_sni: Vec<SniMatcher>,
@@ -66,7 +66,7 @@ pub struct SniFallbackConfig {
 }
 
 /// One entry in [`SniFallbackConfig::backends`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SniBackend {
     /// `host:port` of this upstream.
     pub authority: String,
@@ -79,7 +79,7 @@ pub struct SniBackend {
 /// Parsed entry from `match_sni`. Either an exact SNI to match
 /// case-insensitively, or a one-label-left wildcard (`*.foo.example`
 /// matches `bar.foo.example` but not `bar.baz.foo.example`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SniMatcher {
     Exact(String),
     Wildcard { suffix: String },

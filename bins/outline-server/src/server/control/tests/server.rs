@@ -51,6 +51,7 @@ fn test_control_state() -> ControlState {
         manager: Arc::new(crate::server::control::manager::test_manager()),
         config: Arc::new(crate::server::tests::sample_config("127.0.0.1:0".parse().unwrap())),
         token: Arc::from("test-token"),
+        access_keys: None,
     }
 }
 
@@ -137,4 +138,43 @@ async fn config_route_requires_bearer_and_returns_config_response() {
     assert!(json.get("cluster").is_some());
     assert!(json.get("server").is_some());
     assert!(json.get("session_resumption").is_some());
+    assert_eq!(json["control"]["access_keys_enabled"], false);
+}
+
+#[tokio::test]
+async fn access_keys_routes_return_501_when_generator_not_configured() {
+    use tower::ServiceExt;
+
+    let state = test_control_state();
+    let router = Router::new()
+        .route("/control/access-keys/regenerate", axum::routing::post(regenerate))
+        .route("/control/users/{id}/access-keys", get(get_user_access_keys))
+        .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
+        .with_state(state);
+
+    let regen = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/control/access-keys/regenerate")
+                .header(AUTHORIZATION, "Bearer test-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(regen.status(), StatusCode::NOT_IMPLEMENTED);
+
+    let user_links = router
+        .oneshot(
+            Request::builder()
+                .uri("/control/users/alice/access-keys")
+                .header(AUTHORIZATION, "Bearer test-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(user_links.status(), StatusCode::NOT_IMPLEMENTED);
 }

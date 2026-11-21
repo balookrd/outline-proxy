@@ -332,5 +332,55 @@ shard_id = 1
         self.assertTrue(enabled.cluster_enabled)
 
 
+class NodesConfigTest(unittest.TestCase):
+    BASE = """
+[[users]]
+id = "alice"
+password = "pw"
+"""
+
+    def load_body(self, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(body, encoding="utf-8")
+            return cm.load(path)
+
+    def test_nodes_defaults_to_none_when_absent(self):
+        server = self.load_body('[access_keys]\npublic_host = "h.example"\n' + self.BASE)
+        self.assertIsNone(server.access_keys.nodes)
+
+    def test_reads_and_trims_access_keys_nodes(self):
+        server = self.load_body(
+            '[access_keys]\npublic_host = "h.example"\n'
+            'nodes = [" relay-a.fleet.example ", "relay-b.fleet.example"]\n'
+            + self.BASE
+        )
+        self.assertEqual(
+            server.access_keys.nodes,
+            ("relay-a.fleet.example", "relay-b.fleet.example"),
+        )
+
+    def test_empty_nodes_list_becomes_none(self):
+        server = self.load_body(
+            '[access_keys]\npublic_host = "h.example"\nnodes = []\n' + self.BASE
+        )
+        self.assertIsNone(server.access_keys.nodes)
+
+    def test_rejects_non_list_or_blank_nodes(self):
+        with self.assertRaises(SystemExit):
+            self.load_body('[access_keys]\npublic_host = "h"\nnodes = "bad"\n' + self.BASE)
+        with self.assertRaises(SystemExit):
+            self.load_body('[access_keys]\npublic_host = "h"\nnodes = ["  "]\n' + self.BASE)
+
+    def test_tracks_disabled_users(self):
+        server = self.load_body(
+            '[access_keys]\npublic_host = "h"\n'
+            '[[users]]\nid = "on"\npassword = "p"\n'
+            '[[users]]\nid = "off"\npassword = "p"\nenabled = false\n'
+        )
+        self.assertEqual([u.name for u in server.users], ["on"])
+        self.assertEqual(server.disabled_users, frozenset({"off"}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Topbar from './components/layout/Topbar.svelte';
   import Sidebar from './components/layout/Sidebar.svelte';
   import Toasts from './components/layout/Toasts.svelte';
@@ -12,6 +13,11 @@
   import Topology from './features/ws/Topology.svelte';
   import WsSettings from './features/ws/WsSettings.svelte';
   import { route, section } from './lib/router.svelte';
+  import { loadMeta } from './lib/meta.svelte';
+
+  onMount(() => {
+    void loadMeta();
+  });
 
   const view = $derived(section(route.path));
   const isCluster = $derived(route.path.startsWith('/ss/cluster'));

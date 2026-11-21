@@ -43,6 +43,7 @@ class AccessKeys:
     url_base: str | None
     file_extension: str
     write_dir: str | None
+    nodes: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class ServerConfig:
         enabled=False, downlink_buffer_bytes=0
     )
     cluster_enabled: bool = False
+    disabled_users: frozenset[str] = frozenset()
 
 
 def endpoints_of_kind(server: ServerConfig, *kinds: str) -> list[Endpoint]:
@@ -192,6 +194,21 @@ def load(path: str | Path) -> ServerConfig:
     if public_scheme not in ("ws", "wss"):
         raise SystemExit(f'{path}: public_scheme must be either "ws" or "wss"')
 
+    raw_nodes = ak_section.get("nodes")
+    parsed_nodes: tuple[str, ...] | None = None
+    if raw_nodes is not None:
+        if not isinstance(raw_nodes, list):
+            raise SystemExit(f"{path}: [access_keys] nodes must be a list of strings")
+        cleaned_nodes: list[str] = []
+        for entry in raw_nodes:
+            if not isinstance(entry, str) or not entry.strip():
+                raise SystemExit(
+                    f"{path}: [access_keys] nodes entries must be non-empty strings"
+                )
+            cleaned_nodes.append(entry.strip())
+        if cleaned_nodes:
+            parsed_nodes = tuple(cleaned_nodes)
+
     write_dir = ak_section.get("write_dir")
     access_keys = AccessKeys(
         public_host=public_host,
@@ -199,11 +216,13 @@ def load(path: str | Path) -> ServerConfig:
         url_base=ak_section.get("url_base") or _derive_url_base(public_host, public_scheme, write_dir),
         file_extension=ak_section.get("file_extension") or DEFAULT_EXTENSION,
         write_dir=write_dir,
+        nodes=parsed_nodes,
     )
 
     default_method = raw.get("shadowsocks", {}).get("method") or DEFAULT_METHOD
 
     users: list[User] = []
+    disabled_users: set[str] = set()
     seen: set[str] = set()
     for entry in raw.get("users", []):
         name = entry.get("id")
@@ -213,6 +232,7 @@ def load(path: str | Path) -> ServerConfig:
             raise SystemExit(f"{path}: duplicate user id {name!r}")
         seen.add(name)
         if not entry.get("enabled", True):
+            disabled_users.add(name)
             continue
         if entry.get("password") is None and entry.get("vless_id") is None:
             continue
@@ -251,4 +271,5 @@ def load(path: str | Path) -> ServerConfig:
         # Absent or false means standalone: the mesh listener never starts and
         # session ids stay plain random, so a group cannot share resumption.
         cluster_enabled=bool(raw.get("cluster", {}).get("enabled", False)),
+        disabled_users=frozenset(disabled_users),
     )

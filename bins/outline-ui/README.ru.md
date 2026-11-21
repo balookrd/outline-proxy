@@ -22,20 +22,47 @@ Web-UI парка. Отдаёт клиентский и серверный да�
 
 ## Дашборд сервера (`/ss`)
 
-- Пользователи (`/ss`): создание, правка, блокировка, клонирование и удаление
-  ключей доступа (Shadowsocks AEAD / VLESS), генерация учётных данных.
-- Mesh-кластер (`/ss/cluster`): секция `[cluster]` — локальный shard ID
-  (0..15), адрес прослушивания mesh, бюджет релея (мс), PSK кластера (из него
-  через BLAKE3 выводятся mTLS-идентичность mesh и ключ обфускации шарда),
-  список пиров.
-- Настройки сервера (`/ss/settings`): адреса прослушивания TCP/TLS и HTTP/3,
-  `h3_initial_mtu`, пути к TLS-сертификату и ключу; возобновление сессий (TTL
-  для TCP/UDP, лимиты на пользователя и общий, буфер downlink); исходящая
-  политика (приоритет IPv4, sticky-сессии IPv6, пул префиксов IPv6, интерфейс
-  динамического префикса и интервал его обновления, исходящий интерфейс);
-  профиль тюнинга (`large`, `medium`, `small`); `[padding]` (min/max байт,
-  джиттер cover-трафика, детект троттлинга); маршрутизация по SNI
-  (`match_sni`); `[http_fallback]`; список эндпоинтов носителей.
+На `/ss` в панели инструментов работает единый селектор таргета для переключения
+между настроенным/обнаруженным кластером (`cluster:<name>`) и отдельным сервером
+(`instance:<name>`):
+
+- Пользователи (`/ss`): создание, правка, блокировка/разблокировка, клонирование и
+  удаление ключей доступа (Shadowsocks AEAD / VLESS) на одном сервере или
+  синхронно по всему кластеру (pre-flight проверка дубликатов `409`, откат при
+  частичном сбое `POST`, идемпотентный `DELETE` при `404`, бейдж статуса
+  синхронизации `Synced` / `Partial` / `Drift` и BLAKE3-отпечатки секретов
+  `password_fp` / `vless_id_fp`). Встроено модальное окно **Access links &
+  subscriptions** (`<dialog>`) с локальной генерацией SVG QR-кодов (Outline
+  `ssconf://`, Happ/Xray `.json`, App Config `.toml`, список Share Links) и
+  перегенерацией подписок с очисткой удалённых (`--prune`).
+- Mesh-кластер (`/ss/cluster`): управление секцией `[cluster]` — локальный shard ID
+  (0..15), адрес прослушивания mesh, адрес пира для mesh (`mesh_addr`), бюджет
+  релея (мс), ротация PSK кластера (через BLAKE3 из него выводятся mTLS-идентичность
+  и ключ обфускации шарда), симметричный список пиров. В режиме кластера
+  отображаются проверки здоровья `mesh_health` (`all_reachable`, `psk_match`,
+  `shards_unique`, `peers_symmetric`, `restart_pending_nodes`); узлы с общим
+  `psk_fingerprint` и `cluster.enabled = true` также обнаруживаются автоматически,
+  если не перечислены в `[[ss.clusters]]`.
+- Настройки сервера (`/ss/settings`): 5 горизонтальных вкладок
+  (`Carriers & Endpoints`, `Network & TLS`, `Resumption & Camouflage`,
+  `Subscriptions`, `Tuning & System`), валидация после взаимодействия, sticky
+  save-bar, бейджи расхождений кластера (`drift`) с поузловым сравнением и
+  выравниванием, а также баннер `restart_pending` / перегенерации подписок:
+  - `[[endpoint]]` CRUD (`path`, `kind`, `padded`), `[shadowsocks].method`,
+    `[http_root]` (`auth`, `realm`);
+  - per-node и shared-параметры TCP/TLS и HTTP/3 (`listen`, `cert_path`,
+    `key_path`, `[[server.certs]]`, `max_connections_per_ip`, `h3_listen`,
+    `h3_cert_path`, `h3_key_path`, `[[server.h3.certs]]`, `h3_alpn`,
+    `h3_udp_datagrams`, `h3_initial_mtu`, `h3_mtu_first_probe`, `[outbound]`);
+  - `[session_resumption]`, все 11 полей `[padding]`, `[http_fallback]` и
+    `[sni_fallback]` с динамическими бэкендами;
+  - `[access_keys]` (`public_host`, `public_scheme`, `url_base`,
+    `file_extension`, `write_dir`, `nodes`) — применяются сразу без рестарта
+    сервера;
+  - `tuning_profile` (`small`, `medium`, `large`), все 23 переопределения
+    `[tuning]` и read-only сводка `[metrics]` / `[control]`.
+- Версия UI: запрашивается из `GET /api/meta` и отображается в подвале левого
+  сайдбара (и в мобильном topbar на экранах `<= 900px`).
 
 ## Дашборд клиента (`/ws`)
 
@@ -146,6 +173,20 @@ token_file = "/etc/outline-ui/secrets/ws-beelink102"
 name = "relay-a"
 control_url = "https://relay-a.fleet.example/rust-ss-exporter"
 token_file = "/etc/outline-ui/secrets/ss-relay-a"
+public_host = "relay-a.fleet.example"     # опционально: публичный хост для кластера/подписок
+mesh_addr = "198.51.100.11:9443"          # опционально: peer-адрес для настройки mesh-кластера
+
+[[ss.instances]]
+name = "relay-b"
+control_url = "https://relay-b.fleet.example/rust-ss-exporter"
+token_file = "/etc/outline-ui/secrets/ss-relay-b"
+public_host = "relay-b.fleet.example"
+mesh_addr = "198.51.100.12:9443"
+
+[[ss.clusters]]                           # опционально; дополняет или перекрывает автообнаружение по psk_fingerprint
+name = "cloud"
+members = ["relay-a", "relay-b"]
+subscription_nodes = ["relay-a.fleet.example", "relay-b.fleet.example"]
 ```
 
 | Ключ | По умолчанию | Что делает |
@@ -157,6 +198,10 @@ token_file = "/etc/outline-ui/secrets/ss-relay-a"
 | `[server] refresh_interval_secs` | `5` | Интервал опроса в дашбордах |
 | `[[ws.instances]]` / `[[ss.instances]]` `name`, `control_url` | — (обязательны) | Имя инстанса и базовый URL его control API |
 | `[[ws.instances]]` / `[[ss.instances]]` `token` / `token_file` | — (нужен один из них) | Control-токен инстанса |
+| `[[ss.instances]]` `public_host` | нет | Публичный хост для подписок этого SS-сервера |
+| `[[ss.instances]]` `mesh_addr` | нет | Адрес пира `host:port` для mesh-конфигурации кластера |
+| `[[ss.clusters]]` `name`, `members` | `[]` | Явный SS-кластер и список имён инстансов (`>= 2` участника) |
+| `[[ss.clusters]]` `subscription_nodes` | `[]` | Хосты балансера, передаваемые при перегенерации подписок кластера |
 
 Любой токен задаётся либо строкой `token`, либо файлом `token_file`, но не
 обоими сразу. Хвостовые пробельные символы из файла срезаются: секрет-маунты и
@@ -207,7 +252,7 @@ pnpm install
 pnpm dev   # http://localhost:5173
 ```
 
-`vite.config.ts` проксирует `/ss/dashboard/api` и `/ws/dashboard/api` на
+`vite.config.ts` проксирует `/api`, `/ss/dashboard/api` и `/ws/dashboard/api` на
 `127.0.0.1:9500`: dev-сервер отдаёт SPA со своего origin, а её запросы к API
 уходят в бэкенд-процесс и через него — на `control_url` из его `config.toml`.
 Запросам по-прежнему нужны `Bearer`/`Basic` credentials: dev-сервер не обходит
@@ -232,8 +277,10 @@ pnpm dev   # http://localhost:5173
 - `/ui-assets/*` — хэшированные JS/CSS/шрифты (`assets::asset`). Vite кладёт
   ресурсы под этот префикс, чтобы они не пересекались с API-деревом ни одного
   из дашбордов.
+- `/api/meta` — метаданные панели (`{ "version": "<CARGO_PKG_VERSION>" }`, `Cache-Control: no-store`).
 - `/ws/dashboard/api/...` и `/ss/dashboard/api/...` — JSON API обоих
-  дашбордов, каждое `.nest`-ится под `/ws`/`/ss` (`ws::router`/`ss::router`).
+  дашбордов (включая `/ss/dashboard/api/clusters` и `/ss/dashboard/api/clusters/{cluster}/...`),
+  каждое `.nest`-ится под `/ws`/`/ss` (`ws::router`/`ss::router`).
 - Всё остальное — `/`, глубокая ссылка вроде `/ws/uplinks`, опечатка — отдаёт
   ту же оболочку `index.html` (`assets::spa_index`), включая `.fallback`
   внутри вложенных роутеров `/ws` и `/ss`.

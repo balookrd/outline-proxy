@@ -5,7 +5,7 @@ use super::file::HttpFallbackSection;
 /// Resolved `[http_fallback]` block. All fields are concrete (defaults
 /// applied). The reverse-proxy is opt-in: when this is `None` the
 /// listener returns 404 for unmatched paths, exactly as before.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpFallbackConfig {
     /// `host:port` of the upstream backend. Scheme is fixed to `http`
     /// in the MVP — TLS to the backend is intentionally out of scope
