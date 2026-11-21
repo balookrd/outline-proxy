@@ -1,10 +1,10 @@
 # Выкладка бинаря на узел
 
 `deploy-binary.sh` выкладывает один локально собранный бинарь
-(`outline-ss-rust` или `outline-ws-rust`) на один узел: бэкап, ротация
+(`outline-server` или `outline-client`) на один узел: бэкап, ротация
 бэкапов, рестарт, проверка `/metrics` и автооткат.
 
-Реальные имена узлов, домены и адреса парка в этом документе заменены условными: `fleet.example` — домен парка; `relay-a`…`relay-d` — промежуточные cloud-узлы; `198.51.100.0/24` — домашняя сеть (`.102`, `.104` и т. д. — последний октет). Соответствие — в локальном некоммитируемом `FLEET.local.md`.
+Реальные имена узлов, домены и адреса парка в этом документе заменены условными: `fleet.example` — домен парка; `exit-a`, `exit-b` — выходные узлы; `relay-a`…`relay-d` — промежуточные cloud-узлы; `198.51.100.0/24` — домашняя сеть (`.102`, `.104` и т. д. — последний октет). Соответствие — в локальном некоммитируемом `FLEET.local.md`.
 
 Требования:
 
@@ -33,22 +33,22 @@ ops/deploy/deploy-binary.sh <host> <unit> <local-binary> [keep]
 | Аргумент | Что это |
 |---|---|
 | `<host>` | ssh-цель, например `sysadm@relay-c.fleet.example` |
-| `<unit>` | `outline-ss-rust` или `outline-ws-rust`; другое значение — ошибка |
+| `<unit>` | `outline-server` или `outline-client`; другое значение — ошибка |
 | `<local-binary>` | путь к собранному бинарю |
 | `[keep]` | сколько бэкапов оставить, по умолчанию 3 |
 
 ```bash
 # клиент на x86_64-узел
-ops/deploy/deploy-binary.sh sysadm@relay-c.fleet.example outline-ws-rust \
-  target/x86_64-unknown-linux-musl/release/outline-ws-rust
+ops/deploy/deploy-binary.sh sysadm@relay-c.fleet.example outline-client \
+  target/x86_64-unknown-linux-musl/release/outline-client
 
 # сервер на ARM-узел, оставить 5 бэкапов вместо 3
-ops/deploy/deploy-binary.sh mmv@198.51.100.104 outline-ss-rust \
-  target/aarch64-unknown-linux-musl/release/outline-ss-rust 5
+ops/deploy/deploy-binary.sh mmv@198.51.100.104 outline-server \
+  target/aarch64-unknown-linux-musl/release/outline-server 5
 ```
 
-Порт метрик скрипт берёт из имени юнита: `outline-ws-rust` → 9091,
-`outline-ss-rust` → 9090. Если на узле `[metrics] listen` другой, проверка
+Порт метрик скрипт берёт из имени юнита: `outline-client` → 9091,
+`outline-server` → 9090. Если на узле `[metrics] listen` другой, проверка
 `/metrics` не пройдёт и скрипт откатит бинарь.
 
 ## Шаги скрипта
@@ -85,3 +85,77 @@ ops/deploy/deploy-binary.sh mmv@198.51.100.104 outline-ss-rust \
 - 7 бэкапов при `keep=3` — удалены 4, остались три самых свежих по mtime,
   включая `pre-catA`; удалён `zzz-old-but-late-alphabet`, который алфавитная
   сортировка оставила бы.
+
+## Миграция узла со старых имён (`migrate-node-rename.sh`)
+
+`migrate-node-rename.sh` выполняет чистый перевод одного узла парка со старых
+имён (`outline-ss-rust` / `outline-ws-rust`, пользователь `outline-ws`) на
+`outline-server` / `outline-client` без создания симлинков и `Alias=`, со
+снимком состояния и полным автооткатом при сбое.
+
+Узлы парка переводятся строго по одному за раз в порядке: `--audit` →
+`--dry-run` → рабочий запуск.
+
+### Запуск
+
+```bash
+ops/deploy/migrate-node-rename.sh <host> <server|client|all> [--audit | --dry-run]
+```
+
+| Аргумент / опция | Что это |
+|---|---|
+| `<host>` | ssh-цель, например `sysadm@exit-a.fleet.example` |
+| `<role>` | `server` (`outline-server`), `client` (`outline-client`) или `all` (оба сервиса) |
+| `--audit` | только чтение состояния узла: юниты, инстансы, drop-in, пользователи/группы (вкл. `certs`), `post-up.service`, `outline-ws0-routing.service`, `/opt/outline/outline-*`, ссылки в конфигах, `/opt/network/*.sh`, скриптах и `cron` |
+| `--dry-run` | проверка локальных бинарей, архитектуры и SHA-256 + печать плана миграции на узле без изменений |
+
+По умолчанию скрипт берёт бинари из `target/<arch>-unknown-linux-musl/release/outline-{server,client}`;
+пути можно переопределить через переменные окружения `SERVER_BIN` и `CLIENT_BIN`.
+
+```bash
+# 1. Read-only аудит перед миграцией
+ops/deploy/migrate-node-rename.sh sysadm@exit-a.fleet.example server --audit
+ops/deploy/migrate-node-rename.sh sysadm@relay-a.fleet.example all --audit
+
+# 2. Пробный прогон с проверкой архитектуры и контрольных сумм
+ops/deploy/migrate-node-rename.sh sysadm@exit-a.fleet.example server --dry-run
+ops/deploy/migrate-node-rename.sh sysadm@relay-c.fleet.example client --dry-run
+
+# 3. Боевая миграция по ролям (строго по одному узлу за раз)
+ops/deploy/migrate-node-rename.sh sysadm@exit-a.fleet.example server
+ops/deploy/migrate-node-rename.sh sysadm@relay-c.fleet.example client
+ops/deploy/migrate-node-rename.sh sysadm@relay-a.fleet.example all
+ops/deploy/migrate-node-rename.sh mmv@198.51.100.104 all
+ops/deploy/migrate-node-rename.sh mmv@198.51.100.102 all
+```
+
+### Что делает скрипт и гарантии отката
+
+1. Работает через единое SSH-соединение (`ControlMaster=auto`, `ControlPersist=60`),
+   чтобы серия команд не спровоцировала `sshguard`.
+2. Сверяет `file -b` локальных бинарей с `uname -m` на узле, переносит бинари,
+   `ops/watchdog/outline-watchdog` и unit-файлы во временный каталог на узле и
+   проверяет SHA-256.
+3. Сохраняет снимок текущего состояния (бинари, `/etc/outline-*`, юниты и
+   drop-in'ы, `post-up.service`, `outline-ws0-routing.service`, `/opt/network`,
+   `/opt/outline/outline-*`, `/opt/outline/access-keys/generate_keys.py`,
+   `/opt/ddns/*/permission-certs.sh`, `/opt/beerloga/permission-certs.sh`,
+   `/etc/default/nanopi104-backup`, записи `passwd`/`group`) в
+   `/var/tmp/outline-rename-rollback.<timestamp>` (`0700`).
+4. Останавливает старые таймеры и юниты (включая все инстансы `outline-ws-rust@*.service`).
+5. Переименовывает группы и пользователей (`outline-ss-rust` → `outline-server` с
+   сохранением членства в `certs`; `outline-ws` → `outline-client`), переносит
+   каталоги `/etc`, `/var/lib`, `/var/log` и `/opt/outline/outline-{ss,ws}-rust`
+   → `/opt/outline/outline-{server,client}`.
+6. Обновляет пути внутри `config.toml` (и `instances/*.toml`), выставляя
+   владельцев и права (`0750` на каталоги, `0640` на конфиги) строго после
+   `sed -i`; обновляет drop-in'ы, `save-keys.sh`/`generate_keys.py`, права на
+   `users.txt` (`root:outline-server`, `0640`), `permission-certs.sh`,
+   `outline-ws0-routing.service`, `/opt/network/*.sh` (с сохранением `+x` на
+   `init-ws0.sh` и исполняемых `*.sh`), `post-up.service` и
+   `/etc/default/nanopi104-backup`.
+7. Устанавливает новые бинари, `outline-watchdog` и unit-файлы, удаляет старые,
+   выполняет `systemctl daemon-reload`, запускает службы (включая перенесённые
+   `outline-client@*.service` и `outline-watchdog@*.timer`) и проверяет
+   `http://127.0.0.1:<port>/metrics` (`9090` / `9091`, HTTP 200 до 15 попыток).
+   При любом сбое автоматически откатывает все изменения из `$ROLLBACK`.
