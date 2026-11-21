@@ -177,3 +177,81 @@ pub async fn update_subscription(
     let _ = app.emit("profiles-updated", ());
     Ok(profile.cached_toml.len())
 }
+
+/// Returns current application version and build metadata.
+#[tauri::command]
+pub async fn get_app_version() -> Result<crate::version::AppVersionInfo, String> {
+    Ok(crate::version::AppVersion::current())
+}
+
+/// Checks GitHub releases for available application updates according to current build channel.
+#[tauri::command]
+pub async fn check_for_updates() -> Result<crate::updater::UpdateCheckResult, String> {
+    let ver = crate::version::AppVersion::current();
+    crate::updater::UpdateChecker::check(&ver.channel, &ver.commit, &ver.version).await
+}
+
+/// Downloads, verifies, stages, and initiates installation of an application update.
+///
+/// Archive is downloaded and extracted while tunnel is active. Tunnel is disconnected
+/// and marked for auto-reconnect immediately before launching the updater.
+#[tauri::command]
+pub async fn install_update(
+    update: crate::updater::UpdateInfo,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // 1. Download and verify with progress emission (keep tunnel active during download)
+    let app_handle = app.clone();
+    let zip_path = crate::updater::UpdateInstaller::download_and_verify(&update, move |d, t| {
+        let percent = if t > 0 {
+            (d as f64 / t as f64 * 100.0).round() as u8
+        } else {
+            0
+        };
+        let _ = app_handle.emit(
+            "update-progress",
+            serde_json::json!({
+                "downloaded": d,
+                "total": t,
+                "percent": percent,
+            }),
+        );
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 2. Create temporary staging directory and extract update archive
+    let staging_dir =
+        std::env::temp_dir().join(format!("outline-update-{}", rand::random::<u64>()));
+    crate::updater::UpdateInstaller::stage_update(&zip_path, &staging_dir)?;
+
+    // 3. Remove downloaded zip archive after successful extraction
+    let _ = std::fs::remove_file(&zip_path);
+
+    // 4. If tunnel is active, mark for auto-reconnect and stop it right before launch
+    let was_running = state.process_controller.is_running();
+    if was_running {
+        let mut settings = state.profile_store.settings();
+        settings.reconnect_after_update = true;
+        state
+            .profile_store
+            .update_settings(settings)
+            .map_err(|e| e.to_string())?;
+
+        state
+            .process_controller
+            .stop(Some(&app))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // 5. Launch updater script
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let current_pid = std::process::id();
+    crate::updater::UpdateInstaller::launch_updater(&staging_dir, &current_exe, current_pid)?;
+
+    // 6. Terminate application
+    app.exit(0);
+    Ok(())
+}
