@@ -4,7 +4,7 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 `outline-windows` — нативный клиент Outline Proxy для платформы Windows (x86_64),
 построенный на стеке Tauri v2, Svelte 5 и Rust. Работает поверх сетевого ядра
-`outline-ws-rust` и управляет системным прокси, Wintun TUN-адаптером, маршрутами,
+`outline-client` и управляет системным прокси, Wintun TUN-адаптером, маршрутами,
 профилями и подписками.
 
 Формат следует [Keep a Changelog](https://keepachangelog.com/).

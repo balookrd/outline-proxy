@@ -3,7 +3,7 @@
 English version: [README.md](README.md).
 
 Нативный клиент для Windows 10/11 (x86_64) на базе фреймворка Tauri v2 и Svelte 5.
-Работает поверх высокопроизводительного сетевого ядра `outline-ws-rust` (VLESS,
+Работает поверх высокопроизводительного сетевого ядра `outline-client` (VLESS,
 Shadowsocks AEAD, WebSocket, HTTP/3, padding, failover): приложение запускает
 ядро дочерним процессом и управляет системным прокси, профилями, подписками и
 маршрутизацией.
@@ -21,18 +21,18 @@ Shadowsocks AEAD, WebSocket, HTTP/3, padding, failover): приложение з
   настроек.
 - **Бэкенд приложения (Tauri v2 + Rust Edition 2024)**:
   - `process_controller.rs` — запуск, мониторинг состояния и штатное завершение
-    сетевого ядра `outline-ws-rust.exe`.
+    сетевого ядра `outline-client.exe`.
   - `profile_store.rs` — безопасное хранение профилей серверов, настроек и
     подписок в локальном каталоге `%APPDATA%\su.beerloga.outline.windows`
     (JSON-манифест).
-  - `traffic_monitor.rs` — опрос встроенного control API ядра `outline-ws-rust`
+  - `traffic_monitor.rs` — опрос встроенного control API ядра `outline-client`
     для отображения скорости (downlink/uplink) и объема трафика в реальном
     времени.
   - `tray.rs` — системный трей Windows (значок в панели задач, всплывающее меню
     быстрого подключения, переключения профилей, режимов и выхода).
   - `updater.rs` / `version.rs` — подсистема проверки и безопасной установки
     обновлений с верификацией контрольных сумм.
-- **Сетевое ядро (`outline-ws-rust.exe`)**: скомпилированный бинарник единого
+- **Сетевое ядро (`outline-client.exe`)**: скомпилированный бинарник единого
   клиентского ядра mono-repo `outline-proxy`.
 - **Режимы работы**:
   - **SOCKS5 (системный прокси)**: ядро слушает порт `127.0.0.1:1080`,
@@ -140,14 +140,14 @@ Windows для записи, замена файлов происходит че
 ./scripts/package-windows.sh
 ```
 
-Сборка только сетевого ядра (`outline-ws-rust.exe`) и драйвера Wintun (без GUI):
+Сборка только сетевого ядра (`outline-client.exe`) и драйвера Wintun (без GUI):
 ```bash
 ./scripts/package-windows.sh --skip-ui
 ```
 
 Скрипт выполняет:
 1. Сборку frontend-ассетов через `pnpm build` (`bins/outline-windows/dist`).
-2. Компиляцию сетевого ядра `outline-ws-rust` под `x86_64-pc-windows-msvc`.
+2. Компиляцию сетевого ядра `outline-client` под `x86_64-pc-windows-msvc`.
 3. Компиляцию оболочки `outline-windows` под `x86_64-pc-windows-msvc`.
 4. Загрузку и верификацию официального драйвера Wintun `0.14.1` по эталонному SHA-256.
 5. Формирование архива `OutlineProxy-x86_64.zip` и контрольных сумм `SHA256SUMS.txt` в каталоге `dist/windows/`.

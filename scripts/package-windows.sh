@@ -44,7 +44,7 @@ print_help() {
 Использование: $(basename "$0") [ОПЦИИ]
 
 Скрипт компиляции и бандлинга Windows-клиента Outline Proxy (x86_64).
-Собирает сетевое ядро outline-ws-rust.exe, GUI-оболочку OutlineProxy.exe (Tauri v2 + Svelte 5),
+Собирает сетевое ядро outline-client.exe, GUI-оболочку OutlineProxy.exe (Tauri v2 + Svelte 5),
 загружает проверенный драйвер Wintun (wintun.dll) и формирует архив OutlineProxy-x86_64.zip.
 
 Опции:
@@ -52,7 +52,7 @@ print_help() {
   --check-only         Проверить окружение, наличие инструментов и исходников без сборки
   --output-dir <DIR>   Каталог вывода собранных файлов (по умолчанию: dist/windows)
   --zip-name <NAME>    Имя формируемого zip-архива (по умолчанию: OutlineProxy-x86_64.zip)
-  --skip-ui            Собрать только сетевое ядро (outline-ws-rust.exe) и wintun.dll без GUI
+  --skip-ui            Собрать только сетевое ядро (outline-client.exe) и wintun.dll без GUI
 
 Примеры:
   $(basename "$0") --check-only
@@ -293,10 +293,10 @@ if [[ "${CHECK_ONLY}" == "true" ]]; then
     # Проверка исходников в репозитории
     echo ""
     echo "--- Проверка исходных файлов репозитория ---"
-    if [[ -f "${REPO_ROOT}/bins/outline-ws-rust/Cargo.toml" ]]; then
-        echo "[OK] Сетевое ядро: bins/outline-ws-rust/Cargo.toml"
+    if [[ -f "${REPO_ROOT}/bins/outline-client/Cargo.toml" ]]; then
+        echo "[OK] Сетевое ядро: bins/outline-client/Cargo.toml"
     else
-        echo "[ОШИБКА] Не найден bins/outline-ws-rust/Cargo.toml" >&2
+        echo "[ОШИБКА] Не найден bins/outline-client/Cargo.toml" >&2
         ERRORS=$((ERRORS + 1))
     fi
 
@@ -381,19 +381,19 @@ mkdir -p "${CACHE_DIR}"
 echo "==> [1/5] Проверка и подготовка Wintun ${WINTUN_VERSION}..."
 fetch_wintun "${OUTPUT_DIR}/wintun.dll"
 
-# 3. Сборка сетевого ядра outline-ws-rust
-echo "==> [2/5] Компиляция сетевого ядра outline-ws-rust.exe (${TARGET_TRIPLE})..."
-(cd "${REPO_ROOT}" && "${CARGO_CMD[@]}" -p outline-ws-rust)
+# 3. Сборка сетевого ядра outline-client
+echo "==> [2/5] Компиляция сетевого ядра outline-client.exe (${TARGET_TRIPLE})..."
+(cd "${REPO_ROOT}" && "${CARGO_CMD[@]}" -p outline-client)
 
-WS_EXE="${TARGET_DIR}/release/outline-ws-rust.exe"
-if [[ ! -f "${WS_EXE}" ]]; then
-    echo "Ошибка: собранный бинарник не найден: ${WS_EXE}" >&2
+CLIENT_EXE="${TARGET_DIR}/release/outline-client.exe"
+if [[ ! -f "${CLIENT_EXE}" ]]; then
+    echo "Ошибка: собранный бинарник не найден: ${CLIENT_EXE}" >&2
     exit 1
 fi
-cp "${WS_EXE}" "${OUTPUT_DIR}/outline-ws-rust.exe"
+cp "${CLIENT_EXE}" "${OUTPUT_DIR}/outline-client.exe"
 
 # 4. Сборка фронтенда и GUI-оболочки (если не --skip-ui)
-PACK_FILES=("outline-ws-rust.exe" "wintun.dll")
+PACK_FILES=("outline-client.exe" "wintun.dll")
 
 if [[ "${SKIP_UI}" == "false" ]]; then
     echo "==> [3/5] Сборка интерфейса пользователя (Svelte 5 + Vite)..."

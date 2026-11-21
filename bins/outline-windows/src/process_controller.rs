@@ -14,7 +14,7 @@ use crate::proxy_manager::SystemProxyManager;
 /// Maximum number of log lines retained in memory.
 pub const MAX_LOG_LINES: usize = 1000;
 
-/// Process state for the background `outline-ws-rust` child.
+/// Process state for the background `outline-client` child.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "data", rename_all = "camelCase")]
 pub enum ProcessState {
@@ -58,11 +58,11 @@ enum RunningChild {
     },
 }
 
-/// Locates the `outline-ws-rust` binary across environment variables, adjacent folders,
+/// Locates the `outline-client` binary across environment variables, adjacent folders,
 /// build directories and system PATH.
-pub fn find_outline_ws_binary() -> Result<PathBuf> {
-    // 1. Explicit override via OUTLINE_WS_BIN env var
-    if let Ok(path_str) = std::env::var("OUTLINE_WS_BIN") {
+pub fn find_outline_client_binary() -> Result<PathBuf> {
+    // 1. Explicit override via OUTLINE_CLIENT_BIN env var
+    if let Ok(path_str) = std::env::var("OUTLINE_CLIENT_BIN") {
         let path = PathBuf::from(path_str);
         if path.is_file() {
             return Ok(path);
@@ -70,9 +70,9 @@ pub fn find_outline_ws_binary() -> Result<PathBuf> {
     }
 
     #[cfg(windows)]
-    let bin_name = "outline-ws-rust.exe";
+    let bin_name = "outline-client.exe";
     #[cfg(not(windows))]
-    let bin_name = "outline-ws-rust";
+    let bin_name = "outline-client";
 
     // 2. Adjacent to current executable
     if let Ok(current_exe) = std::env::current_exe()
@@ -114,11 +114,11 @@ pub fn find_outline_ws_binary() -> Result<PathBuf> {
     }
 
     bail!(
-        "outline-ws-rust binary not found. Set OUTLINE_WS_BIN or place {bin_name} in target directory or PATH"
+        "outline-client binary not found. Set OUTLINE_CLIENT_BIN or place {bin_name} in target directory or PATH"
     );
 }
 
-/// Controller managing the background `outline-ws-rust` process, system proxy toggling,
+/// Controller managing the background `outline-client` process, system proxy toggling,
 /// and log ring buffer.
 pub struct ProcessController {
     state: Arc<RwLock<ProcessState>>,
@@ -211,7 +211,7 @@ impl ProcessController {
         }
     }
 
-    /// Starts `outline-ws-rust` with the given profile and settings.
+    /// Starts `outline-client` with the given profile and settings.
     pub async fn start(
         &self,
         profile: &ServerProfile,
@@ -233,17 +233,17 @@ impl ProcessController {
         let toml_content =
             ConfigGenerator::generate(profile, settings.tcp_only, settings.socks_port, tun_enabled);
 
-        let binary_path = match find_outline_ws_binary() {
+        let binary_path = match find_outline_client_binary() {
             Ok(p) => p,
             Err(e) => {
-                let err_msg = format!("Failed to locate outline-ws binary: {e}");
+                let err_msg = format!("Failed to locate outline-client binary: {e}");
                 self.set_error(&err_msg, app_handle);
                 bail!(err_msg);
             },
         };
 
         // Write configuration to temporary file
-        let temp_filename = format!("outline_ws_{:016x}.toml", rand::random::<u64>());
+        let temp_filename = format!("outline_client_{:016x}.toml", rand::random::<u64>());
         let temp_path = std::env::temp_dir().join(temp_filename);
         if let Err(e) = std::fs::write(&temp_path, &toml_content) {
             let err_msg = format!("Failed to write temporary config: {e}");
@@ -258,7 +258,7 @@ impl ProcessController {
 
         self.push_log(
             format!(
-                "Starting outline-ws-rust (mode: {}, binary: {})",
+                "Starting outline-client (mode: {}, binary: {})",
                 if tun_enabled { "TUN" } else { "SOCKS5" },
                 binary_path.display()
             ),
@@ -315,7 +315,7 @@ impl ProcessController {
                 }
 
                 self.push_log(
-                    format!("outline-ws-rust started successfully (PID {pid})"),
+                    format!("outline-client started successfully (PID {pid})"),
                     app_handle,
                 );
                 self.emit_status_change(app_handle);
@@ -418,7 +418,7 @@ impl ProcessController {
             *state_lock = ProcessState::Stopping;
         }
         self.emit_status_change(app_handle);
-        self.push_log("Stopping outline-ws-rust...".to_string(), app_handle);
+        self.push_log("Stopping outline-client...".to_string(), app_handle);
 
         // Terminate child
         {
@@ -457,7 +457,7 @@ impl ProcessController {
             *state_lock = ProcessState::Stopped;
         }
 
-        self.push_log("outline-ws-rust stopped".to_string(), app_handle);
+        self.push_log("outline-client stopped".to_string(), app_handle);
         self.emit_status_change(app_handle);
         Ok(())
     }
@@ -519,7 +519,7 @@ impl ProcessController {
                     };
 
                     if was_running {
-                        tracing::warn!(pid, exit_code, "outline-ws-rust exited unexpectedly");
+                        tracing::warn!(pid, exit_code, "outline-client exited unexpectedly");
                         let err_msg =
                             format!("Процесс прокси неожиданно завершился (код {exit_code})");
                         {
@@ -530,7 +530,7 @@ impl ProcessController {
                         Self::append_log(
                             &logs,
                             format!(
-                                "Error: outline-ws-rust (PID {pid}) exited unexpectedly with code {exit_code}"
+                                "Error: outline-client (PID {pid}) exited unexpectedly with code {exit_code}"
                             ),
                             app_handle.as_ref(),
                         );

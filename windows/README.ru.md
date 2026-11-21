@@ -5,7 +5,7 @@ English version: [README.md](README.md).
 Нативный клиент для Windows (x86_64 / amd64), работающий в области уведомлений (System Tray).
 Клиент построен на архитектуре разделения обязанностей (separation of concerns):
 - **GUI-оболочка (Frontend & IPC)**: Tauri v2 + Svelte 5 + Tailwind CSS (минимальное потребление памяти, нативный рендеринг через WebView2).
-- **Сетевое ядро (Data Plane)**: высокопроизводительный сервис `outline-ws-rust.exe` (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
+- **Сетевое ядро (Data Plane)**: высокопроизводительный сервис `outline-client.exe` (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
 - **L3 VPN-адаптер**: проверенный сетевой драйвер Wintun 0.14.1 (`wintun.dll`), предоставляющий виртуальный сетевой интерфейс TUN без создания лишних служб.
 
 ---
@@ -26,7 +26,7 @@ flowchart TD
         UAC["UAC Launcher (ShellExecuteExW runas)"]
     end
 
-    subgraph DataPlane ["Data Plane (outline-ws-rust.exe)"]
+    subgraph DataPlane ["Data Plane (outline-client.exe)"]
         SocksMode["SOCKS5 Ingress (127.0.0.1:1080)"]
         TunMode["TUN Ingress (адаптер Wintun: OutlineProxy)"]
         Uplink["Uplink Dialers (VLESS / Shadowsocks over WS / H3 / TCP)"]
@@ -62,7 +62,7 @@ flowchart TD
 ## Режимы работы
 
 ### 1. SOCKS5 (системный прокси)
-- **Принцип работы**: GUI запускает бинарник `outline-ws-rust.exe` в контексте обычного пользователя с локальным слушателем `127.0.0.1:1080`.
+- **Принцип работы**: GUI запускает бинарник `outline-client.exe` в контексте обычного пользователя с локальным слушателем `127.0.0.1:1080`.
 - **Интеграция с ОС**: Приложение вызывает функции Windows WinINet API (`InternetSetOptionW` с флагами `INTERNET_OPTION_SETTINGS_CHANGED` и `INTERNET_OPTION_REFRESH`), устанавливая `127.0.0.1:1080` в качестве HTTP/HTTPS/SOCKS-прокси текущего пользователя.
 - **Особенности**:
   - Не затрагивает сетевые интерфейсы и драйверы.
@@ -70,7 +70,7 @@ flowchart TD
   - При закрытии приложения или отключении прокси автоматически сбрасывается.
 
 ### 2. TUN (полноценный L3 VPN-адаптер)
-- **Принцип работы**: Ядро `outline-ws-rust.exe` запускается с правами администратора через UAC-элевацию (`ShellExecuteExW` с глаголом `runas`).
+- **Принцип работы**: Ядро `outline-client.exe` запускается с правами администратора через UAC-элевацию (`ShellExecuteExW` с глаголом `runas`).
 - **Сетевой драйвер**: Ядро находит `wintun.dll` в каталоге приложения и создает L3-адаптер с именем `OutlineProxy`.
 - **Маршрутизация**:
   - Добавляются прямые host-маршруты до серверов прокси через основной физический шлюз (для предотвращения образования петель маршрутизации).
@@ -100,7 +100,7 @@ flowchart TD
    ```
    Скрипт выполнит:
    - Проверку наличия и скачивание официального архива `wintun-0.14.1.zip` с валидацией SHA256-хэша (`07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`) и извлечение `wintun.dll`.
-   - Сборку ядра `outline-ws-rust.exe` под таргет `x86_64-pc-windows-msvc` в режиме release.
+   - Сборку ядра `outline-client.exe` под таргет `x86_64-pc-windows-msvc` в режиме release.
    - Сборку фронтенда Svelte 5 / Vite (`pnpm build`).
    - Сборку GUI-приложения `OutlineProxy.exe` под `x86_64-pc-windows-msvc` в режиме release.
    - Бандлинг всех компонентов в `dist/windows/OutlineProxy-x86_64.zip`.
@@ -127,7 +127,7 @@ flowchart TD
    cd ..\..
 
    # 2. Сборка сетевого ядра
-   cargo build -p outline-ws-rust --release --target x86_64-pc-windows-msvc
+   cargo build -p outline-client --release --target x86_64-pc-windows-msvc
 
    # 3. Сборка GUI приложения
    cargo build -p outline-windows --release --target x86_64-pc-windows-msvc
@@ -152,7 +152,7 @@ flowchart TD
 3. Скопируйте получившийся `dist/windows/OutlineProxy-x86_64.zip` на виртуальную машину (через общий буфер обмена RDP, SMB-сетевую папку или SFTP).
 4. Распакуйте архив в любую директорию, например в `C:\OutlineProxy\`. Убедитесь, что в каталоге присутствуют файлы:
    - `OutlineProxy.exe`
-   - `outline-ws-rust.exe`
+   - `outline-client.exe`
    - `wintun.dll`
 
 ### 2. Тестирование режима SOCKS5
@@ -202,11 +202,11 @@ flowchart TD
 Все пользовательские конфигурации сохраняются в профиле текущего пользователя:
 - Каталог данных: `%APPDATA%\OutlineProxy\` (обычно `C:\Users\<Имя_Пользователя>\AppData\Roaming\OutlineProxy\`).
 - `profiles.json`: сохраненные профили серверов, URL подписок и настройки режимов.
-- `active_config.toml`: сгенерированный рабочий конфигурационный файл для запуска `outline-ws-rust.exe`.
+- `active_config.toml`: сгенерированный рабочий конфигурационный файл для запуска `outline-client.exe`.
 
 ### Просмотр журнала событий (Logs)
 1. В интерфейсе клиента откройте вкладку **«Журнал»**.
-2. Журнал отображает stdout и stderr процесса `outline-ws-rust.exe` в реальном времени.
+2. Журнал отображает stdout и stderr процесса `outline-client.exe` в реальном времени.
 3. Доступны фильтры уровней: `ALL`, `ERROR`, `WARN`, `INFO`, `DEBUG`, а также поиск по ключевым словам.
 4. Кнопка **«Копировать»** позволяет скопировать журнал в буфер обмена для отправки разработчикам.
 
@@ -214,5 +214,5 @@ flowchart TD
 Для детального исследования проблем взаимодействия с сетью можно запустить ядро вручную из командной строки PowerShell с максимальным уровнем логирования:
 ```powershell
 $env:RUST_LOG="trace"
-.\outline-ws-rust.exe --config "$env:APPDATA\OutlineProxy\active_config.toml"
+.\outline-client.exe --config "$env:APPDATA\OutlineProxy\active_config.toml"
 ```

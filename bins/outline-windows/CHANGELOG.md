@@ -3,7 +3,7 @@
 Russian version: [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 `outline-windows` is the native Outline Proxy desktop client for Windows (x86_64),
-built with Tauri v2, Svelte 5, and Rust. It runs on top of the `outline-ws-rust`
+built with Tauri v2, Svelte 5, and Rust. It runs on top of the `outline-client`
 network core, managing the Windows system proxy, Wintun TUN adapter, routing,
 server profiles, and subscriptions.
 

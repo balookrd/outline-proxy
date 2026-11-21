@@ -2,7 +2,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 use crate::process_controller::{
-    MAX_LOG_LINES, ProcessController, ProcessState, find_outline_ws_binary,
+    MAX_LOG_LINES, ProcessController, ProcessState, find_outline_client_binary,
 };
 use crate::profile_store::{AppSettings, ProfileStore, ServerProfile};
 
@@ -25,7 +25,7 @@ fn test_process_controller_initial_state_and_logs() {
 }
 
 #[test]
-fn test_find_outline_ws_binary_with_env_override() {
+fn test_find_outline_client_binary_with_env_override() {
     // Create a temporary dummy executable file
     let mut temp_bin = NamedTempFile::new().expect("failed to create temp file");
     writeln!(temp_bin, "dummy binary").unwrap();
@@ -33,16 +33,16 @@ fn test_find_outline_ws_binary_with_env_override() {
 
     // SAFETY: Setting environment variable in isolated unit test.
     unsafe {
-        std::env::set_var("OUTLINE_WS_BIN", &temp_path);
+        std::env::set_var("OUTLINE_CLIENT_BIN", &temp_path);
     }
 
-    let found = find_outline_ws_binary();
+    let found = find_outline_client_binary();
     assert!(found.is_ok());
     assert_eq!(found.unwrap(), temp_path);
 
     // SAFETY: Cleaning up environment variable in isolated unit test.
     unsafe {
-        std::env::remove_var("OUTLINE_WS_BIN");
+        std::env::remove_var("OUTLINE_CLIENT_BIN");
     }
 }
 
@@ -78,9 +78,9 @@ fn test_process_controller_lifecycle_with_mock_process() {
         #[cfg(unix)]
         let mock_bin = {
             use std::os::unix::fs::PermissionsExt;
-            let script_path = temp_dir.path().join("mock-ws");
+            let script_path = temp_dir.path().join("mock-client");
             let mut f = std::fs::File::create(&script_path).unwrap();
-            writeln!(f, "#!/bin/sh\necho 'Mock ws-rust ready'\nsleep 10").unwrap();
+            writeln!(f, "#!/bin/sh\necho 'Mock outline-client ready'\nsleep 10").unwrap();
             let mut perms = f.metadata().unwrap().permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&script_path, perms).unwrap();
@@ -89,16 +89,16 @@ fn test_process_controller_lifecycle_with_mock_process() {
 
         #[cfg(windows)]
         let mock_bin = {
-            let bat_path = temp_dir.path().join("mock-ws.bat");
+            let bat_path = temp_dir.path().join("mock-client.bat");
             let mut f = std::fs::File::create(&bat_path).unwrap();
-            writeln!(f, "@echo off\r\necho Mock ws-rust ready\r\nping 127.0.0.1 -n 10 >nul")
+            writeln!(f, "@echo off\r\necho Mock outline-client ready\r\nping 127.0.0.1 -n 10 >nul")
                 .unwrap();
             bat_path
         };
 
         // SAFETY: Setting environment variable in isolated unit test.
         unsafe {
-            std::env::set_var("OUTLINE_WS_BIN", &mock_bin);
+            std::env::set_var("OUTLINE_CLIENT_BIN", &mock_bin);
         }
 
         let controller = ProcessController::new();
@@ -129,7 +129,7 @@ fn test_process_controller_lifecycle_with_mock_process() {
 
         // SAFETY: Cleaning up environment variable in isolated unit test.
         unsafe {
-            std::env::remove_var("OUTLINE_WS_BIN");
+            std::env::remove_var("OUTLINE_CLIENT_BIN");
         }
     });
 }

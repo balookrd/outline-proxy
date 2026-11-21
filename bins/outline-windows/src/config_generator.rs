@@ -1,10 +1,10 @@
 use crate::profile_store::ServerProfile;
 
-/// Generates TOML configuration files for running `outline-ws-rust.exe`.
+/// Generates TOML configuration files for running `outline-client.exe`.
 pub struct ConfigGenerator;
 
 impl ConfigGenerator {
-    /// Generates a complete TOML configuration string for `outline-ws-rust`.
+    /// Generates a complete TOML configuration string for `outline-client`.
     ///
     /// - `profile`: Target server profile.
     /// - `tcp_only`: Force TCP-only mode (downgrade h3 transports to h2 and strip h3 from ALPN).
