@@ -43,7 +43,7 @@ jobs:
       # Pinned to a commit SHA (supply-chain hardening), so it no longer floats
       # to newer @v2 releases: bump the SHA (and the trailing `# vX.Y.Z`) by
       # hand to pick up the eventual node24 release. The other setup-zig pins in
-      # `_ss-release-build.yml` / `_ws-release-build.yml` must move together.
+      # `_server-release-build.yml` / `_client-release-build.yml` must move together.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.1
@@ -61,7 +61,7 @@ jobs:
       - name: rustfmt (our crates only; vendored kept in upstream style)
         run: >
           cargo fmt --check
-          -p outline-ss-rust -p outline-ws-rust -p outline-ui
+          -p outline-server -p outline-client -p outline-ui
           -p outline-metrics -p outline-net -p outline-routing
           -p outline-transport -p outline-tun
           -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
@@ -129,13 +129,13 @@ jobs:
       # without `RUN_E2E_FAILOVER=1`, and `e2e_tls_carriers` is empty without
       # `test-tls`, so they pass there without exercising anything. Here they
       # drive the real client and server binaries (the harness builds
-      # `outline-ss-rust` itself) over cleartext, TLS-over-TCP and H3/QUIC on
+      # `outline-server` itself) over cleartext, TLS-over-TCP and H3/QUIC on
       # loopback. One thread: each test spawns its own processes and ports.
       - name: cargo test e2e
         env:
           RUN_E2E_FAILOVER: "1"
         run: >
-          cargo test -p outline-ws-rust --features test-tls --test 'e2e_*'
+          cargo test -p outline-client --features test-tls --test 'e2e_*'
           -- --test-threads=1
 
   features-and-invariants:
@@ -155,15 +155,15 @@ jobs:
         run: cargo check --workspace --exclude sockudo-ws --exclude outline-windows
 
       - name: check server without default features (control gated off)
-        run: cargo check -p outline-ss-rust --no-default-features
+        run: cargo check -p outline-server --no-default-features
       # `test-hooks` is built only by the e2e harness (as a dependency of the
       # client's tests, so the clippy gate never lints it); check it here so the
       # hook cannot rot.
       - name: check server with test hooks
-        run: cargo check -p outline-ss-rust --features test-hooks
+        run: cargo check -p outline-server --features test-hooks
 
       - name: check client without default features
-        run: cargo check -p outline-ws-rust --no-default-features
+        run: cargo check -p outline-client --no-default-features
 
       # Monorepo invariant: rustls must stay on a single CryptoProvider
       # (aws-lc-rs). Two providers panic at runtime ("exactly one of aws-lc-rs
@@ -187,7 +187,7 @@ jobs:
           leaked=$(grep -rn 'sockudo_ws' bins/*/src crates/*/src --include='*.rs' \
             | grep -v '/tests/' \
             | grep -v '^crates/outline-transport/src/h3/vendored\.rs:' \
-            | grep -v '^bins/outline-ss-rust/src/server/h3/vendored\.rs:' || true)
+            | grep -v '^bins/outline-server/src/server/h3/vendored\.rs:' || true)
           if [ -n "$leaked" ]; then
             echo "::error::sockudo_ws referenced outside the vendored gate modules:"
             echo "$leaked"
@@ -201,7 +201,7 @@ jobs:
       # `MtuDiscoveryConfig::first_probe`, `MtuDiscoveryConfig::first_probe_caps` and
       # `PathStats::plpmtud_settled`; production code reaches it only via
       # crates/outline-transport/src/quic/vendored.rs (and, for `first_probe`
-      # on the server, bins/outline-ss-rust/src/server/h3/vendored.rs), so a
+      # on the server, bins/outline-server/src/server/h3/vendored.rs), so a
       # quinn-proto rebase touches the gate files (see PATCHES.md). Test
       # modules are exempt.
       - name: invariant — patched quinn-proto API only behind the gate module
@@ -209,7 +209,7 @@ jobs:
           leaked=$(grep -rn 'initial_stream_receive_window\|\.advertise_min_ack_delay(\|\.send_grease_transport_parameter(\|\.advertise_max_idle_timeout(\|\.advertise_max_udp_payload_size(\|\.advertised_max_datagram_frame_size(\|\.version_information(\|\.extra_transport_parameters(\|\.transport_parameter_order(\|\.advertised_active_connection_id_limit(\|\.max_ack_delay_ms(\|\.initial_crypto_layout(\|\.fixed_spin_bit(\|\.first_probe(\|\.first_probe_caps(\|plpmtud_settled' bins/*/src crates/*/src --include='*.rs' \
             | grep -v '/tests/' \
             | grep -v '^crates/outline-transport/src/quic/vendored\.rs:' \
-            | grep -v '^bins/outline-ss-rust/src/server/h3/vendored\.rs:' || true)
+            | grep -v '^bins/outline-server/src/server/h3/vendored\.rs:' || true)
           if [ -n "$leaked" ]; then
             echo "::error::patched quinn-proto API referenced outside the gate module:"
             echo "$leaked"

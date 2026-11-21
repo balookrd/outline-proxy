@@ -7,7 +7,7 @@ on:
       - main
     paths:
       - "macos/**"
-      - "bins/outline-ws-rust/**"
+      - "bins/outline-client/**"
       - "crates/**"
       - "vendor/**"
       - "Cargo.toml"

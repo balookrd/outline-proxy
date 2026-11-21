@@ -6,22 +6,22 @@ on:
     branches:
       - main
     paths:
-      - "bins/outline-ws-rust/**"
+      - "bins/outline-client/**"
       - "crates/**"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".cargo/**"
       - ".github/scripts/build-release-asset.sh"
-      - ".github/workflows/ws-nightly-release.yml"
-      - ".github/workflows/_ws-release-build.yml"
+      - ".github/workflows/client-nightly-release.yml"
+      - ".github/workflows/_client-release-build.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: ws-nightly-release
+  group: client-nightly-release
   cancel-in-progress: true
 
 jobs:
@@ -29,9 +29,9 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       !startsWith(github.event.head_commit.message, 'release: cut ')
-    uses: ./.github/workflows/_ws-release-build.yml
+    uses: ./.github/workflows/_client-release-build.yml
     with:
-      tag: ws-nightly
+      tag: client-nightly
       checkout_ref: ${{ github.sha }}
       prerelease: true
       make_latest: false

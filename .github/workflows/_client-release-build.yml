@@ -47,14 +47,14 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            artifact_name: server-x86_64-unknown-linux-musl
+            artifact_name: client-x86_64-unknown-linux-musl
             profile: release
-            flavor: server
+            flavor: client
 
           - target: aarch64-unknown-linux-musl
-            artifact_name: server-aarch64-unknown-linux-musl
+            artifact_name: client-aarch64-unknown-linux-musl
             profile: release
-            flavor: server
+            flavor: client
 
     steps:
       - id: vars
@@ -130,7 +130,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-ws-${{ matrix.artifact_name }}
+          name: release-client-${{ matrix.artifact_name }}
           path: dist/*.tar.gz
           if-no-files-found: error
           # These are consumed by the `publish` job minutes later; nothing
@@ -168,7 +168,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: release-ws-*
+          pattern: release-client-*
           merge-multiple: true
           path: dist
 
@@ -219,7 +219,7 @@ jobs:
       - name: Generate release notes
         env:
           TAG: ${{ inputs.tag }}
-        run: .github/scripts/gen-release-notes.sh ws "$TAG" release-notes.md
+        run: .github/scripts/gen-release-notes.sh client "$TAG" release-notes.md
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2

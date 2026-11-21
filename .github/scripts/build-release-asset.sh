@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <target> <profile> <flavor: server> <output-dir>" >&2
+  echo "usage: $0 <target> <profile> <flavor: client> <output-dir>" >&2
   exit 1
 fi
 
@@ -11,7 +11,7 @@ target="$1"
 profile="$2"
 flavor="$3"
 output_dir="$4"
-binary_name="outline-ws-rust"
+binary_name="outline-client"
 version="${VERSION:-$(python3 -c 'import pathlib, re
 text = pathlib.Path("Cargo.toml").read_text()
 sec = re.search(r"(?ms)^\[workspace\.package\]\n(.*?)(?=^\[|\Z)", text)
@@ -19,12 +19,12 @@ match = sec and re.search(r"^version = \"([^\"]+)\"$", sec.group(1), flags=re.M)
 print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read workspace.package.version from Cargo.toml")))' )}"
 
 case "$flavor" in
-  server)
+  client)
     dest_prefix="$binary_name"
     if [[ "$profile" == "release" ]]; then
-      cargo zigbuild --release -p outline-ws-rust --target "$target"
+      cargo zigbuild --release -p outline-client --target "$target"
     else
-      cargo zigbuild --profile "$profile" -p outline-ws-rust --target "$target"
+      cargo zigbuild --profile "$profile" -p outline-client --target "$target"
     fi
     artifact_dir="$profile"
     ;;

@@ -7,7 +7,7 @@ on:
       - main
     paths:
       - "bins/outline-windows/**"
-      - "bins/outline-ws-rust/**"
+      - "bins/outline-client/**"
       - "crates/**"
       - "vendor/**"
       - "scripts/package-windows.sh"

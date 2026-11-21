@@ -115,8 +115,8 @@ jobs:
 
           # 2. Root Cargo.lock (all 13 workspace packages owned by this repo)
           workspace_packages = [
-              "outline-ss-rust",
-              "outline-ws-rust",
+              "outline-server",
+              "outline-client",
               "outline-ui",
               "outline-windows",
               "outline-metrics",
@@ -154,7 +154,7 @@ jobs:
           # 4. android/rust/Cargo.lock (outline-android + workspace packages pulled via path)
           android_lock = Path("android/rust/Cargo.lock")
           android_lock_text = android_lock.read_text(encoding="utf-8")
-          required_android_pkgs = {"outline-android", "outline-ws-rust"}
+          required_android_pkgs = {"outline-android", "outline-client"}
           for pkg in ["outline-android", *workspace_packages]:
               pattern = rf'(\[\[package\]\]\nname = "{re.escape(pkg)}"\nversion = ")([^"]+)(")'
               android_lock_text, count = re.subn(pattern, rf'\g<1>{version}\g<3>', android_lock_text, count=1)
