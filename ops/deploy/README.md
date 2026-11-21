@@ -105,7 +105,7 @@ ops/deploy/migrate-node-rename.sh <host> <server|client|all> [--audit | --dry-ru
 | Аргумент / опция | Что это |
 |---|---|
 | `<host>` | ssh-цель, например `sysadm@exit-a.fleet.example` |
-| `<role>` | `server` (`outline-server`), `client` (`outline-client`) или `all` (оба сервиса) |
+| `<role>` | `server` (`outline-server`), `client` (`outline-client`) или `all` (оба сервиса; если на узле запущены или установлены оба старых сервиса, по-ролевые `server`/`client` откажутся, чтобы не сломать watchdog соседа) |
 | `--audit` | только чтение состояния узла: юниты, инстансы, drop-in, пользователи/группы (вкл. `certs`), `post-up.service`, `outline-ws0-routing.service`, `/opt/outline/outline-*`, ссылки в конфигах, `/opt/network/*.sh`, скриптах и `cron` |
 | `--dry-run` | проверка локальных бинарей, архитектуры и SHA-256 + печать плана миграции на узле без изменений |
 
@@ -139,23 +139,28 @@ ops/deploy/migrate-node-rename.sh mmv@198.51.100.102 all
 3. Сохраняет снимок текущего состояния (бинари, `/etc/outline-*`, юниты и
    drop-in'ы, `post-up.service`, `outline-ws0-routing.service`, `/opt/network`,
    `/opt/outline/outline-*`, `/opt/outline/access-keys/generate_keys.py`,
-   `/opt/ddns/*/permission-certs.sh`, `/opt/beerloga/permission-certs.sh`,
-   `/etc/default/nanopi104-backup`, записи `passwd`/`group`) в
-   `/var/tmp/outline-rename-rollback.<timestamp>` (`0700`).
-4. Останавливает старые таймеры и юниты (включая все инстансы `outline-ws-rust@*.service`).
-5. Переименовывает группы и пользователей (`outline-ss-rust` → `outline-server` с
+   `/opt/ddns/*/permission-certs.sh`, `/opt/fleet/permission-certs.sh`,
+   `/etc/default/nanopi104-backup`, цели симлинков, состояние юнитов/таймеров и
+   записи `passwd`/`group`) в `/var/tmp/outline-rename-rollback.<timestamp>` (`0700`).
+4. Перед изменениями проверяет, что запрошенная роль совместима с соседним
+   сервисом на узле (на dual-role хосте допустима только роль `all`) и узел ещё
+   не переведён на новые имена (после миграции для обновлений используйте
+   `deploy-binary.sh`).
+5. Останавливает старые таймеры и юниты (включая все инстансы `outline-ws-rust@*.service`).
+6. Переименовывает группы и пользователей (`outline-ss-rust` → `outline-server` с
    сохранением членства в `certs`; `outline-ws` → `outline-client`), переносит
    каталоги `/etc`, `/var/lib`, `/var/log` и `/opt/outline/outline-{ss,ws}-rust`
    → `/opt/outline/outline-{server,client}`.
-6. Обновляет пути внутри `config.toml` (и `instances/*.toml`), выставляя
+7. Обновляет пути внутри `config.toml` (и `instances/*.toml`), выставляя
    владельцев и права (`0750` на каталоги, `0640` на конфиги) строго после
    `sed -i`; обновляет drop-in'ы, `save-keys.sh`/`generate_keys.py`, права на
    `users.txt` (`root:outline-server`, `0640`), `permission-certs.sh`,
-   `outline-ws0-routing.service`, `/opt/network/*.sh` (с сохранением `+x` на
-   `init-ws0.sh` и исполняемых `*.sh`), `post-up.service` и
+   `outline-ws0-routing.service`, `/opt/network/*.sh` (вкл. `outline-ws` и с
+   сохранением `+x` на `init-ws0.sh` и исполняемых `*.sh`), `post-up.service` и
    `/etc/default/nanopi104-backup`.
-7. Устанавливает новые бинари, `outline-watchdog` и unit-файлы, удаляет старые,
-   выполняет `systemctl daemon-reload`, запускает службы (включая перенесённые
-   `outline-client@*.service` и `outline-watchdog@*.timer`) и проверяет
+8. Устанавливает новые бинари, `outline-watchdog` и unit-файлы, удаляет старые,
+   выполняет `systemctl daemon-reload`, включает и перезапускает службы
+   (разделяя `enabled` и ранее `active` инстансы `outline-client@*.service`, а
+   таймеры `outline-watchdog@*.timer` — при наличии шаблона) и проверяет
    `http://127.0.0.1:<port>/metrics` (`9090` / `9091`, HTTP 200 до 15 попыток).
    При любом сбое автоматически откатывает все изменения из `$ROLLBACK`.

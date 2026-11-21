@@ -127,6 +127,7 @@ echo "--- active/failed outline units ---"
 systemctl list-units --all --plain 'outline-*' --no-legend --no-pager || true
 echo "--- drop-in directories ---"
 ls -la /etc/systemd/system/outline-*.service.d 2>/dev/null || echo "(none)"
+grep -rnE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b' /etc/systemd/system/outline-*.service.d/*.conf 2>/dev/null || true
 echo "--- post-up.service ---"
 grep -E '^(Before|After|ExecStart)=' /etc/systemd/system/post-up.service 2>/dev/null || echo "(no post-up.service)"
 echo "--- outline-ws0-routing.service ---"
@@ -147,20 +148,20 @@ echo "--- /opt/outline/outline-* ---"
 ls -ld /opt/outline/outline-* 2>/dev/null || echo "(none)"
 ls -la /opt/outline/outline-* 2>/dev/null || true
 echo "--- config.toml path references ---"
-grep -nE 'outline-[sw]s-rust|outline-ws\b' \
+grep -nE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b' \
 	/etc/outline-ws-rust/config.toml /etc/outline-ws-rust/instances/*.toml \
 	/etc/outline-ss-rust/config.toml \
 	/etc/outline-client/config.toml /etc/outline-client/instances/*.toml \
 	/etc/outline-server/config.toml 2>/dev/null || echo "(none)"
 echo "--- /opt/network/*.sh references ---"
-grep -rnE 'outline-[sw]s-rust|outline-ws\b' /opt/network/*.sh 2>/dev/null || echo "(none)"
+grep -rnE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b' /opt/network/*.sh 2>/dev/null || echo "(none)"
 echo "--- helper scripts (/opt/outline, /opt/ddns, /opt/beerloga, /etc/default/nanopi104-backup) ---"
-grep -rnE 'outline-[sw]s-rust|outline-ws\b' \
+grep -rnE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b' \
 	/opt/outline/ /opt/ddns/*/permission-certs.sh /opt/beerloga/permission-certs.sh /etc/default/nanopi104-backup \
 	2>/dev/null || echo "(none)"
 echo "--- cron references (/etc/cron*, root crontab) ---"
-grep -rnIE 'outline-[sw]s-rust|outline-ws\b' /etc/cron* /etc/crontab 2>/dev/null || echo "(none)"
-(crontab -l 2>/dev/null | grep -nE 'outline-[sw]s-rust|outline-ws\b') || echo "(no root crontab hits)"
+grep -rnIE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b' /etc/cron* /etc/crontab 2>/dev/null || echo "(none)"
+(crontab -l 2>/dev/null | grep -nE 'outline-[sw]s-rust|outline_[sw]s_rust|outline-ws\b') || echo "(no root crontab hits)"
 AUDIT
 	exit 0
 fi
@@ -218,41 +219,130 @@ TS="$(date +%Y%m%d%H%M%S)"
 ROLLBACK="/var/tmp/outline-rename-rollback.$TS"
 MIGRATED=0
 
+in_list() {
+	local needle="$1" item=""
+	shift
+	for item in "$@"; do
+		if [ "$item" = "$needle" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+unit_is_active() {
+	systemctl is-active --quiet "$1" 2>/dev/null
+}
+
+unit_is_enabled() {
+	systemctl is-enabled --quiet "$1" 2>/dev/null
+}
+
+has_legacy_server() {
+	[ -e /usr/local/bin/outline-ss-rust ] \
+		|| [ -e /etc/systemd/system/outline-ss-rust.service ] \
+		|| systemctl cat outline-ss-rust.service >/dev/null 2>&1 \
+		|| unit_is_active outline-ss-rust.service \
+		|| unit_is_enabled outline-ss-rust.service
+}
+
+has_legacy_client() {
+	[ -e /usr/local/bin/outline-ws-rust ] \
+		|| [ -e /etc/systemd/system/outline-ws-rust.service ] \
+		|| [ -e /etc/systemd/system/outline-ws-rust@.service ] \
+		|| systemctl cat outline-ws-rust.service >/dev/null 2>&1 \
+		|| unit_is_active outline-ws-rust.service \
+		|| unit_is_enabled outline-ws-rust.service \
+		|| [ "${#LEGACY_CLIENT_INSTANCES[@]}" -gt 0 ]
+}
+
+has_new_server() {
+	[ -e /usr/local/bin/outline-server ] \
+		&& { [ -e /etc/systemd/system/outline-server.service ] || systemctl cat outline-server.service >/dev/null 2>&1; }
+}
+
+has_new_client() {
+	[ -e /usr/local/bin/outline-client ] \
+		&& { [ -e /etc/systemd/system/outline-client.service ] || systemctl cat outline-client.service >/dev/null 2>&1; }
+}
+
+record_symlink_target() {
+	local link="$1" list_file="$2" real=""
+	real="$(readlink -f "$link" 2>/dev/null || true)"
+	if [ -n "$real" ] && [ -e "$real" ] && [ ! -e "$ROLLBACK$real" ]; then
+		mkdir -p "$ROLLBACK$(dirname "$real")"
+		cp -a "$real" "$ROLLBACK$real"
+		printf '%s\n' "$real" >> "$list_file"
+	fi
+}
+
+save_entry() {
+	local path="$1" list_file="$2" link=""
+	if [ -e "$path" ] || [ -L "$path" ]; then
+		mkdir -p "$ROLLBACK$(dirname "$path")"
+		cp -a "$path" "$ROLLBACK$path"
+		if [ -L "$path" ]; then
+			record_symlink_target "$path" "$list_file"
+		elif [ -d "$path" ]; then
+			while IFS= read -r -d '' link; do
+				record_symlink_target "$link" "$list_file"
+			done < <(find "$path" -type l -print0 2>/dev/null || true)
+		fi
+	fi
+}
+
+restore_symlink_targets() {
+	local list_file="$1" real=""
+	[ -f "$list_file" ] || return 0
+	while IFS= read -r real; do
+		[ -n "$real" ] || continue
+		if [ -e "$ROLLBACK$real" ] && [ -d "$(dirname "$real")" ]; then
+			cp -a "$ROLLBACK$real" "$real"
+		fi
+	done < "$list_file"
+}
+
 save_state() {
 	mkdir -p "$ROLLBACK"
 	chmod 0700 "$ROLLBACK"
+	local p="" d=""
 	for p in \
 		/usr/local/bin/outline-ss-rust \
-		/usr/local/bin/outline-ws-rust \
 		/usr/local/sbin/outline-watchdog \
-		/etc/systemd/system/post-up.service \
-		/etc/systemd/system/outline-ws0-routing.service \
-		/etc/default/nanopi104-backup; do
-		if [ -e "$p" ] || [ -L "$p" ]; then
-			mkdir -p "$ROLLBACK$(dirname "$p")"
-			cp -a "$p" "$ROLLBACK$p"
-		fi
+		/etc/systemd/system/outline-ss-rust.service; do
+		save_entry "$p" "$ROLLBACK/symlink-targets-server.txt"
 	done
 	for d in \
 		/etc/outline-ss-rust \
-		/etc/outline-ws-rust \
-		/etc/systemd/system/outline-ss-rust.service \
 		/etc/systemd/system/outline-ss-rust.service.d \
-		/etc/systemd/system/outline-ws-rust.service \
-		/etc/systemd/system/outline-ws-rust@.service \
-		/etc/systemd/system/outline-ws-rust*.service.d \
 		/opt/outline/outline-ss-rust \
-		/opt/outline/outline-ws-rust \
 		/opt/outline/access-keys/generate_keys.py \
-		/opt/network \
 		/opt/ddns/*/permission-certs.sh \
 		/opt/beerloga/permission-certs.sh; do
-		if [ -e "$d" ] || [ -L "$d" ]; then
-			mkdir -p "$ROLLBACK$(dirname "$d")"
-			cp -a "$d" "$ROLLBACK$d"
-		fi
+		save_entry "$d" "$ROLLBACK/symlink-targets-server.txt"
 	done
+
+	for p in \
+		/usr/local/bin/outline-ws-rust \
+		/etc/systemd/system/outline-ws-rust.service \
+		/etc/systemd/system/outline-ws-rust@.service \
+		/etc/systemd/system/outline-ws0-routing.service \
+		/etc/default/nanopi104-backup; do
+		save_entry "$p" "$ROLLBACK/symlink-targets-client.txt"
+	done
+	for d in \
+		/etc/outline-ws-rust \
+		/etc/systemd/system/outline-ws-rust*.service.d \
+		/opt/outline/outline-ws-rust \
+		/opt/network; do
+		save_entry "$d" "$ROLLBACK/symlink-targets-client.txt"
+	done
+
+	save_entry /etc/systemd/system/post-up.service "$ROLLBACK/symlink-targets-common.txt"
+
+	# Полный снимок состояния юнитов сохраняется для отладки оператором при аварийном откате.
 	systemctl list-units --all --plain 'outline-*' --no-legend --no-pager > "$ROLLBACK/units.txt" || true
+	systemctl list-unit-files 'outline-*' --no-legend --no-pager > "$ROLLBACK/unit-files.txt" || true
 	id outline-ss-rust > "$ROLLBACK/id-server.txt" 2>/dev/null || true
 	id outline-ws > "$ROLLBACK/id-client.txt" 2>/dev/null || true
 	getent passwd outline-ss-rust > "$ROLLBACK/passwd-server.txt" 2>/dev/null || true
@@ -299,10 +389,10 @@ rollback() {
 			mkdir -p /etc/outline-ss-rust
 			cp -a "$ROLLBACK/etc/outline-ss-rust/." /etc/outline-ss-rust/
 		fi
-		if [ -f "$ROLLBACK/usr/local/bin/outline-ss-rust" ]; then
+		if [ -f "$ROLLBACK/usr/local/bin/outline-ss-rust" ] || [ -L "$ROLLBACK/usr/local/bin/outline-ss-rust" ]; then
 			cp -a "$ROLLBACK/usr/local/bin/outline-ss-rust" /usr/local/bin/outline-ss-rust
 		fi
-		if [ -f "$ROLLBACK/etc/systemd/system/outline-ss-rust.service" ]; then
+		if [ -f "$ROLLBACK/etc/systemd/system/outline-ss-rust.service" ] || [ -L "$ROLLBACK/etc/systemd/system/outline-ss-rust.service" ]; then
 			cp -a "$ROLLBACK/etc/systemd/system/outline-ss-rust.service" /etc/systemd/system/outline-ss-rust.service
 		fi
 		if [ -d "$ROLLBACK/etc/systemd/system/outline-ss-rust.service.d" ]; then
@@ -313,19 +403,20 @@ rollback() {
 			mkdir -p /opt/outline/outline-ss-rust
 			cp -a "$ROLLBACK/opt/outline/outline-ss-rust/." /opt/outline/outline-ss-rust/
 		fi
-		if [ -f "$ROLLBACK/opt/outline/access-keys/generate_keys.py" ]; then
+		if [ -f "$ROLLBACK/opt/outline/access-keys/generate_keys.py" ] || [ -L "$ROLLBACK/opt/outline/access-keys/generate_keys.py" ]; then
 			cp -a "$ROLLBACK/opt/outline/access-keys/generate_keys.py" /opt/outline/access-keys/generate_keys.py
 		fi
 		for f in "$ROLLBACK"/opt/ddns/*/permission-certs.sh; do
-			if [ -f "$f" ]; then
+			if [ -f "$f" ] || [ -L "$f" ]; then
 				local dest="${f#"$ROLLBACK"}"
 				mkdir -p "$(dirname "$dest")"
 				cp -a "$f" "$dest"
 			fi
 		done
-		if [ -f "$ROLLBACK/opt/beerloga/permission-certs.sh" ]; then
+		if [ -f "$ROLLBACK/opt/beerloga/permission-certs.sh" ] || [ -L "$ROLLBACK/opt/beerloga/permission-certs.sh" ]; then
 			cp -a "$ROLLBACK/opt/beerloga/permission-certs.sh" /opt/beerloga/permission-certs.sh
 		fi
+		restore_symlink_targets "$ROLLBACK/symlink-targets-server.txt"
 		if getent passwd outline-ss-rust >/dev/null; then
 			chown -R outline-ss-rust:outline-ss-rust /etc/outline-ss-rust /var/lib/outline-ss-rust 2>/dev/null || true
 		fi
@@ -338,6 +429,9 @@ rollback() {
 			systemctl disable --now "$u" 2>/dev/null
 		done < <(systemctl list-units --all --plain --type=service --no-legend --no-pager \
 			| awk '{print $1}' | grep -E '^outline-client(\.service|@.+\.service)$' || true)
+		for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
+			systemctl disable --now "outline-client@${inst}.service" 2>/dev/null
+		done
 		rm -f /usr/local/bin/outline-client /etc/systemd/system/outline-client.service /etc/systemd/system/outline-client@.service
 		rm -rf /etc/systemd/system/outline-client*.service.d
 
@@ -368,13 +462,13 @@ rollback() {
 			mkdir -p /etc/outline-ws-rust
 			cp -a "$ROLLBACK/etc/outline-ws-rust/." /etc/outline-ws-rust/
 		fi
-		if [ -f "$ROLLBACK/usr/local/bin/outline-ws-rust" ]; then
+		if [ -f "$ROLLBACK/usr/local/bin/outline-ws-rust" ] || [ -L "$ROLLBACK/usr/local/bin/outline-ws-rust" ]; then
 			cp -a "$ROLLBACK/usr/local/bin/outline-ws-rust" /usr/local/bin/outline-ws-rust
 		fi
-		if [ -f "$ROLLBACK/etc/systemd/system/outline-ws-rust.service" ]; then
+		if [ -f "$ROLLBACK/etc/systemd/system/outline-ws-rust.service" ] || [ -L "$ROLLBACK/etc/systemd/system/outline-ws-rust.service" ]; then
 			cp -a "$ROLLBACK/etc/systemd/system/outline-ws-rust.service" /etc/systemd/system/outline-ws-rust.service
 		fi
-		if [ -f "$ROLLBACK/etc/systemd/system/outline-ws-rust@.service" ]; then
+		if [ -f "$ROLLBACK/etc/systemd/system/outline-ws-rust@.service" ] || [ -L "$ROLLBACK/etc/systemd/system/outline-ws-rust@.service" ]; then
 			cp -a "$ROLLBACK/etc/systemd/system/outline-ws-rust@.service" /etc/systemd/system/outline-ws-rust@.service
 		fi
 		for d in "$ROLLBACK"/etc/systemd/system/outline-ws-rust*.service.d; do
@@ -395,30 +489,63 @@ rollback() {
 			mkdir -p /opt/network
 			cp -a "$ROLLBACK/opt/network/." /opt/network/
 		fi
-		if [ -f "$ROLLBACK/etc/default/nanopi104-backup" ]; then
+		if [ -f "$ROLLBACK/etc/default/nanopi104-backup" ] || [ -L "$ROLLBACK/etc/default/nanopi104-backup" ]; then
 			cp -a "$ROLLBACK/etc/default/nanopi104-backup" /etc/default/nanopi104-backup
 		fi
+		restore_symlink_targets "$ROLLBACK/symlink-targets-client.txt"
 		if getent passwd outline-ws >/dev/null; then
 			chown -R outline-ws:outline-ws /etc/outline-ws-rust /var/lib/outline-ws-rust /var/log/outline-ws-rust 2>/dev/null || true
 		fi
 	fi
 
-	if [ -f "$ROLLBACK/usr/local/sbin/outline-watchdog" ]; then
+	if [ -f "$ROLLBACK/usr/local/sbin/outline-watchdog" ] || [ -L "$ROLLBACK/usr/local/sbin/outline-watchdog" ]; then
 		cp -a "$ROLLBACK/usr/local/sbin/outline-watchdog" /usr/local/sbin/outline-watchdog
 	fi
-	if [ -f "$ROLLBACK/etc/systemd/system/post-up.service" ]; then
+	if [ -f "$ROLLBACK/etc/systemd/system/post-up.service" ] || [ -L "$ROLLBACK/etc/systemd/system/post-up.service" ]; then
 		cp -a "$ROLLBACK/etc/systemd/system/post-up.service" /etc/systemd/system/post-up.service
 	fi
+	restore_symlink_targets "$ROLLBACK/symlink-targets-common.txt"
 
 	systemctl daemon-reload
-	if [ "$DO_SERVER" = 1 ] && [ -f /etc/systemd/system/outline-ss-rust.service ]; then
-		systemctl enable --now outline-ss-rust.service outline-watchdog@outline-ss-rust.timer 2>/dev/null
+	if [ "$DO_SERVER" = 1 ] && { [ -f /etc/systemd/system/outline-ss-rust.service ] || systemctl cat outline-ss-rust.service >/dev/null 2>&1; }; then
+		if [ "$SERV_WAS_ENABLED" = 1 ]; then
+			systemctl enable outline-ss-rust.service 2>/dev/null || true
+		fi
+		if [ "$SERV_WAS_ACTIVE" = 1 ]; then
+			systemctl start outline-ss-rust.service 2>/dev/null || true
+		fi
+		if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
+			if [ "$SERV_WD_WAS_ENABLED" = 1 ]; then
+				systemctl enable outline-watchdog@outline-ss-rust.timer 2>/dev/null || true
+			fi
+			if [ "$SERV_WD_WAS_ACTIVE" = 1 ]; then
+				systemctl start outline-watchdog@outline-ss-rust.timer 2>/dev/null || true
+			fi
+		fi
 	fi
-	if [ "$DO_CLIENT" = 1 ] && [ -f /etc/systemd/system/outline-ws-rust.service ]; then
-		systemctl enable --now outline-ws-rust.service outline-watchdog@outline-ws-rust.timer 2>/dev/null
+	if [ "$DO_CLIENT" = 1 ] && { [ -f /etc/systemd/system/outline-ws-rust.service ] || systemctl cat outline-ws-rust.service >/dev/null 2>&1; }; then
+		if [ "$CLI_WAS_ENABLED" = 1 ]; then
+			systemctl enable outline-ws-rust.service 2>/dev/null || true
+		fi
+		if [ "$CLI_WAS_ACTIVE" = 1 ]; then
+			systemctl start outline-ws-rust.service 2>/dev/null || true
+		fi
 		for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
-			systemctl enable --now "outline-ws-rust@${inst}.service" 2>/dev/null
+			if in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
+				systemctl enable "outline-ws-rust@${inst}.service" 2>/dev/null || true
+			fi
+			if in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
+				systemctl start "outline-ws-rust@${inst}.service" 2>/dev/null || true
+			fi
 		done
+		if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
+			if [ "$CLI_WD_WAS_ENABLED" = 1 ]; then
+				systemctl enable outline-watchdog@outline-ws-rust.timer 2>/dev/null || true
+			fi
+			if [ "$CLI_WD_WAS_ACTIVE" = 1 ]; then
+				systemctl start outline-watchdog@outline-ws-rust.timer 2>/dev/null || true
+			fi
+		fi
 	fi
 	exit 1
 }
@@ -432,27 +559,95 @@ if [ "$DO_CLIENT" = 1 ]; then
 	[ "$got" = "$CLIENT_SUM" ] || { echo "client sha256 mismatch" >&2; exit 1; }
 fi
 
+# Обнаружение клиентских инстансов (из загруженных юнитов и *.wants симлинков) и исходного состояния служб.
+LEGACY_CLIENT_INSTANCES=()
 CLIENT_INSTANCES=()
-while IFS= read -r u; do
-	[ -n "$u" ] || continue
-	inst="${u#outline-ws-rust@}"
-	inst="${inst#outline-client@}"
-	inst="${inst%.service}"
-	seen=0
-	for existing in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
-		if [ "$existing" = "$inst" ]; then
-			seen=1
-			break
-		fi
-	done
-	if [ "$seen" = 0 ]; then
+CLIENT_INSTANCES_ACTIVE=()
+CLIENT_INSTANCES_ENABLED=()
+
+add_client_instance() {
+	local unit="$1" inst=""
+	case "$unit" in
+		outline-ws-rust@?*.service)
+			inst="${unit#outline-ws-rust@}"
+			inst="${inst%.service}"
+			if ! in_list "$inst" "${LEGACY_CLIENT_INSTANCES[@]+"${LEGACY_CLIENT_INSTANCES[@]}"}"; then
+				LEGACY_CLIENT_INSTANCES+=("$inst")
+			fi
+			;;
+		outline-client@?*.service)
+			inst="${unit#outline-client@}"
+			inst="${inst%.service}"
+			;;
+		*) return 0 ;;
+	esac
+	if ! in_list "$inst" "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; then
 		CLIENT_INSTANCES+=("$inst")
 	fi
+	if unit_is_active "$unit" && ! in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
+		CLIENT_INSTANCES_ACTIVE+=("$inst")
+	fi
+	if unit_is_enabled "$unit" && ! in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
+		CLIENT_INSTANCES_ENABLED+=("$inst")
+	fi
+}
+
+while IFS= read -r u; do
+	[ -n "$u" ] || continue
+	add_client_instance "$u"
 done < <(systemctl list-units --all --plain --type=service --no-legend --no-pager \
 	| awk '{print $1}' | grep -E '^outline-(ws-rust|client)@.+\.service$' || true)
 
+while IFS= read -r link; do
+	[ -n "$link" ] || continue
+	add_client_instance "$(basename "$link")"
+done < <(find /etc/systemd/system -maxdepth 2 -path '/etc/systemd/system/*.wants/outline-*@*.service' 2>/dev/null || true)
+
+SERV_WAS_ACTIVE=0
+SERV_WAS_ENABLED=0
+SERV_WD_WAS_ACTIVE=0
+SERV_WD_WAS_ENABLED=0
+CLI_WAS_ACTIVE=0
+CLI_WAS_ENABLED=0
+CLI_WD_WAS_ACTIVE=0
+CLI_WD_WAS_ENABLED=0
+
+if unit_is_active outline-ss-rust.service; then SERV_WAS_ACTIVE=1; fi
+if unit_is_enabled outline-ss-rust.service; then SERV_WAS_ENABLED=1; fi
+if unit_is_active outline-watchdog@outline-ss-rust.timer; then SERV_WD_WAS_ACTIVE=1; fi
+if unit_is_enabled outline-watchdog@outline-ss-rust.timer; then SERV_WD_WAS_ENABLED=1; fi
+if unit_is_active outline-ws-rust.service; then CLI_WAS_ACTIVE=1; fi
+if unit_is_enabled outline-ws-rust.service; then CLI_WAS_ENABLED=1; fi
+if unit_is_active outline-watchdog@outline-ws-rust.timer; then CLI_WD_WAS_ACTIVE=1; fi
+if unit_is_enabled outline-watchdog@outline-ws-rust.timer; then CLI_WD_WAS_ENABLED=1; fi
+
+# Pre-flight: запрет по-ролевой миграции при наличии старого соседнего сервиса и защита от повторного запуска.
+if [ "$DO_SERVER" = 1 ] && [ "$DO_CLIENT" = 0 ] && has_legacy_client; then
+	echo "error: host runs both server and client services; migrate with role 'all'" >&2
+	exit 1
+fi
+if [ "$DO_CLIENT" = 1 ] && [ "$DO_SERVER" = 0 ] && has_legacy_server; then
+	echo "error: host runs both server and client services; migrate with role 'all'" >&2
+	exit 1
+fi
+
+if [ "$DO_SERVER" = 1 ] && [ "$DO_CLIENT" = 0 ] && ! has_legacy_server && has_new_server; then
+	echo "error: already migrated; use ops/deploy/deploy-binary.sh <host> outline-server <bin> for updates" >&2
+	exit 1
+fi
+if [ "$DO_CLIENT" = 1 ] && [ "$DO_SERVER" = 0 ] && ! has_legacy_client && has_new_client; then
+	echo "error: already migrated; use ops/deploy/deploy-binary.sh <host> outline-client <bin> for updates" >&2
+	exit 1
+fi
+if [ "$DO_SERVER" = 1 ] && [ "$DO_CLIENT" = 1 ] \
+	&& ! has_legacy_server && has_new_server \
+	&& ! has_legacy_client && has_new_client; then
+	echo "error: already migrated; use ops/deploy/deploy-binary.sh <host> <unit> <bin> for updates" >&2
+	exit 1
+fi
+
 if [ "$MODE" = "dry-run" ]; then
-	echo "[dry-run] DO_SERVER=$DO_SERVER DO_CLIENT=$DO_CLIENT instances=${CLIENT_INSTANCES[*]:-none}"
+	echo "[dry-run] DO_SERVER=$DO_SERVER DO_CLIENT=$DO_CLIENT instances=${CLIENT_INSTANCES[*]:-none} active=${CLIENT_INSTANCES_ACTIVE[*]:-none} enabled=${CLIENT_INSTANCES_ENABLED[*]:-none}"
 	if [ "$DO_SERVER" = 1 ]; then
 		echo "[dry-run] would migrate outline-ss-rust -> outline-server (user/group+certs, /etc, /var/lib, /opt/outline/outline-server, drop-in, post-up, save-keys, generate_keys.py, permission-certs, watchdog)"
 	fi
@@ -504,7 +699,7 @@ if [ "$DO_SERVER" = 1 ]; then
 	mkdir -p /etc/outline-server /var/lib/outline-server
 
 	if [ -f /etc/outline-server/config.toml ]; then
-		sed -i 's#/etc/outline-ss-rust/#/etc/outline-server/#g; s#/var/lib/outline-ss-rust/#/var/lib/outline-server/#g' \
+		sed -i 's#/etc/outline-ss-rust#/etc/outline-server#g; s#/var/lib/outline-ss-rust#/var/lib/outline-server#g' \
 			/etc/outline-server/config.toml
 	fi
 
@@ -578,12 +773,12 @@ if [ "$DO_CLIENT" = 1 ]; then
 	mkdir -p /etc/outline-client /var/lib/outline-client/_default /var/log/outline-client/_default
 
 	if [ -f /etc/outline-client/config.toml ]; then
-		sed -i 's#/etc/outline-ws-rust/#/etc/outline-client/#g; s#/var/lib/outline-ws-rust/#/var/lib/outline-client/#g; s#/var/log/outline-ws-rust/#/var/log/outline-client/#g' \
+		sed -i 's#/etc/outline-ws-rust#/etc/outline-client#g; s#/var/lib/outline-ws-rust#/var/lib/outline-client#g; s#/var/log/outline-ws-rust#/var/log/outline-client#g' \
 			/etc/outline-client/config.toml
 	fi
 	if [ -d /etc/outline-client/instances ]; then
 		find /etc/outline-client/instances -type f -name '*.toml' \
-			-exec sed -i 's#/etc/outline-ws-rust/#/etc/outline-client/#g; s#/var/lib/outline-ws-rust/#/var/lib/outline-client/#g; s#/var/log/outline-ws-rust/#/var/log/outline-client/#g' {} +
+			-exec sed -i 's#/etc/outline-ws-rust#/etc/outline-client#g; s#/var/lib/outline-ws-rust#/var/lib/outline-client#g; s#/var/log/outline-ws-rust#/var/log/outline-client#g' {} +
 	fi
 
 	# GNU sed -i пересоздаёт файл от root:root, поэтому права выставляем строго после sed.
@@ -616,13 +811,16 @@ if [ "$DO_CLIENT" = 1 ]; then
 		mv /opt/outline/outline-ws-rust /opt/outline/outline-client
 	fi
 	if [ -f /opt/outline/outline-client/init-ws0.sh ]; then
-		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust' /opt/outline/outline-client/init-ws0.sh; then
+		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust|outline-ws\b' /opt/outline/outline-client/init-ws0.sh; then
 			sed -i --follow-symlinks \
-				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g' \
+				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g; s/outline-ws\b/outline-client/g' \
 				/opt/outline/outline-client/init-ws0.sh
 		fi
 		chmod 0755 /opt/outline/outline-client/init-ws0.sh
-		[ -x /opt/outline/outline-client/init-ws0.sh ] || { echo "error: init-ws0.sh is not executable" >&2; exit 1; }
+		if [ ! -x /opt/outline/outline-client/init-ws0.sh ]; then
+			echo "error: init-ws0.sh is not executable" >&2
+			false
+		fi
 	fi
 	for f in /opt/outline/outline-client/*.sh; do
 		[ -f "$f" ] || continue
@@ -633,20 +831,23 @@ if [ "$DO_CLIENT" = 1 ]; then
 		if [ -x "$f" ]; then
 			was_exec=1
 		fi
-		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust' "$f"; then
+		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust|outline-ws\b' "$f"; then
 			sed -i --follow-symlinks \
-				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g' \
+				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g; s/outline-ws\b/outline-client/g' \
 				"$f"
 		fi
 		if [ "$was_exec" = 1 ]; then
 			chmod +x "$f"
-			[ -x "$f" ] || { echo "error: $f lost +x permission" >&2; exit 1; }
+			if [ ! -x "$f" ]; then
+				echo "error: $f lost +x permission" >&2
+				false
+			fi
 		fi
 	done
 	if [ -f /etc/systemd/system/outline-ws0-routing.service ]; then
-		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust' /etc/systemd/system/outline-ws0-routing.service; then
+		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust|outline-ws\b' /etc/systemd/system/outline-ws0-routing.service; then
 			sed -i --follow-symlinks \
-				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g' \
+				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g; s/outline-ws\b/outline-client/g' \
 				/etc/systemd/system/outline-ws0-routing.service
 		fi
 	fi
@@ -656,14 +857,17 @@ if [ "$DO_CLIENT" = 1 ]; then
 		if [ -x "$f" ]; then
 			was_exec=1
 		fi
-		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust' "$f"; then
+		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust|outline-ws\b' "$f"; then
 			sed -i --follow-symlinks \
-				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g' \
+				's#/opt/outline/outline-ws-rust#/opt/outline/outline-client#g; s/outline-ws-rust/outline-client/g; s/outline-ws\b/outline-client/g' \
 				"$f"
 		fi
 		if [ "$was_exec" = 1 ]; then
 			chmod +x "$f"
-			[ -x "$f" ] || { echo "error: $f lost +x permission" >&2; exit 1; }
+			if [ ! -x "$f" ]; then
+				echo "error: $f lost +x permission" >&2
+				false
+			fi
 		fi
 	done
 
@@ -674,10 +878,10 @@ fi
 
 if [ -f /etc/systemd/system/post-up.service ]; then
 	if [ "$DO_SERVER" = 1 ]; then
-		sed -i 's/outline-ss-rust\.service/outline-server.service/g' /etc/systemd/system/post-up.service
+		sed -i 's/outline-ss-rust\.service/outline-server.service/g; s/outline-ss-rust/outline-server/g' /etc/systemd/system/post-up.service
 	fi
 	if [ "$DO_CLIENT" = 1 ]; then
-		sed -i 's/outline-ws-rust\.service/outline-client.service/g' /etc/systemd/system/post-up.service
+		sed -i 's/outline-ws-rust\.service/outline-client.service/g; s/outline-ws-rust/outline-client/g' /etc/systemd/system/post-up.service
 	fi
 fi
 
@@ -718,18 +922,33 @@ check_metrics() {
 }
 
 if [ "$DO_SERVER" = 1 ]; then
-	systemctl enable --now outline-server.service
+	systemctl enable outline-server.service
+	systemctl restart outline-server.service
 	check_metrics outline-server.service 9090
-	systemctl enable --now outline-watchdog@outline-server.timer
+	if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
+		systemctl enable --now outline-watchdog@outline-server.timer
+	else
+		echo "    warn: outline-watchdog@.timer not installed; skipping watchdog timer" >&2
+	fi
 	echo "    ok: outline-server active, /metrics 200"
 fi
 if [ "$DO_CLIENT" = 1 ]; then
-	systemctl enable --now outline-client.service
+	systemctl enable outline-client.service
+	systemctl restart outline-client.service
 	check_metrics outline-client.service 9091
 	for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
-		systemctl enable --now "outline-client@${inst}.service"
+		if in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
+			systemctl enable "outline-client@${inst}.service"
+		fi
+		if in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
+			systemctl restart "outline-client@${inst}.service"
+		fi
 	done
-	systemctl enable --now outline-watchdog@outline-client.timer
+	if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
+		systemctl enable --now outline-watchdog@outline-client.timer
+	else
+		echo "    warn: outline-watchdog@.timer not installed; skipping watchdog timer" >&2
+	fi
 	echo "    ok: outline-client active, /metrics 200"
 fi
 
