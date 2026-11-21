@@ -657,7 +657,7 @@ padding = true
 #[test]
 fn persist_config_patch_validates_result_and_rejects_invalid_config() {
     let path = std::env::temp_dir()
-        .join(format!("outline-ss-persist-patch-{}", std::process::id()))
+        .join(format!("outline-server-persist-patch-{}", std::process::id()))
         .with_extension("toml");
     let original = r#"
 [server]

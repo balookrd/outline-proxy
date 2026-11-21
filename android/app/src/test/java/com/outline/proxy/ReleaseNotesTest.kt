@@ -44,7 +44,7 @@ class ReleaseNotesTest {
     @Test
     fun `breaking section is preserved`() {
         val body = """
-            ## What's Changed in ss-v2.0.0
+            ## What's Changed in v26.11.0
 
             ### ⚠️ BREAKING CHANGES
             - **config**: Remove per-user carrier paths
