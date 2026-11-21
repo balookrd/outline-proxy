@@ -212,18 +212,19 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          cat <<EOF
+          cat <<EOF | tee -a "$GITHUB_STEP_SUMMARY"
 
-          Release commit pushed to main.
+          Release commit prepared for \`${TAG}\`.
 
-          Create a signed tag locally:
+          Create and push a signed tag locally:
 
-            git fetch origin
-            git checkout main
-            git pull --ff-only origin main
-            git tag -s ${TAG} -m "${TAG}"
-            git push origin ${TAG}
+          \`\`\`bash
+          git fetch origin
+          git checkout main
+          git pull --ff-only origin main
+          git tag -s ${TAG} -m "${TAG}"
+          git push origin ${TAG}
+          \`\`\`
 
-          After that, workflow "Tag Release" will build all platforms and publish the unified GitHub release.
-
+          Pushing \`${TAG}\` triggers **Tag Release**, which builds all platforms and publishes the unified GitHub release.
           EOF
