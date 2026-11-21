@@ -4,7 +4,7 @@ import type { UplinkConfig, FallbackConfig } from './types';
 // framework-free like lib/userForm.ts so payload-building is unit-testable
 // without mounting a Svelte component. Task 8 reproduced only the legacy
 // ws/uplinks.html field set; Task 8b extended it to every top-level field
-// `UplinkPayload` accepts (bins/outline-ws-rust/src/http/control/
+// `UplinkPayload` accepts (bins/outline-client/src/http/control/
 // uplinks_crud/payload.rs). Task 8c adds the per-uplink `fallbacks[]`
 // repeatable sub-form (`FallbackPayload` in the same file).
 export const TRANSPORTS = ['ss', 'vless'] as const;
@@ -29,7 +29,7 @@ export interface WireFields {
   // Share-link vs explicit mode (Task 8 review Minor #3; generalized to
   // fallbacks in Task 8c). `link` is mutually exclusive on the wire with
   // `transport` and every explicit carrier/credential field below — see
-  // `expand_share_link` in bins/outline-ws-rust/src/config/load/uplinks/
+  // `expand_share_link` in bins/outline-client/src/config/load/uplinks/
   // wire_shape.rs, which is shared verbatim by the primary wire
   // (`resolve_primary_wire_shape`) and each fallback entry (`apply_link` in
   // config/load/uplinks/fallback_resolution.rs) — one Rust function, one
@@ -77,7 +77,7 @@ export type FallbackFormFields = WireFields;
 // <select> behavior. It matters slightly more for a fallback than for the
 // primary uplink: `FallbackPayload.transport` has *no* backend default (a
 // fallback needs `transport` or a `link`, no third option — see
-// `apply_link` in bins/outline-ws-rust/src/config/load/uplinks/
+// `apply_link` in bins/outline-client/src/config/load/uplinks/
 // fallback_resolution.rs:44-48, `fallbacks[{idx}] requires transport`), so a
 // fresh explicit-mode fallback row needs a concrete value here for the
 // backend to accept it at all — same reason the TRANSPORTS <select> below
@@ -255,7 +255,7 @@ export function validateFallbackForm(fields: FallbackFormFields): string | null 
 // split can never leak both onto the wire for either surface, mirroring
 // `expand_share_link`'s mutual-exclusion check, which is itself shared by
 // the primary wire and the fallback pre-pass on the Rust side (see
-// `apply_link` in bins/outline-ws-rust/src/config/load/uplinks/
+// `apply_link` in bins/outline-client/src/config/load/uplinks/
 // fallback_resolution.rs). `fwmark`/`ipv6_first` sit outside the
 // share-link/explicit branch on both surfaces: `LinkConflictFields` never
 // gates on them (wire_shape.rs), so they're always safe to send alongside
@@ -302,7 +302,7 @@ export function buildFallbackPayload(fields: FallbackFormFields): Record<string,
 
 // `name` is excluded whenever `editing` is true regardless of its value
 // (the identity key is immutable — see merge_patch_into_table's own "name
-// is deliberately not merged" comment in bins/outline-ws-rust/src/http/
+// is deliberately not merged" comment in bins/outline-client/src/http/
 // control/uplinks_crud/payload.rs). `weight` is top-level-only (no fallback
 // has its own weight), so it's added here rather than in buildWireFields.
 //

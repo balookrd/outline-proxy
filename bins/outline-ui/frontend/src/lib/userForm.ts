@@ -16,7 +16,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
   return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-// SS-2022 master-key length per cipher (bins/outline-ss-rust crates/outline-wire
+// SS-2022 master-key length per cipher (bins/outline-server / crates/outline-wire
 // cipher.rs::key_len). For these methods the Shadowsocks "password" IS the
 // base64 of a raw key of exactly this length.
 const SS2022_KEY_LEN: Record<string, number> = {

@@ -2,7 +2,7 @@
 // bins/outline-ui/src/ws/dashboard.html's per-instance/per-uplink renderer
 // (applyInstanceView/renderInstancePanel/renderInstanceBody and their
 // isActive/healthy/statusTone/legWireChainCell helpers), field names verified
-// against the real wire shape (bins/outline-ws-rust/src/http/control/topology.rs
+// against the real wire shape (bins/outline-client/src/http/control/topology.rs
 // ControlUplinkTopology/ControlGroupTopology/WireChainEntry, which
 // dashboard.html consumes unmodified — outline-ui's /ws/dashboard/api/topology
 // proxies /control/topology verbatim, see ws/api.rs `topology()`).

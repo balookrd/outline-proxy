@@ -15,10 +15,10 @@ import type { UplinkFormFields, FallbackFormFields } from './uplinkForm';
 
 // Mirrors ws/uplinks.html's FIELDS / collectForm() / submitForm() for the
 // legacy-parity subset, extended to the full top-level `UplinkPayload`
-// (bins/outline-ws-rust/src/http/control/uplinks_crud/payload.rs) and to the
+// (bins/outline-client/src/http/control/uplinks_crud/payload.rs) and to the
 // share-link-vs-explicit mode split fixed in Task 8b (see
 // `expand_share_link` in
-// bins/outline-ws-rust/src/config/load/uplinks/wire_shape.rs for why the two
+// bins/outline-client/src/config/load/uplinks/wire_shape.rs for why the two
 // are mutually exclusive on the wire), and to the per-uplink `fallbacks[]`
 // repeatable sub-form added in Task 8c (`FallbackPayload` in the same
 // payload.rs).

@@ -3,7 +3,7 @@
 # the attack surface of the container is the service itself.
 #
 # Deliberately not a multi-stage build. The binary is cross-compiled OUTSIDE
-# Docker (`cargo zigbuild`, same as outline-ss-rust/outline-ws-rust — see
+# Docker (`cargo zigbuild`, same as outline-server/outline-client — see
 # README.md's "Deployment" section) and this Dockerfile only packages the
 # result into scratch. Compiling aarch64-musl inside a Docker rust stage
 # would need its own toolchain and would fight that established model

@@ -169,7 +169,7 @@ async fn routes_proxy_forwards_get_with_token() {
 /// The reorder proxy must forward the envelope's inner `body` (`{from, to,
 /// revision}`) to `/control/routes/reorder`, unlike `apply_proxy` whose
 /// control body is ignored by the node either way — `/control/routes/reorder`
-/// actually reads its request body (`ReorderBody` on the `outline-ws-rust`
+/// actually reads its request body (`ReorderBody` on the `outline-client`
 /// side) and would reject an empty one.
 #[tokio::test]
 async fn routes_reorder_proxy_forwards_envelope_body_with_token() {

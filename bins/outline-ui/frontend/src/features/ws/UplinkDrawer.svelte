@@ -105,7 +105,7 @@
   // direction -1 = move earlier in the chain (tried sooner), +1 = move
   // later. Order is meaningful on the wire: fallbacks are tried in array
   // order (`[primary, fallbacks[0], fallbacks[1], …]`, see the doc comment
-  // on `UplinkSection::shuffle_wires` in bins/outline-ws-rust/src/config/
+  // on `UplinkSection::shuffle_wires` in bins/outline-client/src/config/
   // schema.rs) unless `shuffle_wires` reshuffles the chain at load time —
   // which is opt-in and off by default, so the order set here is the order
   // that actually ships in the common case.

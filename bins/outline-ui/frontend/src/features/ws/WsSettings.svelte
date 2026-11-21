@@ -709,7 +709,7 @@
       restartNotice = res.restart_required;
 
       if (res.restart_required) {
-        toast('Settings saved. Restart outline-ws-rust service to bind new sockets or TUN device.');
+        toast('Settings saved. Restart outline-client service to bind new sockets or TUN device.');
       } else {
         toast('Settings saved. Click "Apply now" to reload routing and uplinks live.');
       }
@@ -779,7 +779,7 @@
       {#if restartNotice}
         <div class="applybar" style="border-color: color-mix(in srgb, var(--info) 40%, var(--border)); background: color-mix(in srgb, var(--info) 10%, var(--surface));">
           <span class="pill" style="color: var(--info);">RESTART REQUIRED</span>
-          <span>Changes to SOCKS5 listen socket, TUN interface parameters, or dial/transport windows require restarting <code>outline-ws-rust</code>.</span>
+          <span>Changes to SOCKS5 listen socket, TUN interface parameters, or dial/transport windows require restarting <code>outline-client</code>.</span>
         </div>
       {/if}
 

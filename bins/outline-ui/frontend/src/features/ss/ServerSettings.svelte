@@ -284,7 +284,7 @@
 
       formDirty = false;
       if (res.requires_restart) {
-        toast('Server settings saved. Restart outline-ss-rust to apply socket/TLS changes.');
+        toast('Server settings saved. Restart outline-server to apply socket/TLS changes.');
       } else {
         toast('Server settings saved.');
       }

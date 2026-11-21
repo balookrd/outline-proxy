@@ -85,7 +85,7 @@
         </div>
         <div class="fieldrow">
           <label for="route-files">Prefix files</label>
-          <textarea id="route-files" class="field-mono" rows="2" bind:value={fields.files} placeholder="/etc/outline-ws-rust/geoip-cn.list"></textarea>
+          <textarea id="route-files" class="field-mono" rows="2" bind:value={fields.files} placeholder="/etc/outline-client/geoip-cn.list"></textarea>
         </div>
         <div class="fieldrow">
           <label for="route-domains">Domain suffixes</label>
