@@ -79,7 +79,6 @@ jobs:
 
           if [[ -z "$artifact_version" ]]; then
             case "$tag" in
-              ss-v*) artifact_version="${tag#ss-v}" ;;
               v*)    artifact_version="${tag#v}" ;;
               *)     artifact_version="$tag" ;;
             esac

@@ -15,7 +15,7 @@ use crate::server::shutdown::shutdown_channel;
 /// name and process so parallel test threads don't collide.
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "outline-ss-cert-reload-{}-{}",
+        "outline-server-cert-reload-{}-{}",
         name,
         std::process::id()
     ));

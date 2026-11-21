@@ -58,7 +58,8 @@ fn cert_files(name: &str, sans: &[&str]) -> (PathBuf, PathBuf) {
     let key_pair = KeyPair::generate().unwrap();
     let cert = params.self_signed(&key_pair).unwrap();
 
-    let dir = std::env::temp_dir().join(format!("outline-ss-tls-{}-{}", name, std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("outline-server-tls-{}-{}", name, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cert_path = dir.join(format!("{name}.cert.pem"));
     let key_path = dir.join(format!("{name}.key.pem"));
