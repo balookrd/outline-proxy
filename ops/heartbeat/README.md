@@ -32,7 +32,7 @@ vmalert → Alertmanager (k3s)     relay-a / relay-b
                                   │ heartbeat-watch (systemd timer, раз в 5 мин)
                                   │ последняя запись старше 15 мин?
                                   ├──► письмо через Gmail SMTP
-                                  └──► Telegram через локальный SOCKS5 outline-ws-rust
+                                  └──► Telegram через локальный SOCKS5 outline-client
 ```
 
 С 2026-11-08 17:31 UTC пульс параллельно с Grafana слал Alertmanager в k3s
@@ -57,7 +57,7 @@ Alertmanager закроет его по `endsAt` (около четырёх ин
 с `group_wait: 0s`, `group_interval: 1m`, `repeat_interval: 5m`.
 
 Приёмник не поднимает ни своего порта, ни своего сертификата: на 443 слушает
-`outline-ss-rust`, который нераспознанный HTTPS-трафик отдаёт в nginx на
+`outline-server`, который нераспознанный HTTPS-трафик отдаёт в nginx на
 `127.0.0.1:8080` с `proxy_protocol`. Сниппет подключается в тот же
 `server`-блок `/etc/nginx/sites-enabled/fleet.example`, где уже лежат
 `/rust-ws-exporter/metrics` и соседи, и отвечает `204` на
@@ -98,7 +98,7 @@ Alertmanager закроет его по `endsAt` (около четырёх ин
 | Канал | Когда включён | Путь |
 |-------|---------------|------|
 | почта | всегда | Gmail SMTP напрямую, `smtp.env` |
-| Telegram | есть `/etc/heartbeat-watch/telegram.env` | `curl` через SOCKS5 `outline-ws-rust` на этом же узле (`socks5h://[::1]:31080`) |
+| Telegram | есть `/etc/heartbeat-watch/telegram.env` | `curl` через SOCKS5 `outline-client` на этом же узле (`socks5h://[::1]:31080`) |
 
 `api.telegram.org` с cloud-узлов недоступен (таймаут соединения, проверено
 2026-11-08), поэтому Telegram идёт только через туннель. Если туннель узла упал

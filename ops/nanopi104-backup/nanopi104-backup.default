@@ -10,4 +10,4 @@ NFS_EXPORT=/export/nanopi-backups
 # NFS_SUBDIR=nanopi104
 # KEEP=6                 # how many images to retain
 # MODE=e2image           # e2image (used blocks, portable restore) | dd (raw)
-# STOP_SERVICES=0        # 1 = stop outline-ws-rust during the snapshot
+# STOP_SERVICES=0        # 1 = stop outline-client during the snapshot

@@ -19,7 +19,7 @@ install -D -m 0644 README.md                 /usr/local/share/outline-watchdog/R
 systemctl daemon-reload
 
 enabled=0
-for unit in outline-ws-rust outline-ss-rust; do
+for unit in outline-client outline-server; do
 	if ! systemctl cat "$unit.service" >/dev/null 2>&1; then
 		echo "==> $unit not present here, skipping"
 		continue
@@ -52,5 +52,5 @@ echo
 echo "==> timers:"
 systemctl list-timers 'outline-watchdog@*' --no-pager | head -n $((enabled + 2))
 echo
-echo "Check it: sudo /usr/local/sbin/outline-watchdog outline-ws-rust; echo \$?"
+echo "Check it: sudo /usr/local/sbin/outline-watchdog outline-client; echo \$?"
 echo "Logs:     journalctl -t outline-watchdog"

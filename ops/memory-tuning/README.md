@@ -1,7 +1,7 @@
 # Memory tuning
 
-Source of truth for the per-node cgroup memory limits of `outline-ws-rust` and
-`outline-ss-rust`: [`fleet.tsv`](fleet.tsv) declares the limits,
+Source of truth for the per-node cgroup memory limits of `outline-client` and
+`outline-server`: [`fleet.tsv`](fleet.tsv) declares the limits,
 [`apply.sh`](apply.sh) makes each node match it.
 
 Real fleet node names, domains and addresses in this document are replaced with stand-ins: `198.51.100.0/24` is the home network (`.102`, `.104` etc. are the last octet). The mapping lives in the local, uncommitted `FLEET.local.md`.
@@ -24,8 +24,8 @@ short   ssh_target                   ws_high  ws_max  ss_high  ss_max
 |---|---|---|
 | `short` | `install.sh --host` (provisioning), `apply.sh <host>` | short node name |
 | `ssh_target` | `apply.sh` | ssh target the limits are pushed to; also accepted as `apply.sh <host>` |
-| `ws_high` / `ws_max` | both | `MemoryHigh` / `MemoryMax` of `outline-ws-rust` |
-| `ss_high` / `ss_max` | both | `MemoryHigh` / `MemoryMax` of `outline-ss-rust` |
+| `ws_high` / `ws_max` | both | `MemoryHigh` / `MemoryMax` of `outline-client` |
+| `ss_high` / `ss_max` | both | `MemoryHigh` / `MemoryMax` of `outline-server` |
 
 - A dash (`-`) means the service does not run on that node — its drop-in is left
   untouched.
@@ -62,7 +62,7 @@ limits to the running service without a restart
 - removes any `/etc/systemd/system.control/<unit>.service.d` override left by a
   manual `set-property` (persistent and higher-priority — it would mask the
   table after a reboot);
-- writes `THREAD_STACK_SIZE_KB=512` for `outline-ws-rust` into its own
+- writes `THREAD_STACK_SIZE_KB=512` for `outline-client` into its own
   `30-thread-stack.conf`.
 
 Limits take effect live. The thread-stack env only changes on the next restart,

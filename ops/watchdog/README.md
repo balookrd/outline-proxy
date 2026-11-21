@@ -1,6 +1,6 @@
 # Liveness-watchdog для outline-юнитов
 
-Внешний сторож: перезапускает `outline-ws-rust` / `outline-ss-rust`, когда
+Внешний сторож: перезапускает `outline-client` / `outline-server`, когда
 процесс жив, а обслуживание встало. Каталог содержит скрипт
 `outline-watchdog`, шаблонные юниты `outline-watchdog@.service` /
 `outline-watchdog@.timer` и установщик `install.sh`.
@@ -29,8 +29,8 @@ systemd следит за процессом, а не за тем, обслуж�
 
 `outline-watchdog <unit> [url] [threshold]`:
 
-- URL по умолчанию выводится из имени юнита: `outline-ws-rust` →
-  `http://127.0.0.1:9091/metrics`, `outline-ss-rust` →
+- URL по умолчанию выводится из имени юнита: `outline-client` →
+  `http://127.0.0.1:9091/metrics`, `outline-server` →
   `http://127.0.0.1:9090/metrics`. Для другого имени юнита без явного URL
   скрипт выходит с кодом 2;
 - проверка — `curl -fsS -m 5`: ответ не 2xx или нет ответа за 5 с считается
@@ -68,8 +68,8 @@ unit-файла мало: на серверных нодах клиентски�
 
 При переустановке узла через `ops/provision-node` сторож приезжает из бандла:
 профили `relay-a` и `exit-a` собирают `outline-watchdog` и оба шаблонных юнита и
-включают таймеры (`outline-watchdog@outline-ss-rust.timer`, на `relay-a` ещё
-`outline-watchdog@outline-ws-rust.timer`).
+включают таймеры (`outline-watchdog@outline-server.timer`, на `relay-a` ещё
+`outline-watchdog@outline-client.timer`).
 
 Парк на 2026-07-23 (с тех пор состав сменился, см. `FLEET.local.md`;
 [проверить: какие из текущих узлов под сторожем]):
@@ -87,10 +87,10 @@ unit-файла мало: на серверных нодах клиентски�
 
 ```bash
 # здоровый путь: тихо, exit 0
-sudo /usr/local/sbin/outline-watchdog outline-ws-rust; echo $?
+sudo /usr/local/sbin/outline-watchdog outline-client; echo $?
 
 # счёт промахов без риска рестарта (порог заведомо недостижим)
-sudo /usr/local/sbin/outline-watchdog outline-ws-rust http://127.0.0.1:9/metrics 99
+sudo /usr/local/sbin/outline-watchdog outline-client http://127.0.0.1:9/metrics 99
 
 # что он делал
 journalctl -t outline-watchdog
@@ -104,8 +104,8 @@ systemctl list-timers 'outline-watchdog@*'
 ## Отключение
 
 ```bash
-sudo systemctl disable --now outline-watchdog@outline-ws-rust.timer \
-                             outline-watchdog@outline-ss-rust.timer
+sudo systemctl disable --now outline-watchdog@outline-client.timer \
+                             outline-watchdog@outline-server.timer
 ```
 
 ## Что это не лечит

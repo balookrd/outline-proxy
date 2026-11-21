@@ -1,7 +1,7 @@
 # Memory-тюнинг
 
-Источник истины для per-node cgroup-лимитов памяти `outline-ws-rust` и
-`outline-ss-rust`: [`fleet.tsv`](fleet.tsv) декларирует лимиты,
+Источник истины для per-node cgroup-лимитов памяти `outline-client` и
+`outline-server`: [`fleet.tsv`](fleet.tsv) декларирует лимиты,
 [`apply.sh`](apply.sh) приводит узлы к таблице.
 
 Реальные имена узлов, домены и адреса парка в этом документе заменены условными: `198.51.100.0/24` — домашняя сеть (`.102`, `.104` и т. д. — последний октет). Соответствие — в локальном некоммитируемом `FLEET.local.md`.
@@ -24,8 +24,8 @@ short   ssh_target                   ws_high  ws_max  ss_high  ss_max
 |---|---|---|
 | `short` | `install.sh --host` (провижининг), `apply.sh <host>` | короткое имя узла |
 | `ssh_target` | `apply.sh` | ssh-цель, на которую раскатываются лимиты; тоже принимается как `apply.sh <host>` |
-| `ws_high` / `ws_max` | оба | `MemoryHigh` / `MemoryMax` для `outline-ws-rust` |
-| `ss_high` / `ss_max` | оба | `MemoryHigh` / `MemoryMax` для `outline-ss-rust` |
+| `ws_high` / `ws_max` | оба | `MemoryHigh` / `MemoryMax` для `outline-client` |
+| `ss_high` / `ss_max` | оба | `MemoryHigh` / `MemoryMax` для `outline-server` |
 
 - Дефис (`-`) — сервиса на узле нет, его drop-in не трогается.
 - У каждого лимита мягкая ступень reclaim: `High < Max`. Ниже `High` ничего не
@@ -59,7 +59,7 @@ short   ssh_target                   ws_high  ws_max  ss_high  ss_max
 - удаляет `/etc/systemd/system.control/<unit>.service.d`, оставленный ручным
   `set-property` (он персистентный и приоритетнее — иначе после ребута
   переопределит таблицу);
-- пишет `THREAD_STACK_SIZE_KB=512` для `outline-ws-rust` отдельным
+- пишет `THREAD_STACK_SIZE_KB=512` для `outline-client` отдельным
   `30-thread-stack.conf`.
 
 Лимиты применяются вживую. Env-переменная стека вступит только при следующем

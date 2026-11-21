@@ -24,7 +24,7 @@
 # Consistency: p9 is the live overlay backing store, so the snapshot is
 # crash-consistent (like a power-cut — ext4 journal replays on restore). Configs
 # are static; at worst a few seconds of in-flight logs are inconsistent. Set
-# STOP_SERVICES=1 to quiesce outline-ws-rust during the snapshot if you want less
+# STOP_SERVICES=1 to quiesce outline-client during the snapshot if you want less
 # write churn (it does NOT unmount p9; the overlay stays live either way).
 #
 # Root required. Intended to be driven by nanopi104-backup.timer (which also caps
@@ -39,10 +39,10 @@ NFS_OPTS="${NFS_OPTS:-vers=4,soft,timeo=50,retrans=3,noatime,nolock}"
 NFS_SUBDIR="${NFS_SUBDIR:-nanopi104}"           # subdir under the export
 KEEP="${KEEP:-6}"                                # how many images to retain
 MODE="${MODE:-e2image}"                          # e2image (used blocks) | dd (raw)
-STOP_SERVICES="${STOP_SERVICES:-0}"              # 1 = stop outline-ws-rust while snapshotting
+STOP_SERVICES="${STOP_SERVICES:-0}"              # 1 = stop outline-client while snapshotting
 DEV="${DEV:-/dev/mmcblk0p9}"                      # userdata partition
 HOST_TAG="${HOST_TAG:-nanopi104}"
-SERVICE="${SERVICE:-outline-ws-rust.service}"
+SERVICE="${SERVICE:-outline-client.service}"
 ### --------------------------------------------------------------------------
 
 log()  { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }

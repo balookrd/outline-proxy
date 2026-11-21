@@ -6,7 +6,7 @@
 #   ops/deploy/deploy-binary.sh <host> <unit> <local-binary> [keep]
 #
 #   host   ssh target, e.g. sysadm@cloud3.beerloga.su
-#   unit   outline-ss-rust | outline-ws-rust
+#   unit   outline-server | outline-client
 #   file   path to the cross-built binary
 #   keep   backups to retain (default 3)
 #
@@ -33,9 +33,9 @@ LOCAL="$3"
 KEEP="${4:-3}"
 
 case "$UNIT" in
-	outline-ws-rust) PORT=9091 ;;
-	outline-ss-rust) PORT=9090 ;;
-	*) die "unknown unit '$UNIT' (expected outline-ws-rust or outline-ss-rust)" ;;
+	outline-client) PORT=9091 ;;
+	outline-server) PORT=9090 ;;
+	*) die "unknown unit '$UNIT' (expected outline-client or outline-server)" ;;
 esac
 
 [ -f "$LOCAL" ] || die "no such file: $LOCAL"

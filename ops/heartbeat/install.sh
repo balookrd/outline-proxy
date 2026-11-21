@@ -98,7 +98,7 @@ cat <<'EOF'
 
   Optional, for Telegram alongside mail: /etc/heartbeat-watch/telegram.env
   (mode 0600, root). api.telegram.org is unreachable from these hosts, so it
-  goes through the local outline-ws-rust SOCKS5:
+  goes through the local outline-client SOCKS5:
          TELEGRAM_BOT_TOKEN=<bot token>
          TELEGRAM_CHAT_ID=<chat id>
          TELEGRAM_PROXY=socks5h://[::1]:31080

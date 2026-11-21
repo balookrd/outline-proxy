@@ -15,8 +15,8 @@ set -u
 unit="${1:?usage: outline-watchdog <unit> [url] [threshold]}"
 default_url=""
 case "$unit" in
-    outline-ws-rust*) default_url="http://127.0.0.1:9091/metrics" ;;
-    outline-ss-rust*) default_url="http://127.0.0.1:9090/metrics" ;;
+    outline-client*) default_url="http://127.0.0.1:9091/metrics" ;;
+    outline-server*) default_url="http://127.0.0.1:9090/metrics" ;;
 esac
 url="${2:-$default_url}"
 threshold="${3:-3}"

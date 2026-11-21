@@ -11,7 +11,7 @@ Usage: quic-initial-sink.py <port> <out.pcap> <seconds>
     python3 -I scripts/quic-initial-sink.py 4433 out.pcap 15 &
     # Chrome:  "Google Chrome" --headless=new --no-proxy-server --user-data-dir=<tmp> \\
     #          --origin-to-force-quic-on=127.0.0.1:4433 --dump-dom https://127.0.0.1:4433/
-    # ours:    outline-ws-rust --config <cfg with tcp_ws_url=wss://127.0.0.1:4433/x, tcp_mode=h3>
+    # ours:    outline-client --config <cfg with tcp_ws_url=wss://127.0.0.1:4433/x, tcp_mode=h3>
     tshark -r out.pcap -d udp.port==4433,quic -V | grep 'Parameter: '
 """
 import socket

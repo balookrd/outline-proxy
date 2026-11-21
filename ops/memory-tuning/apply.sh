@@ -147,8 +147,8 @@ while IFS=$'\t ' read -r short host ws_high ws_max ss_high ss_max _rest; do
 	case "$host" in ''|\#*) continue ;; esac
 	[ -n "$ONLY" ] && [ "$host" != "$ONLY" ] && [ "$short" != "$ONLY" ] && continue
 	log "$short  ($host)"
-	apply_unit "$host" outline-ws-rust "$ws_high" "$ws_max" 1
-	apply_unit "$host" outline-ss-rust "$ss_high" "$ss_max" 0
+	apply_unit "$host" outline-client "$ws_high" "$ws_max" 1
+	apply_unit "$host" outline-server "$ss_high" "$ss_max" 0
 	changed=1
 done < <(grep -vE '^\s*#|^\s*$' "$TABLE")
 

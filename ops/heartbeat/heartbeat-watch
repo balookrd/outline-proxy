@@ -8,7 +8,7 @@
 #
 # Two channels: mail through Gmail SMTP, always; Telegram when
 # /etc/heartbeat-watch/telegram.env is present. api.telegram.org is blocked from
-# these hosts, so Telegram goes through the local outline-ws-rust SOCKS5 — if
+# these hosts, so Telegram goes through the local outline-client SOCKS5 — if
 # that tunnel is down at the same time, mail still gets through.
 
 import argparse
