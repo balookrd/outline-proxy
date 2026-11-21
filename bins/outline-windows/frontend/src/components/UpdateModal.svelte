@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatReleaseNotes } from '../lib/releaseNotes';
   import type { UpdateInfo } from '../lib/types';
 
   interface Props {
@@ -22,6 +23,8 @@
     onInstall,
     onClose,
   }: Props = $props();
+
+  const noteLines = $derived(update?.notes ? formatReleaseNotes(update.notes) : []);
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === 'Escape' && isOpen && !isInstalling) {
@@ -74,12 +77,30 @@
       </p>
 
       <!-- Release Notes (if present) -->
-      {#if update?.notes && update.notes.trim().length > 0}
+      {#if noteLines.length > 0}
         <div
-          class="mt-3.5 p-3 rounded-xl border text-xs max-h-36 overflow-y-auto leading-relaxed whitespace-pre-wrap font-sans opacity-85 select-text
+          class="mt-3.5 p-3 rounded-xl border text-xs max-h-48 overflow-y-auto leading-relaxed select-text
             {theme === 'dark' ? 'bg-[#0D121B] border-white/10 text-neutral-300' : 'bg-[#F8FAFC] border-slate-200 text-slate-700'}"
         >
-          {update.notes.trim()}
+          <div class="font-semibold mb-1.5 {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
+            Что нового
+          </div>
+          <div class="space-y-1">
+            {#each noteLines as line}
+              {#if line.kind === 'header'}
+                <div class="font-semibold pt-2 first:pt-0 {theme === 'dark' ? 'text-white/95' : 'text-[#0F172A]'}">
+                  {line.text}
+                </div>
+              {:else if line.kind === 'bullet'}
+                <div class="flex items-start gap-1.5">
+                  <span class="shrink-0 opacity-75">•</span>
+                  <span class="break-words">{line.text}</span>
+                </div>
+              {:else}
+                <p class="break-words">{line.text}</p>
+              {/if}
+            {/each}
+          </div>
         </div>
       {/if}
 

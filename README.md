@@ -180,7 +180,10 @@ Pushes to `main` still publish per-component rolling prereleases (`server-nightl
 `client-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`, `windows-nightly`).
 Each nightly workflow has a path filter, so only affected components rebuild;
 the Android, macOS and Windows filters also cover the client and the shared and
-vendored crates their native code links.
+vendored crates their native code links. Release notes for each rolling prerelease
+follow the same path scope and fall back to a `Maintenance` section
+(`refactor`/`chore`/`build`/`ci`) when no `feat`/`fix`/`perf`/`style` commits
+have landed since the last CalVer release.
 
 The manual *Release* workflow takes an optional `YY.M` series (defaulting to the
 current UTC month), computes the next patch version from existing `vYY.M.*`
