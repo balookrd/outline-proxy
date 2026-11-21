@@ -460,7 +460,7 @@ impl FrameSource for WsFrameSource {
                         self.closed_cleanly = true;
                     }
                     debug!(
-                        target: "outline_ws_rust::session_death",
+                        target: "outline_client::session_death",
                         try_again,
                         frame = ?frame,
                         "ws frame source: received Close from upstream",

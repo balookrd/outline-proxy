@@ -287,7 +287,7 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
         if !header_done {
             return Ok(());
         }
-        debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending Shadowsocks 0-length keepalive chunk");
+        debug!(target: "outline_client::transport::tcp_keepalive", "sending Shadowsocks 0-length keepalive chunk");
         self.send_payload_frame(&[]).await
     }
 

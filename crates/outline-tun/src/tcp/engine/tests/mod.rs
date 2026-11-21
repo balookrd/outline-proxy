@@ -1867,7 +1867,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
 #[tokio::test]
 async fn new_flow_is_removed_when_synack_write_fails() {
     let path = std::env::temp_dir()
-        .join(format!("outline-ws-rust-tun-write-fail-{}.bin", rand::random::<u64>()));
+        .join(format!("outline-client-tun-write-fail-{}.bin", rand::random::<u64>()));
     std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -2218,7 +2218,7 @@ struct TunCapture {
 impl TunCapture {
     async fn new() -> (SharedTunWriter, Self) {
         let path = std::env::temp_dir()
-            .join(format!("outline-ws-rust-tun-capture-{}.bin", rand::random::<u64>()));
+            .join(format!("outline-client-tun-capture-{}.bin", rand::random::<u64>()));
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)

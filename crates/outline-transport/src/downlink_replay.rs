@@ -7,7 +7,7 @@
 //! re-exports that vocabulary for the readers in this crate and keeps
 //! only the transport-level [`DownlinkReplayOutcome`]. The
 //! protocol-level contract is specified in
-//! `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Symmetric
+//! `bins/outline-server/docs/SESSION-RESUMPTION.md` § Symmetric
 //! Downlink Replay (v2).
 //!
 //! Used by the SOCKS-side mid-session retry path: after the v1

@@ -1,4 +1,4 @@
-//! Transport connectors for outline-ws-rust.
+//! Transport connectors for outline-client.
 //!
 //! Provides outbound connection primitives over WebSocket (HTTP/1 upgrade),
 //! HTTP/2, HTTP/3 (QUIC), and direct TCP/UDP, plus shared DNS resolution with
@@ -214,7 +214,7 @@ pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result
 pub use config::{ServerAddr, TransportMode};
 pub use xhttp::{SsPathKind, XhttpSubmode, submode_from_url};
 
-// Test-only TLS knob: cross-repo integration tests in `outline-ss-rust`
+// Test-only TLS knob: cross-repo integration tests in `outline-server`
 // (which spin up an in-process self-signed server) call this before
 // dialing so XHTTP h2/h3 trust their cert. Gated behind the `test-tls`
 // feature so the symbol is absent from production builds; tests opt in
@@ -387,7 +387,7 @@ pub(crate) fn ws_client_config() -> tokio_tungstenite::tungstenite::protocol::We
         // the buffer on demand — only the eager reserve shrinks.
         .read_buffer_size(32 * 1024)
         // Mirrors the server's `write_buffer_size(0)` in
-        // `bins/outline-ss-rust/src/server/transport/mod.rs`: the SS/VLESS
+        // `bins/outline-server/src/server/transport/mod.rs`: the SS/VLESS
         // writers already coalesce up to `FRAME_SOFT_CAP` before handing a
         // frame over, so buffering the coalesced frame a second time buys
         // nothing and costs residency. `max_write_buffer_size` stays at the

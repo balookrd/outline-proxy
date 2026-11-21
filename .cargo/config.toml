@@ -14,19 +14,19 @@ AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "12"
 AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "12"
 
 [alias]
-# --- outline-ss-rust (server) cross builds ---
-ss-build-musl-x86_64 = "zigbuild -p outline-ss-rust --target x86_64-unknown-linux-musl"
-ss-release-musl-x86_64 = "zigbuild --release -p outline-ss-rust --target x86_64-unknown-linux-musl"
-ss-build-musl-aarch64 = "zigbuild -p outline-ss-rust --target aarch64-unknown-linux-musl"
-ss-release-musl-aarch64 = "zigbuild --release -p outline-ss-rust --target aarch64-unknown-linux-musl"
-ss-build-musl-arm = "zigbuild -p outline-ss-rust --target arm-unknown-linux-musleabi"
-ss-release-musl-arm = "zigbuild --release -p outline-ss-rust --target arm-unknown-linux-musleabi"
-ss-build-musl-armv7 = "zigbuild -p outline-ss-rust --target armv7-unknown-linux-musleabihf"
-ss-release-musl-armv7 = "zigbuild --release -p outline-ss-rust --target armv7-unknown-linux-musleabihf"
+# --- outline-server (server) cross builds ---
+server-build-musl-x86_64 = "zigbuild -p outline-server --target x86_64-unknown-linux-musl"
+server-release-musl-x86_64 = "zigbuild --release -p outline-server --target x86_64-unknown-linux-musl"
+server-build-musl-aarch64 = "zigbuild -p outline-server --target aarch64-unknown-linux-musl"
+server-release-musl-aarch64 = "zigbuild --release -p outline-server --target aarch64-unknown-linux-musl"
+server-build-musl-arm = "zigbuild -p outline-server --target arm-unknown-linux-musleabi"
+server-release-musl-arm = "zigbuild --release -p outline-server --target arm-unknown-linux-musleabi"
+server-build-musl-armv7 = "zigbuild -p outline-server --target armv7-unknown-linux-musleabihf"
+server-release-musl-armv7 = "zigbuild --release -p outline-server --target armv7-unknown-linux-musleabihf"
 
-# --- outline-ws-rust (client) cross builds ---
-ws-release-musl-x86_64 = "zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl"
-ws-release-musl-aarch64 = "zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl"
+# --- outline-client (client) cross builds ---
+client-release-musl-x86_64 = "zigbuild --release -p outline-client --target x86_64-unknown-linux-musl"
+client-release-musl-aarch64 = "zigbuild --release -p outline-client --target aarch64-unknown-linux-musl"
 
 # --- outline-ui (dashboard aggregator) cross builds ---
 ui-release-musl-x86_64 = "zigbuild --release -p outline-ui --target x86_64-unknown-linux-musl"

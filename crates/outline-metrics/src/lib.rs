@@ -1,4 +1,4 @@
-//! Prometheus metrics facade for outline-ws-rust.
+//! Prometheus metrics facade for outline-client.
 //!
 //! The crate has one feature flag:
 //!

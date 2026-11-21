@@ -1,5 +1,5 @@
 //! Small data types that both the transport layer and the main binary's
-//! config parser need. Extracted from `outline_ws_rust::types` so the
+//! config parser need. Extracted from `outline_client::types` so the
 //! transport crate stays decoupled from the main binary.
 
 use std::fmt;

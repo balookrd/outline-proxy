@@ -110,7 +110,7 @@ struct MockState {
     /// upstream (or a park reservation) once the carrier that minted the id has
     /// closed; until then the resume looks the id up against a still-live
     /// session and gets `miss-unknown`
-    /// (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Park sequence). A
+    /// (`bins/outline-server/docs/SESSION-RESUMPTION.md` § Park sequence). A
     /// mock that confirmed a hit regardless would let a client that redials
     /// *before* retiring its old carrier pass here and miss on the fleet.
     finished: SyncMutex<std::collections::HashSet<usize>>,

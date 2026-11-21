@@ -92,7 +92,7 @@ async fn a_fallback_wire_dial_attributes_itself_to_wire_two_not_primary() {
 /// [`crate::manager::UplinkManager::connect_tcp_ws_redial_on_wire`] is the
 /// wire-aware sibling of `connect_tcp_ws_redial`, used by same-uplink
 /// recovery paths that present a resume id on a specific wire before chunk 0
-/// has been acknowledged (`outline-ws-rust`'s chunk-0 RST / stale-standby
+/// has been acknowledged (`outline-client`'s chunk-0 RST / stale-standby
 /// retry). It must dial the wire it is given — not always primary — and its
 /// attribution must follow that wire, exactly like the fresh-dial sibling
 /// above.

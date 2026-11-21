@@ -1,0 +1,573 @@
+/// Linux /proc-based process memory sampling and Prometheus rendering.
+///
+/// On non-Linux targets the snapshot always returns `None` and rendering is a
+/// no-op; the module still compiles everywhere.
+use std::fmt::Write;
+
+// ── Public types ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ProcessMemorySnapshot {
+    pub resident_memory_bytes: u64,
+    pub virtual_memory_bytes: u64,
+    pub thread_count: Option<u64>,
+    pub virtual_stack_bytes: Option<u64>,
+    pub virtual_anon_private_bytes: Option<u64>,
+    pub virtual_anon_shared_bytes: Option<u64>,
+    pub virtual_file_private_bytes: Option<u64>,
+    pub virtual_file_shared_bytes: Option<u64>,
+    pub virtual_special_bytes: Option<u64>,
+    pub top_virtual_mappings: Vec<TopVirtualMapping>,
+    /// Heap as the allocator itself reports it. `None` unless built with
+    /// jemalloc: `/proc` cannot separate live data from memory an allocator is
+    /// holding, and that difference is the whole question — on mimalloc 87-90%
+    /// of this process's RSS turned out to be arenas it would never return.
+    pub heap: Option<HeapSnapshot>,
+}
+
+/// `resident - allocated` is fragmentation: memory the allocator holds from the
+/// OS without handing it out.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HeapSnapshot {
+    pub allocated_bytes: u64,
+    pub resident_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TopVirtualMapping {
+    pub kind: &'static str,
+    pub perms: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub rss_bytes: u64,
+}
+
+// ── Sampling ───────────────────────────────────────────────────────────────────
+
+/// Returns the current process memory snapshot, or `None` on non-Linux targets.
+pub fn sample() -> Option<ProcessMemorySnapshot> {
+    sample_impl()
+}
+
+// ── Prometheus rendering ───────────────────────────────────────────────────────
+
+/// Appends the process-memory metric family to an existing Prometheus text
+/// output buffer.  Called from `Metrics::render_prometheus` after the main
+/// `handle.render()` output.
+pub fn append_to_prometheus_output(out: &mut String, snapshot: &ProcessMemorySnapshot) {
+    write_help(
+        out,
+        "outline_ss_process_resident_memory_bytes",
+        "Resident set size of the outline-server process.",
+    );
+    write_type(out, "outline_ss_process_resident_memory_bytes", "gauge");
+    writeln!(
+        out,
+        "outline_ss_process_resident_memory_bytes {}",
+        snapshot.resident_memory_bytes
+    )
+    .ok();
+
+    write_help(
+        out,
+        "outline_ss_process_virtual_memory_bytes",
+        "Virtual memory size of the outline-server process.",
+    );
+    write_type(out, "outline_ss_process_virtual_memory_bytes", "gauge");
+    writeln!(out, "outline_ss_process_virtual_memory_bytes {}", snapshot.virtual_memory_bytes).ok();
+
+    if let Some(v) = snapshot.thread_count {
+        write_help(
+            out,
+            "outline_ss_process_threads",
+            "Thread count of the outline-server process.",
+        );
+        write_type(out, "outline_ss_process_threads", "gauge");
+        writeln!(out, "outline_ss_process_threads {v}").ok();
+    }
+
+    // Only emitted when the allocator reported them. Absent series read as "not
+    // measured", which is honest; a zero would read as "the heap holds nothing
+    // spare" — the opposite of what mimalloc was doing here.
+    if let Some(heap) = snapshot.heap {
+        write_help(
+            out,
+            "outline_ss_process_heap_allocated_bytes",
+            "Heap bytes handed out to the program, as reported by the allocator.",
+        );
+        write_type(out, "outline_ss_process_heap_allocated_bytes", "gauge");
+        writeln!(out, "outline_ss_process_heap_allocated_bytes {}", heap.allocated_bytes).ok();
+
+        write_help(
+            out,
+            "outline_ss_process_heap_resident_bytes",
+            "Heap bytes the allocator holds from the OS.",
+        );
+        write_type(out, "outline_ss_process_heap_resident_bytes", "gauge");
+        writeln!(out, "outline_ss_process_heap_resident_bytes {}", heap.resident_bytes).ok();
+
+        write_help(
+            out,
+            "outline_ss_process_heap_free_bytes",
+            "Heap bytes held by the allocator but not allocated to the program; the fragmentation figure.",
+        );
+        write_type(out, "outline_ss_process_heap_free_bytes", "gauge");
+        writeln!(
+            out,
+            "outline_ss_process_heap_free_bytes {}",
+            heap.resident_bytes.saturating_sub(heap.allocated_bytes)
+        )
+        .ok();
+    }
+
+    if let Some(v) = snapshot.virtual_stack_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_stack_bytes",
+            "Virtual memory bytes currently reserved by process stacks.",
+        );
+        write_type(out, "outline_ss_process_virtual_stack_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_stack_bytes {v}").ok();
+    }
+
+    if let Some(v) = snapshot.virtual_anon_private_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_anon_private_bytes",
+            "Virtual memory bytes in anonymous private mappings.",
+        );
+        write_type(out, "outline_ss_process_virtual_anon_private_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_anon_private_bytes {v}").ok();
+    }
+
+    if let Some(v) = snapshot.virtual_anon_shared_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_anon_shared_bytes",
+            "Virtual memory bytes in anonymous shared mappings.",
+        );
+        write_type(out, "outline_ss_process_virtual_anon_shared_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_anon_shared_bytes {v}").ok();
+    }
+
+    if let Some(v) = snapshot.virtual_file_private_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_file_private_bytes",
+            "Virtual memory bytes in file-backed private mappings.",
+        );
+        write_type(out, "outline_ss_process_virtual_file_private_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_file_private_bytes {v}").ok();
+    }
+
+    if let Some(v) = snapshot.virtual_file_shared_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_file_shared_bytes",
+            "Virtual memory bytes in file-backed shared mappings.",
+        );
+        write_type(out, "outline_ss_process_virtual_file_shared_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_file_shared_bytes {v}").ok();
+    }
+
+    if let Some(v) = snapshot.virtual_special_bytes {
+        write_help(
+            out,
+            "outline_ss_process_virtual_special_bytes",
+            "Virtual memory bytes in special kernel/runtime mappings such as [vdso] or [vvar].",
+        );
+        write_type(out, "outline_ss_process_virtual_special_bytes", "gauge");
+        writeln!(out, "outline_ss_process_virtual_special_bytes {v}").ok();
+    }
+
+    if !snapshot.top_virtual_mappings.is_empty() {
+        write_help(
+            out,
+            "outline_ss_process_virtual_top_mapping_size_bytes",
+            "Top virtual memory mappings by reserved size from /proc/self/smaps.",
+        );
+        write_type(out, "outline_ss_process_virtual_top_mapping_size_bytes", "gauge");
+        write_help(
+            out,
+            "outline_ss_process_virtual_top_mapping_rss_bytes",
+            "RSS contribution of the top virtual memory mappings from /proc/self/smaps.",
+        );
+        write_type(out, "outline_ss_process_virtual_top_mapping_rss_bytes", "gauge");
+        write_help(
+            out,
+            "outline_ss_process_virtual_top_mapping_gap_bytes",
+            "Reserved but currently non-resident bytes of the top virtual memory mappings from /proc/self/smaps.",
+        );
+        write_type(out, "outline_ss_process_virtual_top_mapping_gap_bytes", "gauge");
+
+        for (index, m) in snapshot.top_virtual_mappings.iter().enumerate() {
+            let rank = index + 1;
+            let kind = escape(m.kind);
+            let perms = escape(&m.perms);
+            let name = escape(&m.name);
+            writeln!(
+                out,
+                "outline_ss_process_virtual_top_mapping_size_bytes\
+                 {{rank=\"{rank}\",kind=\"{kind}\",perms=\"{perms}\",name=\"{name}\"}} {}",
+                m.size_bytes
+            )
+            .ok();
+            writeln!(
+                out,
+                "outline_ss_process_virtual_top_mapping_rss_bytes\
+                 {{rank=\"{rank}\",kind=\"{kind}\",perms=\"{perms}\",name=\"{name}\"}} {}",
+                m.rss_bytes
+            )
+            .ok();
+            writeln!(
+                out,
+                "outline_ss_process_virtual_top_mapping_gap_bytes\
+                 {{rank=\"{rank}\",kind=\"{kind}\",perms=\"{perms}\",name=\"{name}\"}} {}",
+                m.size_bytes.saturating_sub(m.rss_bytes)
+            )
+            .ok();
+        }
+    }
+}
+
+// ── Private rendering helpers ──────────────────────────────────────────────────
+
+fn write_help(out: &mut String, name: &str, help: &str) {
+    writeln!(out, "# HELP {name} {help}").ok();
+}
+
+fn write_type(out: &mut String, name: &str, metric_type: &str) {
+    writeln!(out, "# TYPE {name} {metric_type}").ok();
+}
+
+fn escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"")
+}
+
+// ── Linux /proc implementation ─────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn sample_impl() -> Option<ProcessMemorySnapshot> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let resident_memory_bytes = proc_status_value_bytes(&status, "VmRSS:")?;
+    let virtual_memory_bytes = proc_status_value_bytes(&status, "VmSize:")?;
+    let thread_count = proc_status_value_u64(&status, "Threads:");
+    let diag = procfs_virtual_memory_diagnostics();
+    let bd = &diag.breakdown;
+    Some(ProcessMemorySnapshot {
+        resident_memory_bytes,
+        virtual_memory_bytes,
+        thread_count,
+        virtual_stack_bytes: bd.stack_bytes,
+        virtual_anon_private_bytes: bd.anon_private_bytes,
+        virtual_anon_shared_bytes: bd.anon_shared_bytes,
+        virtual_file_private_bytes: bd.file_private_bytes,
+        virtual_file_shared_bytes: bd.file_shared_bytes,
+        virtual_special_bytes: bd.special_bytes,
+        top_virtual_mappings: diag.top_mappings,
+        heap: sample_heap(),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sample_impl() -> Option<ProcessMemorySnapshot> {
+    None
+}
+
+/// Heap figures from jemalloc's own counters.
+///
+/// The statistics are snapshots refreshed on demand, so the epoch has to be
+/// advanced first — without it every read returns the values from process
+/// start.
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+fn sample_heap() -> Option<HeapSnapshot> {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    epoch::advance().ok()?;
+    Some(HeapSnapshot {
+        allocated_bytes: stats::allocated::read().ok()? as u64,
+        resident_bytes: stats::resident::read().ok()? as u64,
+    })
+}
+
+#[cfg(all(target_os = "linux", not(feature = "jemalloc")))]
+fn sample_heap() -> Option<HeapSnapshot> {
+    None
+}
+
+// ── Linux-only types and parsers ───────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default)]
+struct VirtualMemoryBreakdown {
+    stack_bytes: Option<u64>,
+    anon_private_bytes: Option<u64>,
+    anon_shared_bytes: Option<u64>,
+    file_private_bytes: Option<u64>,
+    file_shared_bytes: Option<u64>,
+    special_bytes: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default)]
+struct VirtualMemoryDiagnostics {
+    breakdown: VirtualMemoryBreakdown,
+    top_mappings: Vec<TopVirtualMapping>,
+}
+
+#[cfg(target_os = "linux")]
+fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?.trim();
+        let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kib * 1024)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn proc_status_value_u64(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?.trim();
+        rest.split_whitespace().next()?.parse::<u64>().ok()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn procfs_virtual_memory_diagnostics() -> VirtualMemoryDiagnostics {
+    let smaps = match std::fs::read_to_string("/proc/self/smaps") {
+        Ok(smaps) => smaps,
+        Err(_) => return VirtualMemoryDiagnostics::default(),
+    };
+
+    let mut diag = VirtualMemoryDiagnostics::default();
+    let mut current_mapping = None;
+    let mut current_size_kib = 0_u64;
+    let mut current_rss_kib = 0_u64;
+
+    for line in smaps.lines() {
+        if is_smaps_mapping_header(line) {
+            finalize_mapping(&mut diag, current_mapping.take(), current_size_kib, current_rss_kib);
+            current_mapping = parse_smaps_mapping_header(line);
+            current_size_kib = 0;
+            current_rss_kib = 0;
+            continue;
+        }
+        if let Some(size) = smaps_value_kib(line, "Size:") {
+            current_size_kib = size;
+        } else if let Some(rss) = smaps_value_kib(line, "Rss:") {
+            current_rss_kib = rss;
+        }
+    }
+
+    finalize_mapping(&mut diag, current_mapping, current_size_kib, current_rss_kib);
+    diag.top_mappings.sort_by(|l, r| {
+        r.size_bytes
+            .cmp(&l.size_bytes)
+            .then_with(|| r.rss_bytes.cmp(&l.rss_bytes))
+    });
+    diag.top_mappings.truncate(8);
+    diag
+}
+
+#[cfg(target_os = "linux")]
+fn is_smaps_mapping_header(line: &str) -> bool {
+    line.split_once('-')
+        .and_then(|(start, _)| start.chars().next())
+        .is_some_and(|ch| ch.is_ascii_hexdigit())
+}
+
+#[cfg(target_os = "linux")]
+fn smaps_value_kib(line: &str, key: &str) -> Option<u64> {
+    let rest = line.strip_prefix(key)?.trim();
+    rest.split_whitespace().next()?.parse::<u64>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn add_optional_u64(slot: &mut Option<u64>, value: u64) {
+    *slot = Some(slot.unwrap_or(0).saturating_add(value));
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum MappingKind {
+    Heap,
+    Stack,
+    AnonPrivate,
+    AnonShared,
+    FilePrivate,
+    FileShared,
+    Special,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+struct SmapsMappingHeader<'a> {
+    kind: MappingKind,
+    perms: &'a str,
+    pathname: Option<&'a str>,
+}
+
+#[cfg(target_os = "linux")]
+impl SmapsMappingHeader<'_> {
+    fn classify(shared: bool, pathname: Option<&str>) -> MappingKind {
+        match pathname {
+            Some("[heap]") => MappingKind::Heap,
+            Some(p) if p.starts_with("[stack") => MappingKind::Stack,
+            Some(p) if p.starts_with("[anon") => {
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
+            },
+            Some(p) if p.starts_with('[') => MappingKind::Special,
+            Some(_) => {
+                if shared {
+                    MappingKind::FileShared
+                } else {
+                    MappingKind::FilePrivate
+                }
+            },
+            None => {
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
+            },
+        }
+    }
+
+    fn kind_label(self) -> &'static str {
+        match self.kind {
+            MappingKind::Heap => "heap",
+            MappingKind::Stack => "stack",
+            MappingKind::AnonPrivate => "anon_private",
+            MappingKind::AnonShared => "anon_shared",
+            MappingKind::FilePrivate => "file_private",
+            MappingKind::FileShared => "file_shared",
+            MappingKind::Special => "special",
+        }
+    }
+
+    fn display_name(self) -> String {
+        match self.pathname {
+            Some(path) => truncate_label(path, 96),
+            None => "[anonymous]".to_owned(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_smaps_mapping_header(line: &str) -> Option<SmapsMappingHeader<'_>> {
+    let mut fields = line.split_whitespace();
+    fields.next()?;
+    let perms = fields.next()?;
+    fields.next()?;
+    fields.next()?;
+    fields.next()?;
+    let pathname = fields.next();
+    let shared = perms.contains('s');
+    Some(SmapsMappingHeader {
+        kind: SmapsMappingHeader::classify(shared, pathname),
+        perms,
+        pathname,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn finalize_mapping(
+    diag: &mut VirtualMemoryDiagnostics,
+    mapping: Option<SmapsMappingHeader<'_>>,
+    size_kib: u64,
+    rss_kib: u64,
+) {
+    let Some(mapping) = mapping else { return };
+    if size_kib == 0 {
+        return;
+    }
+    let size_bytes = size_kib.saturating_mul(1024);
+    let rss_bytes = rss_kib.saturating_mul(1024);
+
+    match mapping.kind {
+        MappingKind::Heap => {},
+        MappingKind::Stack => add_optional_u64(&mut diag.breakdown.stack_bytes, size_bytes),
+        MappingKind::AnonPrivate => {
+            add_optional_u64(&mut diag.breakdown.anon_private_bytes, size_bytes)
+        },
+        MappingKind::AnonShared => {
+            add_optional_u64(&mut diag.breakdown.anon_shared_bytes, size_bytes)
+        },
+        MappingKind::FilePrivate => {
+            add_optional_u64(&mut diag.breakdown.file_private_bytes, size_bytes)
+        },
+        MappingKind::FileShared => {
+            add_optional_u64(&mut diag.breakdown.file_shared_bytes, size_bytes)
+        },
+        MappingKind::Special => add_optional_u64(&mut diag.breakdown.special_bytes, size_bytes),
+    }
+
+    diag.top_mappings.push(TopVirtualMapping {
+        kind: mapping.kind_label(),
+        perms: mapping.perms.to_owned(),
+        name: mapping.display_name(),
+        size_bytes,
+        rss_bytes,
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn truncate_label(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut s = String::new();
+    for ch in value.chars().take(limit.saturating_sub(3)) {
+        s.push(ch);
+    }
+    s.push_str("...");
+    s
+}
+
+/// jemalloc's page size next to the kernel's, as `(jemalloc, kernel)`.
+///
+/// They must match. jemalloc 5.3.1 defaults aarch64 Linux builds to 64 KiB
+/// pages while the fleet's ARM node runs a 4 KiB-page kernel, so the build pins
+/// `LG_PAGE` through `.cargo/config.toml`; a binary built without that pin
+/// shows up here as a larger jemalloc page. (A smaller one cannot: jemalloc
+/// refuses to initialise on a kernel whose pages are bigger than its own.)
+#[cfg(all(unix, feature = "jemalloc"))]
+pub(crate) fn allocator_page_sizes() -> Option<(usize, usize)> {
+    // SAFETY: `arenas.page` is a read-only `size_t` mallctl, read as `usize`.
+    let jemalloc = unsafe { tikv_jemalloc_ctl::raw::read::<usize>(b"arenas.page\0") }.ok()?;
+    // SAFETY: `sysconf` has no preconditions; it returns -1 on failure.
+    let kernel = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some((jemalloc, usize::try_from(kernel).ok()?))
+}
+
+/// Logs the allocator page size once at startup; warns when it differs from
+/// the kernel's (see [`allocator_page_sizes`]).
+#[cfg(all(unix, feature = "jemalloc"))]
+pub(crate) fn log_allocator_page_size() {
+    match allocator_page_sizes() {
+        Some((jemalloc, kernel)) if jemalloc == kernel => {
+            tracing::info!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size matches the kernel"
+            );
+        },
+        Some((jemalloc, kernel)) => {
+            tracing::warn!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size differs from the kernel page size; the binary was built without the JEMALLOC_SYS_WITH_LG_PAGE pin and wastes memory"
+            );
+        },
+        None => tracing::warn!("could not read the jemalloc or kernel page size"),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/process_memory.rs"]
+mod tests;

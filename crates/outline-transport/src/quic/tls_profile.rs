@@ -39,7 +39,7 @@
 //! delegated credentials, SCT, record size limit) work only against servers that do
 //! not answer them: answers in EncryptedExtensions are accepted, but rustls rejects
 //! delegated credentials, SCT or trust-anchor answers inside a CertificateEntry.
-//! `outline-ss-rust` (rustls) answers none of them; a third-party front or CDN might.
+//! `outline-server` (rustls) answers none of them; a third-party front or CDN might.
 
 use rustls::{CertificateCompressionAlgorithm, CipherSuite, NamedGroup, SignatureScheme};
 

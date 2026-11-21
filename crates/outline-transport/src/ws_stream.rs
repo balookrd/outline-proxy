@@ -152,7 +152,7 @@ pin_project! {
     /// server echoed `X-Outline-Resume-Ack-Prefix: 1` on the upgrade
     /// response. When `true`, the first decoded SS-AEAD chunk on this
     /// stream is the v1 control frame defined in
-    /// `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol —
+    /// `bins/outline-server/docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol —
     /// callers participating in mid-session retry must consume and parse
     /// it via [`crate::ack_prefix::parse_v1`] before treating any bytes
     /// as upstream payload.
@@ -170,7 +170,7 @@ pin_project! {
             // response, opting into the v2 Symmetric Downlink Replay
             // protocol. Spec gates v2 on v1, so this is `true` only
             // when `ack_prefix_advertised_by_server` is also `true`.
-            // See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+            // See `bins/outline-server/docs/SESSION-RESUMPTION.md`
             // § Symmetric Downlink Replay (v2).
             symmetric_replay_advertised_by_server: bool,
         },
@@ -185,7 +185,7 @@ pin_project! {
             // response, opting into the v2 Symmetric Downlink Replay
             // protocol. Spec gates v2 on v1, so this is `true` only
             // when `ack_prefix_advertised_by_server` is also `true`.
-            // See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+            // See `bins/outline-server/docs/SESSION-RESUMPTION.md`
             // § Symmetric Downlink Replay (v2).
             symmetric_replay_advertised_by_server: bool,
         },
@@ -200,7 +200,7 @@ pin_project! {
             // response, opting into the v2 Symmetric Downlink Replay
             // protocol. Spec gates v2 on v1, so this is `true` only
             // when `ack_prefix_advertised_by_server` is also `true`.
-            // See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+            // See `bins/outline-server/docs/SESSION-RESUMPTION.md`
             // § Symmetric Downlink Replay (v2).
             symmetric_replay_advertised_by_server: bool,
             // `Some` when the server accepted UDP over HTTP/3 datagrams on
@@ -222,7 +222,7 @@ pin_project! {
             // response, opting into the v2 Symmetric Downlink Replay
             // protocol. Spec gates v2 on v1, so this is `true` only
             // when `ack_prefix_advertised_by_server` is also `true`.
-            // See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+            // See `bins/outline-server/docs/SESSION-RESUMPTION.md`
             // § Symmetric Downlink Replay (v2).
             symmetric_replay_advertised_by_server: bool,
         },

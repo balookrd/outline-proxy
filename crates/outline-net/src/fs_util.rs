@@ -79,7 +79,7 @@ fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Copy the target's mode and owner onto the temp file. The rename replaces
 /// the target *including* both, so without this an admin-set `600
-/// outline-ws-rust:outline-ws-rust` (or `640 outline-ss-rust:outline-ss-rust`
+/// outline-client:outline-client` (or `640 outline-server:outline-server`
 /// on the server) would decay to the writer's identity at
 /// the ambient umask (typically world-readable 0644). A missing target (first
 /// write) keeps the private mode from [`write_temp`].

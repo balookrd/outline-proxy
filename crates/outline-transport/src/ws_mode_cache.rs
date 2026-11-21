@@ -44,7 +44,7 @@ fn downgrade_ttl() -> Duration {
 }
 
 /// Initialise [`downgrade_ttl`]. First call wins; subsequent calls are
-/// silently ignored. Intended for the `outline-ws-rust` bootstrap: pass
+/// silently ignored. Intended for the `outline-client` bootstrap: pass
 /// the maximum `mode_downgrade_duration` across all uplink groups so the
 /// process-global cache holds at least as long as the most conservative
 /// group expects (the cache is keyed by `host:port`, not per-group).

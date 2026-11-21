@@ -70,7 +70,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     .await?;
     // The mock does not echo `X-Outline-Session`; the resume token
     // path is exercised in the cross-repo end-to-end test against
-    // a real outline-ss-rust server.
+    // a real outline-server server.
     assert!(issued.is_none());
 
     stream.send(Message::Binary(Bytes::from_static(b"hello"))).await?;

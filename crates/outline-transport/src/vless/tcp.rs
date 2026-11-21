@@ -120,7 +120,7 @@ pub struct VlessTcpReader {
     /// `X-Outline-Resume-Ack-Prefix: 1`). When `true`, the very
     /// first 14 bytes received AFTER the VLESS response header are
     /// treated as the v1 control frame defined in
-    /// `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Ack-Prefix
+    /// `bins/outline-server/docs/SESSION-RESUMPTION.md` § Ack-Prefix
     /// Protocol; the
     /// reader transparently consumes them, parks the offset on
     /// [`Self::up_acked`], and returns the next real payload chunk.

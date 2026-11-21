@@ -132,7 +132,7 @@ impl ReadTransport for WsReadTransport {
                         // a runtime uplink failure; this is what triggers prompt
                         // failover and cache eviction of the broken shared conn.
                         debug!(
-                            target: "outline_ws_rust::session_death",
+                            target: "outline_client::session_death",
                             timeout_secs = timeout_dur.as_secs(),
                             need = len,
                             have = self.buffer.len(),
@@ -157,7 +157,7 @@ impl ReadTransport for WsReadTransport {
                 None => {
                     *closed_cleanly = true;
                     debug!(
-                        target: "outline_ws_rust::session_death",
+                        target: "outline_client::session_death",
                         need = len,
                         have = self.buffer.len(),
                         uplink = %self.diag.uplink,
@@ -171,7 +171,7 @@ impl ReadTransport for WsReadTransport {
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
                     debug!(
-                        target: "outline_ws_rust::session_death",
+                        target: "outline_client::session_death",
                         need = len,
                         have = self.buffer.len(),
                         uplink = %self.diag.uplink,
@@ -224,7 +224,7 @@ impl ReadTransport for WsReadTransport {
                         *closed_cleanly = true;
                     }
                     debug!(
-                        target: "outline_ws_rust::session_death",
+                        target: "outline_client::session_death",
                         try_again,
                         frame = ?frame,
                         "reader: websocket received Close frame from upstream"

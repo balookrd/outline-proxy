@@ -969,7 +969,7 @@ fn inflate_by_loss(
     }
     // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
     // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
-    // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
+    // (`bins/outline-client/src/config/load/balancing.rs`), but this
     // stays as defence in depth against this function's own
     // multiplication overflowing regardless of that bound, saturating to
     // `Duration::MAX` (effectively "worst possible") here rather than
@@ -979,7 +979,7 @@ fn inflate_by_loss(
     // panics on the result: `crate::selection::weighted_latency_score`
     // divides this value by the uplink's `weight` (unbounded above —
     // only `> 0.0` is enforced at load time, see
-    // `bins/outline-ws-rust/src/config/load/uplinks/mod.rs`) and calls
+    // `bins/outline-client/src/config/load/uplinks/mod.rs`) and calls
     // the panicking `Duration::from_secs_f64` again, so a genuine
     // `Duration::MAX` here divided by a `weight < 1.0` would overflow
     // past `Duration::MAX` and panic there instead. What actually makes
