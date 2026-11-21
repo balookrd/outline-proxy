@@ -115,7 +115,14 @@ mod tests {
     #[test]
     fn test_current_version_info() {
         let current = AppVersion::current();
-        assert_eq!(current.version, "1.9.2");
+        assert_eq!(current.version, AppVersion::VERSION);
+        assert_eq!(current.commit, AppVersion::COMMIT);
+        assert_eq!(current.channel, AppVersion::CHANNEL);
+        assert_eq!(
+            current.display_string,
+            AppVersion::format_display(&current.channel, &current.version, &current.commit)
+        );
+        assert!(!current.version.is_empty());
         assert!(!current.commit.is_empty());
         assert!(!current.channel.is_empty());
         assert!(!current.display_string.is_empty());
