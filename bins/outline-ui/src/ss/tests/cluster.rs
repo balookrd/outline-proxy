@@ -13,6 +13,7 @@ use tower::ServiceExt as _;
 
 use crate::backend::Backend;
 use crate::config::{ClusterConfig, InstanceConfig};
+use crate::ss::cluster::discovered_cluster_name;
 use crate::ss::{SsState, router};
 
 #[derive(Clone)]
@@ -539,21 +540,118 @@ async fn auto_discovers_clusters_by_matching_psk_fingerprint() {
     let json = json_body(&axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap());
     assert_eq!(json["clusters"].as_array().unwrap().len(), 1);
     assert_eq!(json["clusters"][0]["source"], "discovered");
-    assert_eq!(json["clusters"][0]["name"], "auto-deadbe");
+    assert_eq!(json["clusters"][0]["name"], "exit-a+exit-b");
     assert_eq!(json["clusters"][0]["members"], json!(["exit-a", "exit-b"]));
 
-    // Discovered cluster supports per-node user links fan-out
-    let links_res = app
-        .oneshot(
-            Request::get("/dashboard/api/clusters/auto-deadbe/users/alice/access-keys")
-                .body(Body::empty())
-                .unwrap(),
-        )
+    // Discovered cluster supports per-node user links fan-out (both raw '+' and percent-encoded '%2B')
+    for path in [
+        "/dashboard/api/clusters/exit-a+exit-b/users/alice/access-keys",
+        "/dashboard/api/clusters/exit-a%2Bexit-b/users/alice/access-keys",
+    ] {
+        let links_res = app
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(links_res.status(), StatusCode::OK, "failed for {path}");
+        let links_json =
+            json_body(&axum::body::to_bytes(links_res.into_body(), 64 * 1024).await.unwrap());
+        assert_eq!(links_json["mode"], "per_node");
+        assert_eq!(links_json["nodes"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn discovered_cluster_name_formats_hosts_and_resolves_collisions() {
+    let make_inst = |name: &str| InstanceConfig {
+        name: name.into(),
+        control_url: "http://127.0.0.1:9190".into(),
+        token: "tok".into(),
+        public_host: None,
+        mesh_addr: None,
+    };
+
+    assert_eq!(
+        discovered_cluster_name(&[make_inst("exit-a"), make_inst("exit-b")], "deadbeef"),
+        "exit-a+exit-b"
+    );
+    assert_eq!(
+        discovered_cluster_name(
+            &[make_inst("node-1"), make_inst("node-2"), make_inst("node-3")],
+            "deadbeef"
+        ),
+        "node-1+node-2+node-3"
+    );
+    assert_eq!(
+        discovered_cluster_name(
+            &[make_inst("node-1"), make_inst("node-2"), make_inst("node-3"), make_inst("node-4")],
+            "deadbeef"
+        ),
+        "node-1+node-2+2more"
+    );
+    assert_eq!(
+        discovered_cluster_name(&[make_inst(""), make_inst("   ")], "deadbeef1234"),
+        "auto-deadbe"
+    );
+
+    // Collision against an explicit [[ss.clusters]] name appends `-2`
+    let node_1 = MockControlState::new("exit-a", 0, "aaaabbbbcccc", json!([]), vec![]);
+    let node_2 = MockControlState::new("exit-b", 1, "aaaabbbbcccc", json!([]), vec![]);
+    let addr_1 = spawn_mock_node(node_1).await;
+    let addr_2 = spawn_mock_node(node_2).await;
+
+    let state = SsState {
+        backend: Arc::new(Backend::new(5)),
+        instances: Arc::from(vec![
+            InstanceConfig {
+                name: "exit-a".into(),
+                control_url: format!("http://{addr_1}"),
+                token: "t1".into(),
+                public_host: None,
+                mesh_addr: None,
+            },
+            InstanceConfig {
+                name: "exit-b".into(),
+                control_url: format!("http://{addr_2}"),
+                token: "t2".into(),
+                public_host: None,
+                mesh_addr: None,
+            },
+            InstanceConfig {
+                name: "relay-a".into(),
+                control_url: "http://127.0.0.1:9".into(),
+                token: "t3".into(),
+                public_host: None,
+                mesh_addr: None,
+            },
+            InstanceConfig {
+                name: "relay-b".into(),
+                control_url: "http://127.0.0.1:10".into(),
+                token: "t4".into(),
+                public_host: None,
+                mesh_addr: None,
+            },
+        ]),
+        clusters: Arc::from(vec![ClusterConfig {
+            name: "exit-a+exit-b".into(),
+            members: vec!["relay-a".into(), "relay-b".into()],
+            subscription_nodes: Vec::new(),
+        }]),
+        refresh_ms: 5000,
+    };
+
+    let res = router(state)
+        .oneshot(Request::get("/dashboard/api/clusters").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(links_res.status(), StatusCode::OK);
-    let links_json =
-        json_body(&axum::body::to_bytes(links_res.into_body(), 64 * 1024).await.unwrap());
-    assert_eq!(links_json["mode"], "per_node");
-    assert_eq!(links_json["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(res.status(), StatusCode::OK);
+    let json = json_body(&axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap());
+    let names: Vec<&str> = json["clusters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(names.contains(&"exit-a+exit-b"));
+    assert!(names.contains(&"exit-a+exit-b-2"));
 }

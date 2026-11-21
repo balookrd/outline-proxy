@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "26.11.2"
+version = "26.11.3"
 
 # Shared lint policy for our own packages (each opts in via
 # `[lints] workspace = true`; the vendored sockudo-ws deliberately does not).
