@@ -68,16 +68,16 @@
 - Функция: `UpdateInstaller::stage_update(zip_path: &Path, staging_dir: &Path) -> Result<(), String>`
 - Функция: `UpdateInstaller::launch_updater(staging_dir: &Path, target_exe: &Path, current_pid: u32) -> Result<(), String>`
 
-- [ ] **Шаг 1: Написать failing unit-тесты для парсинга `SHA256SUMS.txt`, имени ассета и защиты от zip-slip**
+- [x] **Шаг 1: Написать failing unit-тесты для парсинга `SHA256SUMS.txt`, имени ассета и защиты от zip-slip**
   В `bins/outline-windows/src/updater.rs`:
   - `test_parse_checksums_txt_with_asterisk_and_space()`
   - `test_evaluate_nightly_release_asset_name()`
   - `test_zip_slip_protection()`
 
-- [ ] **Шаг 2: Запустить тесты и зафиксировать failure**
+- [x] **Шаг 2: Запустить тесты и зафиксировать failure**
   Команда: `cargo test -p outline-windows updater`
 
-- [ ] **Шаг 3: Реализовать `updater.rs`**
+- [x] **Шаг 3: Реализовать `updater.rs`**
   - Реализовать GitHub API парсер для тега `windows-nightly` и релизов `windows-v*`.
   - Реализовать парсер `SHA256SUMS.txt`.
   - Реализовать скачивание с расчётом SHA256 через потоковый хэшер `sha2::Sha256` (или `ring::digest::SHA256`).
@@ -85,10 +85,10 @@
   - Реализовать генерацию detached скрипта `apply_update.cmd`: ожидание завершения PID, копирование `OutlineProxy.exe`, `outline-ws-rust.exe`, `wintun.dll`, запуск нового приложения, удаление staging каталога.
   - Подключить `pub mod updater;` в `src/lib.rs`.
 
-- [ ] **Шаг 4: Запустить unit-тесты**
+- [x] **Шаг 4: Запустить unit-тесты**
   Команда: `cargo test -p outline-windows updater`
 
-- [ ] **Шаг 5: Закоммитить изменения**
+- [x] **Шаг 5: Закоммитить изменения**
   Команда: `git add bins/outline-windows/Cargo.toml bins/outline-windows/src/updater.rs bins/outline-windows/src/lib.rs && git commit -m "feat(windows): implement update checker, checksum verifier and installer"`
 
 ---
