@@ -11,7 +11,7 @@ export type FieldKind = 'int' | 'float' | 'bool' | 'enum';
 // both the input widget (Task 9) and the parse in buildGroupPayload/
 // fieldsFromConfig — one list is the single source. `section` groups them into
 // collapsible <details> blocks. Field names/kinds mirror
-// bins/outline-ws-rust/src/config/schema.rs UplinkGroupSection.
+// bins/outline-client/src/config/schema.rs UplinkGroupSection.
 export interface AdvancedField {
   key: string;
   label: string;

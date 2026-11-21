@@ -36,7 +36,7 @@ import type { Uplink, Group, WireChainEntry } from './types';
 // renderer (legHealth/healthy/isActive/statusTone/legWireChainCell's wireAt,
 // etc.), field names verified against the real wire shape:
 // ControlUplinkTopology / ControlGroupTopology / WireChainEntry in
-// bins/outline-ws-rust/src/http/control/topology.rs.
+// bins/outline-client/src/http/control/topology.rs.
 
 function baseUplink(overrides: Partial<Uplink> = {}): Uplink {
   return {

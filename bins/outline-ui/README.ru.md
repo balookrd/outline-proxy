@@ -70,7 +70,7 @@ Web-UI парка. Отдаёт клиентский и серверный да�
 
 ## Вынос UI из боевых бинарей
 
-Раньше дашборды жили внутри `outline-ws-rust` и `outline-ss-rust`. Это давало
+Раньше дашборды жили внутри `outline-client` и `outline-server`. Это давало
 три проблемы:
 
 - Web-поверхность на боевых узлах. Достучаться до листенера дашборда
@@ -281,7 +281,7 @@ kubectl -n monitoring rollout restart deploy/outline-ui
 `Dockerfile` — один `COPY` файла
 `target/aarch64-unknown-linux-musl/release/outline-ui` в `scratch` с запуском от
 `65534:65534`, не multi-stage: бинарь кросс-компилируется вне Docker
-(`cargo zigbuild`, как и `outline-ss-rust`/`outline-ws-rust`). На этапе сборки
+(`cargo zigbuild`, как и `outline-server`/`outline-client`). На этапе сборки
 ничего не проверяет, что `frontend/dist` свежий или что передан
 `--features embed-assets`; пропустите любой из шагов — образ всё равно
 соберётся, но на `/` будет заглушка.

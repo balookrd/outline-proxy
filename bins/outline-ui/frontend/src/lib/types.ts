@@ -146,7 +146,7 @@ export interface TopologyResponse {
   name: string; ok: boolean; error?: string | null;
   topology?: { instance?: { groups?: Group[] } } | null;
 }
-// Mirrors ControlGroupTopology (bins/outline-ws-rust/src/http/control/topology.rs).
+// Mirrors ControlGroupTopology (bins/outline-client/src/http/control/topology.rs).
 // The four `bypass_*`/`cluster_resume_enabled` fields are `skip_serializing_if`
 // on the wire (absent, not `false`, when off) — hence `?: boolean` rather than
 // a required field defaulting to false. `load_balancing_mode`/`routing_scope`
@@ -182,7 +182,7 @@ export interface Group {
 }
 // One wire (primary at index 0, then each `[[outline.uplinks.fallbacks]]`) in
 // an uplink's `configured_wire_chain[]` — mirrors `WireChainEntry`
-// (bins/outline-ws-rust/src/http/control/topology.rs:13-39). Every
+// (bins/outline-client/src/http/control/topology.rs:13-39). Every
 // `*_mode`/`*_mode_effective` field is individually `skip_serializing_if`
 // absent (only `transport` is unconditional), and Shadowsocks wires carry
 // neither — their TCP/UDP shape is fixed by the address fields, not a mode
@@ -195,7 +195,7 @@ export interface WireChainEntry {
   udp_mode_effective?: string | null;
   [k: string]: unknown;
 }
-// Mirrors ControlUplinkTopology (bins/outline-ws-rust/src/http/control/topology.rs,
+// Mirrors ControlUplinkTopology (bins/outline-client/src/http/control/topology.rs,
 // built by build_uplink_topology() from outline-metrics's UplinkSnapshot) — the
 // per-uplink entry inside `Group.uplinks[]`. Only the fields Task 9's topology
 // read-view actually consumes are modeled here (the index signature covers the
@@ -309,7 +309,7 @@ export interface WireConfig {
   /// Share-link URI (`vless://…` / `ss://…`). Mutually exclusive on the wire
   /// with `transport` and every explicit carrier/credential field below —
   /// see `expand_share_link` in
-  /// bins/outline-ws-rust/src/config/load/uplinks/wire_shape.rs (shared by
+  /// bins/outline-client/src/config/load/uplinks/wire_shape.rs (shared by
   /// both the primary wire and the fallback pre-pass — see `apply_link` in
   /// config/load/uplinks/fallback_resolution.rs).
   link?: string;
@@ -352,7 +352,7 @@ export interface UplinkEntry {
   config?: UplinkConfig | null;
 }
 export interface UplinksListResponse { uplinks: UplinkEntry[]; }
-// POST /control/apply response (bins/outline-ws-rust/src/http/control/apply.rs
+// POST /control/apply response (bins/outline-client/src/http/control/apply.rs
 // `ApplyResponse`), proxied verbatim by /ws/dashboard/api/apply.
 export interface ApplyResult {
   applied?: boolean;
@@ -459,7 +459,7 @@ export interface GroupMutationResponse {
 }
 
 // Server-wide default a user inherits when it carries none of its own —
-// mirrors ServerDefaults in outline-ss-rust's control API
+// mirrors ServerDefaults in outline-server's control API
 // (server/control/manager.rs), which since the endpoint-model refactor
 // carries only the default cipher. The clone form needs it so a
 // default-method template can still generate a password (the UI must not

@@ -69,7 +69,7 @@ holds are its own token and the instance tokens its config points at.
 
 ## Moving the UI out of the traffic binaries
 
-The dashboards used to live inside `outline-ws-rust` and `outline-ss-rust`.
+The dashboards used to live inside `outline-client` and `outline-server`.
 That caused three problems:
 
 - Web surface on production nodes. Reaching a dashboard listener is equivalent
@@ -284,7 +284,7 @@ stub means the binary was built without the frontend.
 `Dockerfile` is a single `COPY` of
 `target/aarch64-unknown-linux-musl/release/outline-ui` into `scratch`, run as
 `65534:65534`, not a multi-stage build: the binary is cross-compiled outside
-Docker (`cargo zigbuild`, as for `outline-ss-rust`/`outline-ws-rust`). Nothing
+Docker (`cargo zigbuild`, as for `outline-server`/`outline-client`). Nothing
 checks at build time that `frontend/dist` is fresh or that
 `--features embed-assets` was passed; skip either step and the image still
 builds, but serves the stub at `/`.
