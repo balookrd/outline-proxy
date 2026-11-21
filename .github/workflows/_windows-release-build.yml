@@ -118,6 +118,8 @@ jobs:
           VERSION: ${{ steps.vars.outputs.version_name }}
           ROLLING: ${{ inputs.rolling_tag }}
           SHA: ${{ github.sha }}
+          OUTLINE_BUILD_COMMIT: ${{ github.sha }}
+          OUTLINE_BUILD_CHANNEL: ${{ inputs.rolling_tag == 'true' && 'nightly' || 'release' }}
         run: |
           set -euo pipefail
           rm -f "/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe" 2>/dev/null || true

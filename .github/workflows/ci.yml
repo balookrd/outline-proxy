@@ -373,6 +373,8 @@ jobs:
         shell: bash
         env:
           AR_x86_64_pc_windows_msvc: lib.exe
+          OUTLINE_BUILD_COMMIT: ${{ github.sha }}
+          OUTLINE_BUILD_CHANNEL: nightly
         run: |
           rm -f "/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe" 2>/dev/null || true
           ./scripts/package-windows.sh --output-dir dist/windows
