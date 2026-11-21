@@ -565,6 +565,7 @@ async fn xhttp_h3_stream_one(
     }
     if let Err(error) = stream.send_response(response).await {
         release_anchor(&session, udp_datagram);
+        session.close();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 stream-one response head");
     }
 
@@ -608,14 +609,42 @@ async fn xhttp_h3_stream_one(
         session_for_uplink.close_uplink();
     });
 
+    // Ensure the relay is never stranded open if this stream-one handler ends
+    // or is cancelled after `drive_downlink_send_only` exits (e.g. STOP_SENDING
+    // waking downlink under a busy blast before `uplink_task` observes EOF)
+    // before `uplink_task` reaches `close_uplink()`.
+    struct StreamOneCleanup {
+        session: Arc<XhttpSession>,
+        udp_datagram: bool,
+        uplink_task: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl Drop for StreamOneCleanup {
+        fn drop(&mut self) {
+            release_anchor(&self.session, self.udp_datagram);
+            if let Some(task) = self.uplink_task.take() {
+                task.abort();
+            }
+            self.session.close();
+        }
+    }
+
+    let mut cleanup = StreamOneCleanup {
+        session: Arc::clone(&session),
+        udp_datagram,
+        uplink_task: Some(uplink_task),
+    };
+
     // Downlink pump: drain `session.downlink` and feed it to the
     // QUIC send half. Reuses the same wait-then-recheck pattern as
     // `drive_downlink_h3` so a chunk pushed between drain and notify
     // is not lost.
     let result = drive_downlink_send_only(send_half, Arc::clone(&session)).await;
-    release_anchor(&session, udp_datagram);
-    uplink_task.abort();
-    let _ = uplink_task.await;
+    if let Some(task) = cleanup.uplink_task.take() {
+        task.abort();
+        let _ = task.await;
+    }
+    drop(cleanup);
     result
 }
 

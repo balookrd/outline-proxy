@@ -669,3 +669,74 @@ carrier_tests! {
     xhttp_h3_packet_up => Carrier::XhttpPacketUp,
     xhttp_h3_stream_one => Carrier::XhttpStreamOne,
 }
+
+#[tokio::test]
+async fn xhttp_h3_stream_one_parks_when_downlink_stops_before_uplink_fin() -> Result<()> {
+    let (upstream, _sources) = spawn_udp_blaster(BUSY_FITS).await?;
+    let server = setup_ss_udp_h3_server(false).await?;
+
+    let (_, _, _, ca_der) = super::cross_repo_shared_test_cert();
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(super::test_h3_client_config(ca_der.clone())?);
+    let connection = endpoint.connect(server.addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(format!(
+            "https://localhost:{}{XHTTP_UDP_PATH}/00112233445566bb?mode=stream-one",
+            server.addr.port()
+        ))
+        .version(axum::http::Version::HTTP_3)
+        .header(outline_wire::resume::RESUME_CAPABLE_HEADER, "1")
+        .header(
+            outline_wire::xhttp::UDP_RECORDS_HEADER,
+            outline_wire::xhttp::UDP_RECORDS_ENABLED,
+        )
+        .body(())?;
+    let mut stream = send_request.send_request(req).await?;
+
+    let user = crate::crypto::UserKey::new("bob", TEST_PASSWORD, None, TEST_CIPHER, None)?;
+    let encrypted = crate::crypto::encrypt_udp_packet(
+        &user,
+        &ss_first_chunk(upstream, &payload(SMALL_PAYLOAD, 11)),
+    )?;
+    let mut framed = Vec::with_capacity(encrypted.len() + 2);
+    outline_wire::udp_records::encode_record_into(&encrypted, &mut framed)?;
+    stream.send_data(bytes::Bytes::from(framed)).await?;
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), stream.recv_response()).await??;
+    assert!(resp.status().is_success(), "unexpected status: {}", resp.status());
+    assert!(
+        resp.headers()
+            .contains_key(outline_wire::resume::SESSION_RESPONSE_HEADER),
+        "expected session id echo"
+    );
+
+    let (_send_half, mut recv_half) = stream.split();
+    let first = tokio::time::timeout(Duration::from_secs(5), recv_half.recv_data()).await??;
+    assert!(first.is_some(), "expected downlink burst before STOP_SENDING");
+
+    // Simulate client dropping its downlink while the uplink stream stays open
+    // (no FIN yet): dropping `recv_half` runs `quinn::RecvStream::drop`, which
+    // emits `STOP_SENDING` and wakes the server's downlink writer before the
+    // server's uplink pump sees EOF.
+    drop(recv_half);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while server.orphans.len() == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the retired carrier was never parked (misses: {})",
+            server.counter(RESUME_MISSES, &[]),
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    drop(_send_half);
+    driver_task.abort();
+    Ok(())
+}
