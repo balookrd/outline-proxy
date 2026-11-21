@@ -329,6 +329,7 @@ save_state() {
 		/etc/systemd/system/outline-ws-rust.service \
 		/etc/systemd/system/outline-ws-rust@.service \
 		/etc/systemd/system/outline-ws0-routing.service \
+		/etc/systemd/system/outline-tun-setup.service \
 		/etc/default/nanopi104-backup; do
 		save_entry "$p" "$ROLLBACK/symlink-targets-client.txt"
 	done
@@ -342,6 +343,7 @@ save_state() {
 
 	save_entry /usr/local/sbin/outline-watchdog "$ROLLBACK/symlink-targets-common.txt"
 	save_entry /etc/systemd/system/post-up.service "$ROLLBACK/symlink-targets-common.txt"
+	save_entry /etc/rsyslog.d/30-outline-ss-rust.conf "$ROLLBACK/symlink-targets-common.txt"
 
 	# Полный снимок состояния юнитов сохраняется для отладки оператором при аварийном откате.
 	systemctl list-units --all --plain 'outline-*' --no-legend --no-pager > "$ROLLBACK/units.txt" || true
@@ -488,6 +490,9 @@ rollback() {
 		if [ -f "$ROLLBACK/etc/systemd/system/outline-ws0-routing.service" ] || [ -L "$ROLLBACK/etc/systemd/system/outline-ws0-routing.service" ]; then
 			cp -a "$ROLLBACK/etc/systemd/system/outline-ws0-routing.service" /etc/systemd/system/outline-ws0-routing.service
 		fi
+		if [ -f "$ROLLBACK/etc/systemd/system/outline-tun-setup.service" ] || [ -L "$ROLLBACK/etc/systemd/system/outline-tun-setup.service" ]; then
+			cp -a "$ROLLBACK/etc/systemd/system/outline-tun-setup.service" /etc/systemd/system/outline-tun-setup.service
+		fi
 		if [ -d "$ROLLBACK/opt/network" ]; then
 			mkdir -p /opt/network
 			cp -a "$ROLLBACK/opt/network/." /opt/network/
@@ -506,6 +511,10 @@ rollback() {
 	fi
 	if [ -f "$ROLLBACK/etc/systemd/system/post-up.service" ] || [ -L "$ROLLBACK/etc/systemd/system/post-up.service" ]; then
 		cp -a "$ROLLBACK/etc/systemd/system/post-up.service" /etc/systemd/system/post-up.service
+	fi
+	if [ -f "$ROLLBACK/etc/rsyslog.d/30-outline-ss-rust.conf" ] || [ -L "$ROLLBACK/etc/rsyslog.d/30-outline-ss-rust.conf" ]; then
+		cp -a "$ROLLBACK/etc/rsyslog.d/30-outline-ss-rust.conf" /etc/rsyslog.d/30-outline-ss-rust.conf
+		systemctl try-reload-or-restart rsyslog 2>/dev/null || true
 	fi
 	restore_symlink_targets "$ROLLBACK/symlink-targets-common.txt"
 
@@ -820,6 +829,9 @@ if [ "$DO_CLIENT" = 1 ]; then
 	if [ -d /opt/outline/outline-ws-rust ] && [ ! -e /opt/outline/outline-client ]; then
 		mv /opt/outline/outline-ws-rust /opt/outline/outline-client
 	fi
+	if [ -L /opt/outline/outline-client/config.toml ] && [ "$(readlink /opt/outline/outline-client/config.toml)" = "/etc/outline-ws-rust/config.toml" ]; then
+		ln -sfn /etc/outline-client/config.toml /opt/outline/outline-client/config.toml
+	fi
 	if [ -f /opt/outline/outline-client/init-ws0.sh ]; then
 		if grep -qE '/opt/outline/outline-ws-rust|outline-ws-rust|outline-ws\b' /opt/outline/outline-client/init-ws0.sh; then
 			sed -i --follow-symlinks \
@@ -861,6 +873,13 @@ if [ "$DO_CLIENT" = 1 ]; then
 				/etc/systemd/system/outline-ws0-routing.service
 		fi
 	fi
+	if [ -f /etc/systemd/system/outline-tun-setup.service ]; then
+		if grep -qE 'outline-ws-rust\.service|outline-ws-rust' /etc/systemd/system/outline-tun-setup.service; then
+			sed -i --follow-symlinks \
+				's/outline-ws-rust\.service/outline-client.service/g; s/outline-ws-rust/outline-client/g' \
+				/etc/systemd/system/outline-tun-setup.service
+		fi
+	fi
 	for f in /opt/network/*.sh; do
 		[ -f "$f" ] || continue
 		was_exec=0
@@ -893,6 +912,16 @@ if [ -f /etc/systemd/system/post-up.service ]; then
 	if [ "$DO_CLIENT" = 1 ]; then
 		sed -i 's/outline-ws-rust\.service/outline-client.service/g; s/outline-ws-rust/outline-client/g' /etc/systemd/system/post-up.service
 	fi
+fi
+
+if [ -f /etc/rsyslog.d/30-outline-ss-rust.conf ]; then
+	if [ "$DO_SERVER" = 1 ]; then
+		sed -i --follow-symlinks 's/outline-ss-rust/outline-server/g' /etc/rsyslog.d/30-outline-ss-rust.conf
+	fi
+	if [ "$DO_CLIENT" = 1 ]; then
+		sed -i --follow-symlinks 's/outline-ws-rust/outline-client/g' /etc/rsyslog.d/30-outline-ss-rust.conf
+	fi
+	systemctl try-reload-or-restart rsyslog 2>/dev/null || true
 fi
 
 # 3. Установка новых бинарей, watchdog и unit-файлов + удаление старых
