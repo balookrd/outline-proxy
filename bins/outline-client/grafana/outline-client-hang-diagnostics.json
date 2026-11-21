@@ -946,7 +946,7 @@
   "time": { "from": "now-24h", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
-  "title": "outline-ws-rust hang diagnostics",
+  "title": "outline-client hang diagnostics",
   "uid": "outline-ws-rust-hang-diag",
   "version": 1,
   "weekStart": ""

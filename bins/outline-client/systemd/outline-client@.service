@@ -1,6 +1,6 @@
 [Unit]
-Description=SOCKS5 to Outline-over-WebSocket proxy instance %i
-Documentation=https://github.com/balookrd/outline-ws-rust
+Description=SOCKS5/TUN to Outline proxy client instance %i (outline-client)
+Documentation=https://github.com/balookrd/outline-proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -9,8 +9,8 @@ Type=simple
 Environment=RUST_LOG=info
 Environment=NO_COLOR=1
 # Persist active-uplink selection to the per-instance writable state directory.
-Environment=STATE_PATH=/var/lib/outline-ws-rust/%i/state.toml
-ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/instances/%i.toml
+Environment=STATE_PATH=/var/lib/outline-client/%i/state.toml
+ExecStart=/usr/local/bin/outline-client --config /etc/outline-client/instances/%i.toml
 Restart=on-failure
 RestartSec=3s
 
@@ -47,12 +47,12 @@ MemoryAccounting=yes
 MemoryHigh=70%
 MemoryMax=85%
 
-User=outline-ws
-Group=outline-ws
-StateDirectory=outline-ws-rust/%i
-LogsDirectory=outline-ws-rust/%i
-RuntimeDirectory=outline-ws-rust-%i
-WorkingDirectory=/var/lib/outline-ws-rust/%i
+User=outline-client
+Group=outline-client
+StateDirectory=outline-client/%i
+LogsDirectory=outline-client/%i
+RuntimeDirectory=outline-client-%i
+WorkingDirectory=/var/lib/outline-client/%i
 UMask=0077
 
 PrivateTmp=true
@@ -80,12 +80,13 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-# /etc/outline-ws-rust/instances is writable so dashboard CRUD endpoints and
+# /etc/outline-client/instances is writable so dashboard CRUD endpoints and
 # the on-load config migrator (legacy top-level keys → [outline]) can persist
-# changes. The directory must be owned by outline-ws:outline-ws — install.sh
-# sets this up; for manual installs, `chown -R outline-ws:outline-ws
-# /etc/outline-ws-rust && chmod 0750 /etc/outline-ws-rust`.
-ReadWritePaths=/var/lib/outline-ws-rust/%i /etc/outline-ws-rust/instances
+# changes. The directory must be owned by outline-client:outline-client —
+# install.sh sets this up; for manual installs, `chown -R
+# outline-client:outline-client /etc/outline-client && chmod 0750
+# /etc/outline-client`.
+ReadWritePaths=/var/lib/outline-client/%i /etc/outline-client/instances
 
 [Install]
 WantedBy=multi-user.target
