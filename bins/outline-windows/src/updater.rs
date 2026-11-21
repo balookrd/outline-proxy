@@ -352,6 +352,9 @@ impl UpdateInstaller {
         Ok(())
     }
 
+    /// Builds the self-deleting Windows `.cmd` script that waits for the
+    /// current process to exit, copies the staged update into the target
+    /// directory, removes any legacy `outline-ws-rust.exe`, and relaunches.
     pub fn build_update_script(
         staging_dir: &Path,
         target_exe: &Path,
@@ -363,6 +366,9 @@ impl UpdateInstaller {
 
         let staging_str = staging_dir.to_str().ok_or("Staging dir has non-UTF8 path")?;
         let target_dir_str = target_dir.to_str().ok_or("Target dir has non-UTF8 path")?;
+        if target_dir_str.is_empty() {
+            return Err("Target executable has no parent directory".to_string());
+        }
         let target_exe_str = target_exe.to_str().ok_or("Target exe has non-UTF8 path")?;
 
         Ok(format!(
@@ -679,9 +685,9 @@ ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb *OutlineProxy-v
 
     #[test]
     fn test_build_update_script_removes_legacy_binary() {
-        let staging = Path::new("C:\\Temp\\outline-staging");
-        let target_exe = Path::new("C:\\OutlineProxy\\OutlineProxy.exe");
-        let script = UpdateInstaller::build_update_script(staging, target_exe, 4242)
+        let staging = std::path::PathBuf::from("Temp").join("outline-staging");
+        let target_exe = std::path::PathBuf::from("OutlineProxy").join("OutlineProxy.exe");
+        let script = UpdateInstaller::build_update_script(&staging, &target_exe, 4242)
             .expect("script generation should succeed");
 
         let copy_cmd = "copy /Y \"%STAGING_DIR%\\*.*\" \"%TARGET_DIR%\\\" >NUL";
@@ -695,5 +701,14 @@ ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb *OutlineProxy-v
         assert!(copy_pos < cleanup_pos, "cleanup must run after copy");
         assert!(cleanup_pos < start_pos, "cleanup must run before restarting app");
         assert!(script.contains("set TARGET_PID=4242\r\n"));
+    }
+
+    #[test]
+    fn test_build_update_script_rejects_bare_filename() {
+        let staging = std::path::PathBuf::from("Temp").join("outline-staging");
+        let err =
+            UpdateInstaller::build_update_script(&staging, Path::new("OutlineProxy.exe"), 4242)
+                .expect_err("bare executable filename without parent directory should fail");
+        assert!(err.contains("no parent directory"), "unexpected error: {err}");
     }
 }

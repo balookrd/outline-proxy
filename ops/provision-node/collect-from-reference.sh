@@ -336,7 +336,7 @@ fi
 # all. Only consulted when neither flag matched, so a reference that still
 # spells the path in save-keys.sh keeps resolving exactly as before.
 if [ -z "$KEYS_DIR" ]; then
-    KEYS_DIR="$(REF_SSH "sed -n 's#^[[:space:]]*write_dir[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*#\1#p' /etc/outline-server/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
+    KEYS_DIR="$(REF_SSH "sudo -n sed -n 's#^[[:space:]]*write_dir[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*#\1#p' /etc/outline-server/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
 fi
 
 # apt-mark showmanual, filtered by the profile: only packages someone installed

@@ -139,7 +139,7 @@ Both binaries are Rust edition 2024.
 ```bash
 # whole workspace
 cargo build --release
-cargo test --workspace --exclude sockudo-ws
+cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 
 # a single binary
 cargo build --release -p outline-server

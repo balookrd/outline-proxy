@@ -334,7 +334,7 @@ data plane, и клиент, у которого разом отвалились
 ## Тесты
 
 ```bash
-python3 -m unittest discover -s ops/access-keys -p "test_*.py"
+python3 -B -m unittest discover -s ops/access-keys -p "test_*.py"
 ```
 
 186 тестов, только stdlib, в сеть не ходят и за пределы временного каталога не

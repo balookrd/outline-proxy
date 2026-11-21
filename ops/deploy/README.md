@@ -139,7 +139,7 @@ ops/deploy/migrate-node-rename.sh mmv@198.51.100.102 all
 3. Сохраняет снимок текущего состояния (бинари, `/etc/outline-*`, юниты и
    drop-in'ы, `post-up.service`, `outline-ws0-routing.service`, `/opt/network`,
    `/opt/outline/outline-*`, `/opt/outline/access-keys/generate_keys.py`,
-   `/opt/ddns/*/permission-certs.sh`, `/opt/fleet/permission-certs.sh`,
+   `/opt/ddns/*/permission-certs.sh`, `/opt/beerloga/permission-certs.sh`,
    `/etc/default/nanopi104-backup`, цели симлинков, состояние юнитов/таймеров и
    записи `passwd`/`group`) в `/var/tmp/outline-rename-rollback.<timestamp>` (`0700`).
 4. Перед изменениями проверяет, что запрошенная роль совместима с соседним

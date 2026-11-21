@@ -92,7 +92,7 @@ Per-carrier `.conf` (`*-ss-ws.conf`, `*-vless-xhttp-stream-one.conf` и т. п.)
 
 ```bash
 rm -rf ops/access-keys/golden/expected
-python3 ops/access-keys/generate_keys.py \
+python3 -B ops/access-keys/generate_keys.py \
   --config ops/access-keys/golden/config.toml \
   --out-dir ops/access-keys/golden/expected \
   > ops/access-keys/golden/expected-users.txt
@@ -106,4 +106,4 @@ cp ops/access-keys/golden/expected/both.toml \
 Вне узла генератор пишет в stderr предупреждение, что не смог выставить группу
 `www-data` (на macOS её нет); в stdout-отчёт, то есть в `expected-users.txt`,
 оно не попадает и на результат не влияет. После перегенерации прогоните
-`python3 -m unittest discover -p 'test_*.py'` из `ops/access-keys`.
+`python3 -B -m unittest discover -p 'test_*.py'` из `ops/access-keys`.

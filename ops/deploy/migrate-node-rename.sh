@@ -296,7 +296,10 @@ restore_symlink_targets() {
 	[ -f "$list_file" ] || return 0
 	while IFS= read -r real; do
 		[ -n "$real" ] || continue
-		if [ -e "$ROLLBACK$real" ] && [ -d "$(dirname "$real")" ]; then
+		if [ -d "$ROLLBACK$real" ] && [ ! -L "$ROLLBACK$real" ]; then
+			mkdir -p "$real"
+			cp -a "$ROLLBACK$real/." "$real/"
+		elif { [ -e "$ROLLBACK$real" ] || [ -L "$ROLLBACK$real" ]; } && [ -d "$(dirname "$real")" ]; then
 			cp -a "$ROLLBACK$real" "$real"
 		fi
 	done < "$list_file"
@@ -308,7 +311,6 @@ save_state() {
 	local p="" d=""
 	for p in \
 		/usr/local/bin/outline-ss-rust \
-		/usr/local/sbin/outline-watchdog \
 		/etc/systemd/system/outline-ss-rust.service; do
 		save_entry "$p" "$ROLLBACK/symlink-targets-server.txt"
 	done
@@ -338,6 +340,7 @@ save_state() {
 		save_entry "$d" "$ROLLBACK/symlink-targets-client.txt"
 	done
 
+	save_entry /usr/local/sbin/outline-watchdog "$ROLLBACK/symlink-targets-common.txt"
 	save_entry /etc/systemd/system/post-up.service "$ROLLBACK/symlink-targets-common.txt"
 
 	# Полный снимок состояния юнитов сохраняется для отладки оператором при аварийном откате.
@@ -523,21 +526,25 @@ rollback() {
 			fi
 		fi
 	fi
-	if [ "$DO_CLIENT" = 1 ] && { [ -f /etc/systemd/system/outline-ws-rust.service ] || systemctl cat outline-ws-rust.service >/dev/null 2>&1; }; then
-		if [ "$CLI_WAS_ENABLED" = 1 ]; then
-			systemctl enable outline-ws-rust.service 2>/dev/null || true
-		fi
-		if [ "$CLI_WAS_ACTIVE" = 1 ]; then
-			systemctl start outline-ws-rust.service 2>/dev/null || true
-		fi
-		for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
-			if in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
-				systemctl enable "outline-ws-rust@${inst}.service" 2>/dev/null || true
+	if [ "$DO_CLIENT" = 1 ]; then
+		if [ -f /etc/systemd/system/outline-ws-rust.service ] || systemctl cat outline-ws-rust.service >/dev/null 2>&1; then
+			if [ "$CLI_WAS_ENABLED" = 1 ]; then
+				systemctl enable outline-ws-rust.service 2>/dev/null || true
 			fi
-			if in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
-				systemctl start "outline-ws-rust@${inst}.service" 2>/dev/null || true
+			if [ "$CLI_WAS_ACTIVE" = 1 ]; then
+				systemctl start outline-ws-rust.service 2>/dev/null || true
 			fi
-		done
+		fi
+		if [ -f /etc/systemd/system/outline-ws-rust@.service ] || systemctl cat outline-ws-rust@.service >/dev/null 2>&1; then
+			for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
+				if in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
+					systemctl enable "outline-ws-rust@${inst}.service" 2>/dev/null || true
+				fi
+				if in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
+					systemctl start "outline-ws-rust@${inst}.service" 2>/dev/null || true
+				fi
+			done
+		fi
 		if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
 			if [ "$CLI_WD_WAS_ENABLED" = 1 ]; then
 				systemctl enable outline-watchdog@outline-ws-rust.timer 2>/dev/null || true
@@ -718,6 +725,9 @@ if [ "$DO_SERVER" = 1 ]; then
 
 	if [ -d /opt/outline/outline-ss-rust ] && [ ! -e /opt/outline/outline-server ]; then
 		mv /opt/outline/outline-ss-rust /opt/outline/outline-server
+	fi
+	if [ -L /opt/outline/outline-server/config.toml ] && [ "$(readlink /opt/outline/outline-server/config.toml)" = "/etc/outline-ss-rust/config.toml" ]; then
+		ln -sfn /etc/outline-server/config.toml /opt/outline/outline-server/config.toml
 	fi
 	for f in \
 		/opt/outline/outline-server/save-keys.sh \
@@ -933,23 +943,33 @@ if [ "$DO_SERVER" = 1 ]; then
 	echo "    ok: outline-server active, /metrics 200"
 fi
 if [ "$DO_CLIENT" = 1 ]; then
-	systemctl enable outline-client.service
-	systemctl restart outline-client.service
-	check_metrics outline-client.service 9091
+	if [ -f /etc/outline-client/config.toml ] || [ "$CLI_WAS_ACTIVE" = 1 ] || [ "$CLI_WAS_ENABLED" = 1 ]; then
+		systemctl enable outline-client.service
+		systemctl restart outline-client.service
+		check_metrics outline-client.service 9091
+		echo "    ok: outline-client active, /metrics 200"
+	fi
 	for inst in "${CLIENT_INSTANCES[@]+"${CLIENT_INSTANCES[@]}"}"; do
 		if in_list "$inst" "${CLIENT_INSTANCES_ENABLED[@]+"${CLIENT_INSTANCES_ENABLED[@]}"}"; then
 			systemctl enable "outline-client@${inst}.service"
 		fi
 		if in_list "$inst" "${CLIENT_INSTANCES_ACTIVE[@]+"${CLIENT_INSTANCES_ACTIVE[@]}"}"; then
 			systemctl restart "outline-client@${inst}.service"
+			if systemctl is-active --quiet "outline-client@${inst}.service"; then
+				echo "    ok: outline-client@${inst} active"
+			else
+				echo "error: outline-client@${inst}.service is not active" >&2
+				false
+			fi
 		fi
 	done
-	if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
-		systemctl enable --now outline-watchdog@outline-client.timer
-	else
-		echo "    warn: outline-watchdog@.timer not installed; skipping watchdog timer" >&2
+	if [ -f /etc/outline-client/config.toml ] || [ "$CLI_WAS_ACTIVE" = 1 ] || [ "$CLI_WAS_ENABLED" = 1 ] || [ "$CLI_WD_WAS_ENABLED" = 1 ] || [ "$CLI_WD_WAS_ACTIVE" = 1 ]; then
+		if systemctl cat outline-watchdog@.timer >/dev/null 2>&1; then
+			systemctl enable --now outline-watchdog@outline-client.timer
+		else
+			echo "    warn: outline-watchdog@.timer not installed; skipping watchdog timer" >&2
+		fi
 	fi
-	echo "    ok: outline-client active, /metrics 200"
 fi
 
 MIGRATED=0
