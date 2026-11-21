@@ -11,7 +11,8 @@ pub struct UpdateInfo {
     pub commit: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "update", rename_all = "camelCase")]
 pub enum UpdateCheckResult {
     UpToDate,
     Available(UpdateInfo),

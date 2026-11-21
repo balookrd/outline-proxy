@@ -296,6 +296,8 @@ pub struct AppSettings {
     pub autostart: bool,
     #[serde(default)]
     pub start_minimized: bool,
+    #[serde(default)]
+    pub reconnect_after_update: bool,
 }
 
 fn default_proxy_mode() -> String {
@@ -314,6 +316,7 @@ impl Default for AppSettings {
             socks_port: default_socks_port(),
             autostart: false,
             start_minimized: false,
+            reconnect_after_update: false,
         }
     }
 }
@@ -581,5 +584,32 @@ impl SubscriptionFetcher {
         profile.updated_at = current_timestamp();
         store.update_profile(profile.clone())?;
         Ok(profile)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_reconnect_after_update_serialization() {
+        let settings = AppSettings::default();
+        assert!(!settings.reconnect_after_update);
+
+        let json_without_flag = r#"{"proxyMode":"socks5","tcpOnly":false,"socksPort":1080,"autostart":false,"startMinimized":false}"#;
+        let parsed: AppSettings =
+            serde_json::from_str(json_without_flag).expect("deserialize without flag");
+        assert!(!parsed.reconnect_after_update);
+
+        let custom = AppSettings {
+            reconnect_after_update: true,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&custom).expect("serialize settings");
+        assert!(serialized.contains("reconnectAfterUpdate"));
+
+        let deserialized: AppSettings =
+            serde_json::from_str(&serialized).expect("deserialize with flag");
+        assert!(deserialized.reconnect_after_update);
     }
 }

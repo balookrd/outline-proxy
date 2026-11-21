@@ -153,6 +153,11 @@ impl ProcessController {
         self.state.read().unwrap().clone()
     }
 
+    /// Returns true if the process is currently in running state.
+    pub fn is_running(&self) -> bool {
+        matches!(self.state(), ProcessState::Running { .. })
+    }
+
     /// Returns elapsed uptime seconds if running.
     pub fn uptime_secs(&self) -> Option<u64> {
         let lock = self.started_at.read().unwrap();

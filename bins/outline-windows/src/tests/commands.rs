@@ -43,6 +43,7 @@ fn test_app_state_crud_and_settings() {
         socks_port: 1085,
         autostart: true,
         start_minimized: true,
+        reconnect_after_update: false,
     };
     state.profile_store.update_settings(updated_settings.clone()).unwrap();
 
@@ -59,4 +60,18 @@ fn test_app_state_crud_and_settings() {
     // 5. Remove profile
     state.profile_store.remove_profile(&profile.id).unwrap();
     assert!(state.profile_store.profiles().is_empty());
+
+    // 6. Controller is_running predicate
+    assert!(!state.process_controller.is_running());
+}
+
+#[test]
+fn test_get_app_version_command() {
+    tauri::async_runtime::block_on(async {
+        let version = crate::commands::get_app_version().await.expect("app version info");
+        assert!(!version.version.is_empty());
+        assert!(!version.channel.is_empty());
+        assert!(!version.commit.is_empty());
+        assert!(!version.display_string.is_empty());
+    });
 }
