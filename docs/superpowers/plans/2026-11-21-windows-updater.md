@@ -139,22 +139,22 @@
 - `api.ts`: `getAppVersion()`, `checkForUpdates()`, `installUpdate(update)`
 - `UpdateModal.svelte`: props `{ isOpen, theme, update, isInstalling, progressPercent, error, onInstall, onClose }`
 
-- [ ] **Шаг 1: Добавить типы и методы API в `types.ts` и `api.ts`**
-- [ ] **Шаг 2: Создать компонент `UpdateModal.svelte`**
+- [x] **Шаг 1: Добавить типы и методы API в `types.ts` и `api.ts`**
+- [x] **Шаг 2: Создать компонент `UpdateModal.svelte`**
   - Поддержка темной и светлой тем (акцентный синий `#1E5EE8` / `#60A5FA`).
   - Информация о сборке, текст release notes / body в аккуратном скроллируемом блоке.
   - Отображение состояния загрузки: полоса прогресса, проценты.
   - Кнопки «Обновить» (или «Перезапустить»), «Отмена», при ошибке — сообщение и «Повторить».
-- [ ] **Шаг 3: Интегрировать логику обновления в `App.svelte`**
+- [x] **Шаг 3: Интегрировать логику обновления в `App.svelte`**
   - При монтировании (`onMount`): загрузка текущей версии через `getAppVersion()`, тихий запуск `checkForUpdates()` через 5 секунд.
   - Футер: отображает текущую версию (`nightly · v1.9.2 (971282b6)`) или активный статус (`проверка обновлений…`, `доступно nightly · <sha>`, `актуальная версия`, `ошибка...`).
   - Обработчик клика по футеру `handleFooterClick`:
     - Если обновление уже найдено — сразу открывает `UpdateModal`.
     - Если нет — запускает проверку, обновляет статус в футере; при обнаружении обновления автоматически открывает `UpdateModal`.
-- [ ] **Шаг 4: Собрать фронтенд и проверить отсутствие ошибок TypeScript / Svelte**
+- [x] **Шаг 4: Собрать фронтенд и проверить отсутствие ошибок TypeScript / Svelte**
   Команда: `pnpm --prefix bins/outline-windows/frontend build`
 
-- [ ] **Шаг 5: Закоммитить изменения фронтенда**
+- [x] **Шаг 5: Закоммитить изменения фронтенда**
   Команда: `git add bins/outline-windows/frontend/src/ && git commit -m "feat(windows): add UpdateModal and interactive update check in footer"`
 
 ---
