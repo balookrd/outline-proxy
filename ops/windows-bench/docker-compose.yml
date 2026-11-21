@@ -1,0 +1,43 @@
+# =============================================================================
+# Outline Proxy — Тестовый стенд Windows (dockurr/windows + SOCKS-мост gost)
+# Хост: NAS UGREEN .105 (198.18.1.105)
+# =============================================================================
+
+name: windows-bench
+
+services:
+  # HTTP-to-SOCKS5 forward proxy через узел Node 102 (Beelink .102:1080)
+  http-proxy-102:
+    image: gogost/gost
+    container_name: http-proxy-102
+    restart: unless-stopped
+    command: ["-L", "http://:8118", "-F", "socks5://198.18.1.102:1080"]
+    ports:
+      - "8118:8118"
+
+  # Виртуальная машина Windows 10 x64 на KVM-гипервизоре
+  windows:
+    image: dockurr/windows
+    container_name: windows
+    restart: unless-stopped
+    devices:
+      - /dev/kvm
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8006:8006" # Web VNC просмотр в браузере (http://198.18.1.105:8006)
+      - "3389:3389" # RDP доступ (198.18.1.105:3389)
+    environment:
+      VERSION: "10"
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "40G"
+      HTTP_PROXY: "http://198.18.1.105:8118"
+      HTTPS_PROXY: "http://198.18.1.105:8118"
+      http_proxy: "http://198.18.1.105:8118"
+      https_proxy: "http://198.18.1.105:8118"
+    volumes:
+      - /volume2/windows/storage:/storage
+      - /volume1/docker/windows/shared:/shared
+    depends_on:
+      - http-proxy-102
