@@ -1,16 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { theme, effectiveMode, THEME_COLORS } from './theme.svelte';
+import { theme, effectiveMode, applyTheme, toggleTheme, THEME_COLORS } from './theme.svelte';
 
-// This project has no jsdom/happy-dom installed (only referenced as vitest's
-// own optional peer deps) and no vitest.config setting a DOM environment, so
-// tests run under vitest's default "node" environment — no real `window` or
-// `document`. `poll.test.ts` already establishes the pattern for this
-// codebase: stub just the global a test needs with `vi.stubGlobal` rather
-// than pull in a DOM environment. That covers `effectiveMode`'s
-// `window.matchMedia` branch below; the `applyTheme` meta-tag assertions from
-// the task brief need a real `document` (querySelector/createElement/
-// documentElement) that isn't worth hand-stubbing, so they're left as
-// `.todo` — see the task report for this decision.
 function stubPrefersDark(dark: boolean) {
   vi.stubGlobal('window', {
     matchMedia: (query: string) => ({
@@ -53,9 +43,87 @@ describe('effectiveMode', () => {
 });
 
 describe('applyTheme', () => {
-  // Needs a real `document` (querySelector/createElement/documentElement) —
-  // no jsdom in this project, see the file header comment and the task report.
-  it.todo('creates the theme-color meta tag and matches the effective theme');
-  it.todo('updates the existing meta tag when the theme flips');
-  it.todo('follows the system preference for the browser chrome when no mode is set');
+  it('creates the theme-color meta tag and matches the effective theme', () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query.includes('dark'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    const fav = document.createElement('link');
+    fav.id = 'favicon';
+    document.head.appendChild(fav);
+
+    theme.mode = 'light';
+    applyTheme();
+
+    expect(document.documentElement.dataset.theme).toBe('light');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    expect(meta).not.toBeNull();
+    expect(meta?.getAttribute('content')).toBe(THEME_COLORS.light);
+    expect(fav.getAttribute('href')).toBe('/favicon-light.png');
+  });
+
+  it('updates the existing meta tag when the theme flips', () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query.includes('dark'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+
+    theme.mode = 'dark';
+    applyTheme();
+    expect(document.querySelectorAll('meta[name="theme-color"]')).toHaveLength(1);
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
+      THEME_COLORS.dark,
+    );
+
+    toggleTheme();
+
+    expect(theme.mode).toBe('light');
+    expect(localStorage.getItem('theme')).toBe('light');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(document.querySelectorAll('meta[name="theme-color"]')).toHaveLength(1);
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
+      THEME_COLORS.light,
+    );
+  });
+
+  it('follows the system preference for the browser chrome when no mode is set', () => {
+    let prefersDark = true;
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: prefersDark && query.includes('dark'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+
+    document.documentElement.dataset.theme = 'light';
+    theme.mode = null;
+    applyTheme();
+
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
+      THEME_COLORS.dark,
+    );
+
+    prefersDark = false;
+    applyTheme();
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
+      THEME_COLORS.light,
+    );
+  });
 });

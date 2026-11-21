@@ -17,10 +17,17 @@ Run from `bins/outline-ui/frontend`:
 | `pnpm dev` | Dev server on `http://localhost:5173`; proxies `/ss/dashboard/api` and `/ws/dashboard/api` to `127.0.0.1:9500` |
 | `pnpm build` | Production build into `dist/`, assets under `/ui-assets/` |
 | `pnpm check` | `svelte-check --tsconfig ./tsconfig.app.json` plus `tsc -p tsconfig.node.json` |
-| `pnpm exec vitest run` | Unit tests (`src/lib/*.test.ts`) |
+| `pnpm test` | Unit and component UI tests (`vitest run`, `happy-dom` + `@testing-library/svelte`) |
+| `pnpm test:watch` | Runs Vitest in watch mode |
+| `pnpm test:e2e` | Browser E2E tests in headless Chromium (`playwright test`) against built `dist/` (run `pnpm build` first) |
 
 `pnpm dev` needs a running `outline-ui` backend on `127.0.0.1:9500`; see
 "Running locally" in [`../README.md`](../README.md).
+
+## Testing layers
+
+1. **Unit & component UI tests (Vitest, `src/**/*.test.ts`)**: run in `happy-dom` with `@testing-library/svelte` and mocked `fetch` (`src/test/mockApi.ts`), verifying pure helpers (`src/lib/*.test.ts`), routing/shell/theme, drawers, forms, native `<dialog>` modals, and dashboard API payloads.
+2. **Browser E2E tests (Playwright, `e2e/*.spec.ts`)**: run in headless Chromium against the built `dist/` bundle served by `e2e/static-server.mjs` with the same CSP and security headers as `bins/outline-ui/src/main.rs`. API calls are intercepted via `page.route()` (`e2e/mock-api.ts`); guards fail the test on any `console.error`, `pageerror`, CSP violation, broken `/ui-assets/*`, or mobile/desktop horizontal overflow.
 
 ## Layout
 
@@ -34,3 +41,5 @@ Run from `bins/outline-ui/frontend`:
 | `src/features/ws/` | Client dashboard pages: topology, uplinks, routing, groups, settings |
 | `src/features/landing/` | Index page linking both dashboards |
 | `src/components/layout/` | Top bar, sidebar, instance selector, error banner, toasts |
+| `src/test/` | Vitest DOM setup/polyfills, typed API fixtures, and `fetch` mock helpers |
+| `e2e/` | Static production server (`static-server.mjs`), Playwright API mocks, and browser specs |

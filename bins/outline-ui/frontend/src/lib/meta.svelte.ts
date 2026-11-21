@@ -14,3 +14,8 @@ export async function loadMeta(): Promise<void> {
     // Silent fallback: footer still renders "outline-ui" without version if unreachable.
   }
 }
+
+export function resetMeta() {
+  meta.version = null;
+  requested = false;
+}

@@ -270,14 +270,15 @@ jobs:
         run: .github/scripts/check-served-key-path.sh
 
   frontend:
-    name: frontend (svelte-check + vitest + build) + embed-assets
+    name: frontend (check + vitest + build + playwright) + embed-assets
     runs-on: ubuntu-latest
     # outline-ui's `embed-assets` Cargo feature (off by default) bakes this
     # directory's `pnpm build` output into the Rust binary, but that is the
     # only place the two touch. The three jobs above stay entirely node-less
     # — they never build with the feature on, so they never need
     # `frontend/dist` to exist. This job is the frontend's own gate
-    # (typecheck, unit tests, production build) and, after that build, the
+    # (typecheck, Vitest component/unit tests, production build, Playwright E2E
+    # against dist/ under production CSP) and, after that build, the
     # only place in CI that compiles outline-ui with `embed-assets` — see the
     # dedicated step below for why that matters.
     defaults:
@@ -296,9 +297,17 @@ jobs:
           cache: pnpm
           cache-dependency-path: bins/outline-ui/frontend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec svelte-check --tsconfig ./tsconfig.app.json
+      - run: pnpm check
       - run: pnpm exec vitest run
       - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: outline-ui-playwright-report
+          path: bins/outline-ui/frontend/playwright-report
+          retention-days: 7
 
       # `embed-assets` is gated nowhere else: the rust-embed derive walks a
       # real `dist` tree at compile time, and this is the only job that ever
