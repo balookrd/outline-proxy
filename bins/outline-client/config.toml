@@ -2,7 +2,7 @@
 # Defaults to the config file path with extension replaced by ".state.toml"
 # (i.e. this file → config.state.toml in the same directory).
 # Override when the config directory is not writable by the process, e.g.:
-# state_path = "/var/lib/outline-ws-rust/state.toml"
+# state_path = "/var/lib/outline-client/state.toml"
 
 # ── Carrier padding (anti TLS-in-TLS record-size correlation) ────────────────
 # Wraps each Shadowsocks chunk on every WS / XHTTP dial in a length-delimited
@@ -10,7 +10,7 @@
 # breaking the record-size correlation TLS-in-TLS classifiers key on.
 #
 # Config-synchronised with the server, NOT negotiated: the server must enable
-# `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`)
+# `[padding]` on the matching carrier path (`outline-server` `[padding] paths`)
 # or the padded frames break its decoder. This client knob is global — when
 # enabled, every WS / XHTTP dial is padded. Disabled by default (wire unchanged).
 #
@@ -80,7 +80,7 @@ listen = "[::1]:9090"
 # built-in dashboard.
 # [control]
 # listen = "127.0.0.1:9091"
-# token_file = "/etc/outline-ws/control.token"
+# token_file = "/etc/outline-client/control.token"
 
 # ── Built-in dashboard ──────────────────────────────────────────────────────
 # Optional multi-instance UI. Open http://LISTEN/dashboard in a browser.
@@ -101,7 +101,7 @@ listen = "[::1]:9090"
 # token = "long-random-secret"
 # # Or keep the secret out of the config (path resolved relative to this file).
 # # Mutually exclusive with `token`.
-# # token_file = "/etc/outline-ws/dashboard.token"
+# # token_file = "/etc/outline-client/dashboard.token"
 # # Host names accepted on top of the built-in set (loopback names/addresses
 # # and the bound address). Needed only behind a reverse proxy that serves the
 # # panel under a DNS name — any other name is answered with 403, which is what
@@ -113,7 +113,7 @@ listen = "[::1]:9090"
 # name = "inst-01"
 # # http:// or https:// — TLS control endpoints are supported.
 # control_url = "http://127.0.0.1:9091"
-# token_file = "/etc/outline-ws/inst-01.control.token"
+# token_file = "/etc/outline-client/inst-01.control.token"
 #
 # [[dashboard.instances]]
 # name = "inst-02"
@@ -815,7 +815,7 @@ password = "Secret0"
 # password = "BASE64=="
 
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
-# outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
+# outline-server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides
 # directly on QUIC bidi streams (TCP-like sessions) or QUIC datagrams
 # (UDP-like sessions). Available when the workspace `h3` feature is on
@@ -881,7 +881,7 @@ via = "main"
 
 # Example with a file-backed CIDR list and fallback:
 # [[route]]
-# file = "/etc/outline-ws-rust/geoip-cn.list"
+# file = "/etc/outline-client/geoip-cn.list"
 # file_poll_secs = 60
 # via = "backup"
 # fallback_via = "main"

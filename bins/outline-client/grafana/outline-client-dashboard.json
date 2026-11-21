@@ -9702,7 +9702,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "outline-ws-rust",
+  "title": "outline-client",
   "uid": "outline-ws-rust",
   "version": 90,
   "weekStart": ""

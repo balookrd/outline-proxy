@@ -59,7 +59,7 @@ path = "/metrics"
 # management network.
 # [control]
 # listen = "127.0.0.1:7001"
-# token_file = "/etc/outline-ss-rust/control.token"
+# token_file = "/etc/outline-server/control.token"
 
 # Optional browser UI on a separate listener. It proxies to the configured
 # control instances, keeping bearer tokens server-side. Reaching it is
@@ -70,7 +70,7 @@ path = "/metrics"
 # listen = "127.0.0.1:7002"
 # request_timeout_secs = 15
 # refresh_interval_secs = 10
-# token_file = "/etc/outline-ss-rust/dashboard.token"
+# token_file = "/etc/outline-server/dashboard.token"
 # # Host names accepted on top of the built-in set (loopback names/addresses and
 # # the bound address). Needed only behind a reverse proxy that serves the panel
 # # under a DNS name — any other Host is answered with 403, which is what stops
@@ -81,7 +81,7 @@ path = "/metrics"
 # [[dashboard.instances]]
 # name = "local"
 # control_url = "http://127.0.0.1:7001"
-# token_file = "/etc/outline-ss-rust/control.token"
+# token_file = "/etc/outline-server/control.token"
 
 [outbound]
 # Prefer IPv4 when resolving upstream targets.
@@ -279,7 +279,7 @@ kind = "ws_ss_udp"
 # carriers we ship).
 #
 # Config-synchronised, NOT negotiated on the wire: enable the matching client
-# (`outline-ws-rust` `[padding]`) too, or its plain frames get fed into the
+# (`outline-client` `[padding]`) too, or its plain frames get fed into the
 # padding decoder and the session fails. This block holds only the scheme's
 # parameters — which endpoints actually pad is each endpoint's own `padded`
 # flag, not a key here. An endpoint with `padded` unset keeps the plain wire,
@@ -406,7 +406,7 @@ method = "2022-blake3-chacha20-poly1305"
 # HTTP/3 QUIC connection) dies mid-flow, the server keeps that flow's upstream
 # TcpStream parked under the Session ID it minted, so the client can re-dial on
 # a fresh carrier, present the same id, and re-attach the upstream instead of
-# reconnecting to the destination. This is what lets the outline-ws-rust TUN
+# reconnecting to the destination. This is what lets the outline-client TUN
 # client migrate a live TCP flow off a dead carrier transparently
 # (`[tun.tcp] carrier_migration`), so a long-lived download or SSE stream is
 # not torn down when one carrier collapses.
@@ -416,7 +416,7 @@ method = "2022-blake3-chacha20-poly1305"
 # enabled = true                 # master switch (v1 Ack-Prefix uplink replay)
 # orphan_ttl_tcp_secs = 30       # how long a parked TCP upstream waits for the
                                  # client to come back; must exceed the client's
-                                 # migration deadline (20s in outline-ws-rust)
+                                 # migration deadline (20s in outline-client)
 # orphan_ttl_udp_secs = 30
 # orphan_per_user_cap = 128      # max sessions one user may keep parked at once.
                                  # The default (4) is tuned for SOCKS, where a

@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Production dashboard for outline-ss-rust Prometheus metrics.",
+  "description": "Production dashboard for outline-server Prometheus metrics.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -7438,7 +7438,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "outline-ss-rust",
+  "title": "outline-server",
   "uid": "outline-ss-rust",
   "version": 21,
   "weekStart": ""
