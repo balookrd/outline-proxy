@@ -160,6 +160,35 @@ fn explicit_clusters(state: &SsState) -> Vec<ResolvedCluster> {
         .collect()
 }
 
+fn sanitize_member_token(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub(super) fn discovered_cluster_name(members: &[InstanceConfig], fp: &str) -> String {
+    let names: Vec<String> = members
+        .iter()
+        .map(|m| sanitize_member_token(&m.name))
+        .filter(|s| !s.is_empty())
+        .collect();
+    match names.len() {
+        0 => {
+            let prefix: String = fp.chars().take(6).collect();
+            format!("auto-{prefix}")
+        },
+        1..=3 => names.join("+"),
+        n => format!("{}+{}+{}more", names[0], names[1], n - 2),
+    }
+}
+
 async fn discover_clusters(
     state: &SsState,
     reserved_names: &HashSet<String>,
@@ -214,8 +243,7 @@ async fn discover_clusters(
         if members.len() < 2 {
             continue;
         }
-        let prefix: String = fp.chars().take(6).collect();
-        let base = format!("auto-{prefix}");
+        let base = discovered_cluster_name(&members, &fp);
         let mut candidate = base.clone();
         let mut suffix = 2usize;
         while !used_names.insert(candidate.clone()) {
@@ -236,9 +264,6 @@ async fn resolve_cluster(state: &SsState, name: &str) -> Option<ResolvedCluster>
     let explicit = explicit_clusters(state);
     if let Some(found) = explicit.iter().find(|c| c.name == name) {
         return Some(found.clone());
-    }
-    if !name.starts_with("auto-") {
-        return None;
     }
     let reserved: HashSet<String> = explicit.iter().map(|c| c.name.clone()).collect();
     discover_clusters(state, &reserved)
