@@ -1,0 +1,603 @@
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub label: String,
+    pub asset_name: String,
+    pub download_url: String,
+    pub checksums_url: Option<String>,
+    pub notes: String,
+    pub commit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCheckResult {
+    UpToDate,
+    Available(UpdateInfo),
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    target_commitish: Option<String>,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+pub struct UpdateChecker;
+
+impl UpdateChecker {
+    pub async fn check(
+        channel: &str,
+        current_commit: &str,
+        current_version: &str,
+    ) -> Result<UpdateCheckResult, String> {
+        let client = reqwest::Client::builder()
+            .user_agent(format!("OutlineProxy-Windows/{current_version}"))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+        if channel.eq_ignore_ascii_case("release") {
+            Self::check_release(&client, current_version).await
+        } else {
+            Self::check_nightly(&client, current_commit).await
+        }
+    }
+
+    async fn check_nightly(
+        client: &reqwest::Client,
+        current_commit: &str,
+    ) -> Result<UpdateCheckResult, String> {
+        let url =
+            "https://api.github.com/repos/balookrd/outline-proxy/releases/tags/windows-nightly";
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to fetch nightly release info: {e}"))?;
+
+        if resp.status().as_u16() == 404 {
+            return Err("Nightly release tag windows-nightly not found".into());
+        }
+        if !resp.status().is_success() {
+            return Err(format!("GitHub API error: HTTP {}", resp.status()));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read nightly release body: {e}"))?;
+        let release: GithubRelease = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Failed to parse GitHub release JSON: {e}"))?;
+
+        let checksums_url = release
+            .assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+            .map(|a| a.browser_download_url.clone());
+
+        for asset in &release.assets {
+            if let Some(sha) = parse_nightly_asset(&asset.name) {
+                if crate::version::AppVersion::same_commit(&sha, current_commit) {
+                    return Ok(UpdateCheckResult::UpToDate);
+                } else {
+                    let short_sha = if sha.len() >= 8 { &sha[..8] } else { &sha };
+                    return Ok(UpdateCheckResult::Available(UpdateInfo {
+                        label: format!("nightly ({short_sha})"),
+                        asset_name: asset.name.clone(),
+                        download_url: asset.browser_download_url.clone(),
+                        checksums_url,
+                        notes: release.body.unwrap_or_default(),
+                        commit: sha,
+                    }));
+                }
+            }
+        }
+
+        Err("No Windows x86_64 zip asset found in windows-nightly release".into())
+    }
+
+    async fn check_release(
+        client: &reqwest::Client,
+        current_version: &str,
+    ) -> Result<UpdateCheckResult, String> {
+        let url = "https://api.github.com/repos/balookrd/outline-proxy/releases";
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to fetch releases: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("GitHub API error: HTTP {}", resp.status()));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read releases body: {e}"))?;
+        let releases: Vec<GithubRelease> = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Failed to parse GitHub releases: {e}"))?;
+
+        let mut best_release: Option<(
+            (u32, u32, u32),
+            GithubRelease,
+            GithubAsset,
+            Option<String>,
+        )> = None;
+
+        for release in releases {
+            let tag = &release.tag_name;
+            if let Some(semver) = parse_semver(tag) {
+                let matching_asset = release
+                    .assets
+                    .iter()
+                    .find(|a| {
+                        a.name.starts_with("OutlineProxy-")
+                            && a.name.ends_with("-Windows-x86_64.zip")
+                            && !a.name.contains("nightly")
+                    })
+                    .cloned();
+
+                if let Some(asset) = matching_asset {
+                    let checksums_url = release
+                        .assets
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+                        .map(|a| a.browser_download_url.clone());
+
+                    if let Some((best_ver, _, _, _)) = &best_release {
+                        if &semver > best_ver {
+                            best_release = Some((semver, release, asset, checksums_url));
+                        }
+                    } else {
+                        best_release = Some((semver, release, asset, checksums_url));
+                    }
+                }
+            }
+        }
+
+        if let Some(((major, minor, patch), release, asset, checksums_url)) = best_release {
+            let candidate_ver = format!("{major}.{minor}.{patch}");
+            if is_newer_version(&candidate_ver, current_version) {
+                let commit = release.target_commitish.unwrap_or_default();
+                return Ok(UpdateCheckResult::Available(UpdateInfo {
+                    label: format!("v{candidate_ver}"),
+                    asset_name: asset.name,
+                    download_url: asset.browser_download_url,
+                    checksums_url,
+                    notes: release.body.unwrap_or_default(),
+                    commit,
+                }));
+            }
+        }
+
+        Ok(UpdateCheckResult::UpToDate)
+    }
+}
+
+pub struct UpdateInstaller;
+
+impl UpdateInstaller {
+    pub async fn download_and_verify<F>(
+        update: &UpdateInfo,
+        on_progress: F,
+    ) -> Result<PathBuf, String>
+    where
+        F: Fn(u64, u64) + Send + 'static,
+    {
+        let client = reqwest::Client::builder()
+            .user_agent("OutlineProxy-Windows-Updater")
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+        let expected_sha256 = if let Some(ref checksums_url) = update.checksums_url {
+            let resp = client
+                .get(checksums_url)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to fetch checksums: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("Failed to fetch checksums: HTTP {}", resp.status()));
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| format!("Failed to read checksums body: {e}"))?;
+            let hash = parse_checksums(&text, &update.asset_name).ok_or_else(|| {
+                format!("Checksum for {} not found in SHA256SUMS.txt", update.asset_name)
+            })?;
+            Some(hash)
+        } else {
+            None
+        };
+
+        let mut resp = client
+            .get(&update.download_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download update: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Failed to download update: HTTP {}", resp.status()));
+        }
+
+        let total_bytes = resp.content_length().unwrap_or(0);
+        let tmp_path = std::env::temp_dir().join(format!(
+            "outline-update-{}-{}.zip",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+
+        let file = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to create temporary file {}: {e}", tmp_path.display()))?;
+        let mut writer = std::io::BufWriter::new(file);
+
+        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut downloaded_bytes = 0u64;
+
+        use std::io::Write;
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("Download stream error: {e}"))?
+        {
+            context.update(&chunk);
+            writer
+                .write_all(&chunk)
+                .map_err(|e| format!("Failed to write to file: {e}"))?;
+            downloaded_bytes += chunk.len() as u64;
+            on_progress(downloaded_bytes, total_bytes);
+        }
+
+        writer
+            .flush()
+            .map_err(|e| format!("Failed to flush downloaded file: {e}"))?;
+        drop(writer);
+
+        let digest = context.finish();
+        let calculated_hash = to_hex(digest.as_ref());
+
+        if let Some(expected) = expected_sha256
+            && !calculated_hash.eq_ignore_ascii_case(&expected)
+        {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!(
+                "Checksum mismatch for {}: expected {}, got {}",
+                update.asset_name, expected, calculated_hash
+            ));
+        }
+
+        Ok(tmp_path)
+    }
+
+    pub fn stage_update(zip_path: &Path, staging_dir: &Path) -> Result<(), String> {
+        if staging_dir.exists() {
+            std::fs::remove_dir_all(staging_dir).map_err(|e| {
+                format!("Failed to clear staging dir {}: {e}", staging_dir.display())
+            })?;
+        }
+        std::fs::create_dir_all(staging_dir)
+            .map_err(|e| format!("Failed to create staging dir {}: {e}", staging_dir.display()))?;
+
+        let file = std::fs::File::open(zip_path)
+            .map_err(|e| format!("Failed to open zip archive {}: {e}", zip_path.display()))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("Invalid zip archive: {e}"))?;
+
+        for i in 0..archive.len() {
+            let mut zip_file = archive
+                .by_index(i)
+                .map_err(|e| format!("Failed to read zip entry #{i}: {e}"))?;
+
+            // ZIP-SLIP PROTECTION: enclosed_name ensures the path is relative and doesn't escape root
+            let enclosed_name = zip_file
+                .enclosed_name()
+                .ok_or_else(|| format!("Zip slip path traversal detected: {}", zip_file.name()))?;
+
+            let dest_path = staging_dir.join(enclosed_name);
+
+            if zip_file.is_dir() {
+                std::fs::create_dir_all(&dest_path).map_err(|e| {
+                    format!("Failed to create directory {}: {e}", dest_path.display())
+                })?;
+            } else {
+                if let Some(parent) = dest_path.parent()
+                    && !parent.exists()
+                {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!("Failed to create parent dir {}: {e}", parent.display())
+                    })?;
+                }
+
+                let mut out_file = std::fs::File::create(&dest_path).map_err(|e| {
+                    format!("Failed to create destination file {}: {e}", dest_path.display())
+                })?;
+                std::io::copy(&mut zip_file, &mut out_file)
+                    .map_err(|e| format!("Failed to extract file {}: {e}", dest_path.display()))?;
+
+                #[cfg(unix)]
+                if let Some(mode) = zip_file.unix_mode() {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(mode));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn launch_updater(
+        staging_dir: &Path,
+        target_exe: &Path,
+        current_pid: u32,
+    ) -> Result<(), String> {
+        let target_dir = target_exe
+            .parent()
+            .ok_or_else(|| "Target executable has no parent directory".to_string())?;
+
+        let staging_str = staging_dir.to_str().ok_or("Staging dir has non-UTF8 path")?;
+        let target_dir_str = target_dir.to_str().ok_or("Target dir has non-UTF8 path")?;
+        let target_exe_str = target_exe.to_str().ok_or("Target exe has non-UTF8 path")?;
+
+        let script_content = format!(
+            "@echo off\r\n\
+            setlocal enabledelayedexpansion\r\n\
+            set TARGET_PID={current_pid}\r\n\
+            set STAGING_DIR={staging_str}\r\n\
+            set TARGET_DIR={target_dir_str}\r\n\
+            set TARGET_EXE={target_exe_str}\r\n\
+            \r\n\
+            :wait_loop\r\n\
+            tasklist /FI \"PID eq %TARGET_PID%\" 2>NUL | find /I \"%TARGET_PID%\" >NUL\r\n\
+            if not errorlevel 1 (\r\n\
+                timeout /t 1 /nobreak >NUL\r\n\
+                goto wait_loop\r\n\
+            )\r\n\
+            \r\n\
+            timeout /t 1 /nobreak >NUL\r\n\
+            \r\n\
+            xcopy /Y /Q /E \"%STAGING_DIR%\\*\" \"%TARGET_DIR%\\\" >NUL\r\n\
+            if errorlevel 1 (\r\n\
+                copy /Y \"%STAGING_DIR%\\*.*\" \"%TARGET_DIR%\\\" >NUL\r\n\
+            )\r\n\
+            \r\n\
+            start \"\" \"%TARGET_EXE%\"\r\n\
+            \r\n\
+            rmdir /S /Q \"%STAGING_DIR%\" >NUL 2>&1\r\n\
+            (goto) 2>nul & del \"%~f0\"\r\n"
+        );
+
+        let script_path = std::env::temp_dir().join(format!("outline_update_{current_pid}.cmd"));
+        std::fs::write(&script_path, script_content)
+            .map_err(|e| format!("Failed to write update script {}: {e}", script_path.display()))?;
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            const DETACHED_PROCESS: u32 = 0x00000008;
+
+            let script_str = script_path
+                .to_str()
+                .ok_or("Script path contains non-UTF8 characters")?;
+
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.args(["/c", "start", "/min", "cmd.exe", "/c", script_str]);
+            cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+            cmd.spawn()
+                .map_err(|e| format!("Failed to spawn updater script: {e}"))?;
+        }
+
+        #[cfg(not(windows))]
+        {
+            tracing::info!(
+                "launch_updater simulated on non-windows: script={}",
+                script_path.display()
+            );
+        }
+
+        Ok(())
+    }
+}
+
+pub fn parse_checksums(content: &str, target_asset: &str) -> Option<String> {
+    let target_name = Path::new(target_asset)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(target_asset);
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+
+        let rest = line[hash.len()..].trim();
+        let filename = rest.strip_prefix('*').unwrap_or(rest).trim();
+        let file_basename = Path::new(filename)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(filename);
+
+        if file_basename.eq_ignore_ascii_case(target_name) {
+            return Some(hash.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+pub fn parse_nightly_asset(asset_name: &str) -> Option<String> {
+    let s = asset_name.strip_prefix("OutlineProxy-nightly-")?;
+    let s = s.strip_suffix("-Windows-x86_64.zip")?;
+    if s.is_empty() {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+pub fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
+    let clean = v.trim().strip_prefix("windows-").unwrap_or(v.trim());
+    let clean = clean.strip_prefix('v').unwrap_or(clean);
+    let main_part = clean.split(['-', '+']).next()?;
+    let mut parts = main_part.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    let patch: u32 = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+pub fn is_newer_version(candidate: &str, current: &str) -> bool {
+    match (parse_semver(candidate), parse_semver(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
+}
+
+pub fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    #[test]
+    fn test_parse_checksums_txt_with_asterisk_and_space() {
+        let content = "\
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  OutlineProxy-nightly-971282b6-Windows-x86_64.zip\n\
+ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb *OutlineProxy-v1.9.2-Windows-x86_64.zip\n\
+";
+        let c1 = parse_checksums(content, "OutlineProxy-nightly-971282b6-Windows-x86_64.zip");
+        assert_eq!(
+            c1.as_deref(),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+
+        let c2 = parse_checksums(content, "OutlineProxy-v1.9.2-Windows-x86_64.zip");
+        assert_eq!(
+            c2.as_deref(),
+            Some("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb")
+        );
+
+        let c3 = parse_checksums(content, "non-existent-file.zip");
+        assert_eq!(c3, None);
+    }
+
+    #[test]
+    fn test_evaluate_nightly_release_asset_name() {
+        let valid = "OutlineProxy-nightly-971282b6-Windows-x86_64.zip";
+        assert_eq!(parse_nightly_asset(valid).as_deref(), Some("971282b6"));
+
+        let valid_dirty = "OutlineProxy-nightly-971282b6-dirty-Windows-x86_64.zip";
+        assert_eq!(parse_nightly_asset(valid_dirty).as_deref(), Some("971282b6-dirty"));
+
+        let invalid1 = "OutlineProxy-v1.9.2-Windows-x86_64.zip";
+        assert_eq!(parse_nightly_asset(invalid1), None);
+
+        let invalid2 = "OutlineProxy-nightly-971282b6-Linux-x86_64.tar.gz";
+        assert_eq!(parse_nightly_asset(invalid2), None);
+    }
+
+    #[test]
+    fn test_zip_slip_protection() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = temp_dir.path().join("malicious.zip");
+        let staging_dir = temp_dir.path().join("staging");
+
+        // Create a zip with zip-slip entry: "../../evil.txt"
+        {
+            let file = std::fs::File::create(&zip_path).expect("create zip");
+            let mut zip = zip::ZipWriter::new(file);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("../../evil.txt", options).expect("start file");
+            zip.write_all(b"malicious content").expect("write evil file");
+            zip.finish().expect("finish zip");
+        }
+
+        let result = UpdateInstaller::stage_update(&zip_path, &staging_dir);
+        assert!(result.is_err(), "Stage update must reject zip slip paths");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_lowercase().contains("slip")
+                || err.to_lowercase().contains("invalid")
+                || err.to_lowercase().contains("traversal"),
+            "Error should indicate path traversal / zip slip: {err}"
+        );
+
+        // Verify that evil.txt was NOT written outside staging dir
+        let evil_target = temp_dir.path().join("evil.txt");
+        assert!(!evil_target.exists(), "Evil file must not exist");
+    }
+
+    #[test]
+    fn test_stage_update_valid_zip() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = temp_dir.path().join("good.zip");
+        let staging_dir = temp_dir.path().join("staging");
+
+        {
+            let file = std::fs::File::create(&zip_path).expect("create zip");
+            let mut zip = zip::ZipWriter::new(file);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("OutlineProxy.exe", options).expect("start file");
+            zip.write_all(b"binary content").expect("write file");
+
+            zip.add_directory("subfolder/", options).expect("add dir");
+            zip.start_file("subfolder/config.json", options)
+                .expect("start nested file");
+            zip.write_all(b"{}").expect("write nested file");
+            zip.finish().expect("finish zip");
+        }
+
+        let res = UpdateInstaller::stage_update(&zip_path, &staging_dir);
+        assert!(res.is_ok(), "Expected valid unpack: {:?}", res);
+        assert!(staging_dir.join("OutlineProxy.exe").exists());
+        assert!(staging_dir.join("subfolder/config.json").exists());
+    }
+
+    #[test]
+    fn test_semver_and_version_comparison() {
+        assert_eq!(parse_semver("1.9.2"), Some((1, 9, 2)));
+        assert_eq!(parse_semver("v1.9.2"), Some((1, 9, 2)));
+        assert_eq!(parse_semver("windows-v1.10.0"), Some((1, 10, 0)));
+        assert_eq!(parse_semver("windows-1.10.0-rc1"), Some((1, 10, 0)));
+
+        assert!(is_newer_version("1.9.3", "1.9.2"));
+        assert!(is_newer_version("1.10.0", "1.9.9"));
+        assert!(is_newer_version("2.0.0", "1.99.99"));
+        assert!(!is_newer_version("1.9.2", "1.9.2"));
+        assert!(!is_newer_version("1.9.1", "1.9.2"));
+    }
+
+    #[test]
+    fn test_to_hex() {
+        let bytes = [0xde, 0xad, 0xbe, 0xef];
+        assert_eq!(to_hex(&bytes), "deadbeef");
+    }
+}
