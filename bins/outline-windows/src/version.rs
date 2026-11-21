@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// Version and build metadata of the desktop application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppVersionInfo {
     pub version: String,
     pub commit: String,
     pub channel: String,
+    #[serde(alias = "display_string")]
     pub display_string: String,
 }
 

@@ -2,10 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     pub label: String,
+    #[serde(alias = "asset_name")]
     pub asset_name: String,
+    #[serde(alias = "download_url")]
     pub download_url: String,
+    #[serde(alias = "checksums_url")]
     pub checksums_url: Option<String>,
     pub notes: String,
     pub commit: String,

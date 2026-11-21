@@ -4,6 +4,7 @@
   import ServersList from './components/ServersList.svelte';
   import SettingsModal from './components/SettingsModal.svelte';
   import LogViewerModal from './components/LogViewerModal.svelte';
+  import UpdateModal from './components/UpdateModal.svelte';
   import {
     getStatus,
     connect,
@@ -22,12 +23,18 @@
     onProfilesUpdated,
     onSettingsUpdated,
     onNavigate,
+    getAppVersion,
+    checkForUpdates,
+    installUpdate,
+    onUpdateProgress,
   } from './lib/api';
   import type {
     ServerProfile,
     ProcessState,
     ConnectionStatusResponse,
     AppSettings,
+    AppVersionInfo,
+    UpdateInfo,
   } from './lib/types';
   import {
     isProcessRunning,
@@ -63,6 +70,16 @@
   let showServers = $state(false);
   let showSettings = $state(false);
   let showLogs = $state(false);
+  let showUpdateModal = $state(false);
+
+  // Application Updates State
+  let appVersion = $state<AppVersionInfo | null>(null);
+  let updateStatus = $state<string | null>(null);
+  let availableUpdate = $state<UpdateInfo | null>(null);
+  let isCheckingUpdate = $state(false);
+  let isInstallingUpdate = $state(false);
+  let updateProgressPercent = $state(0);
+  let updateError = $state<string | null>(null);
 
   // Connection Interaction State
   let actionLoading = $state(false);
@@ -397,6 +414,50 @@
     logs = [];
   }
 
+  // Updates Interaction
+  async function handleFooterClick() {
+    if (isCheckingUpdate || isInstallingUpdate) return;
+    if (availableUpdate) {
+      showUpdateModal = true;
+      return;
+    }
+    isCheckingUpdate = true;
+    updateStatus = 'проверка обновлений…';
+    try {
+      const res = await checkForUpdates();
+      if (res.status === 'available') {
+        availableUpdate = res.update;
+        updateStatus = `доступно ${res.update.label}`;
+        showUpdateModal = true;
+      } else {
+        updateStatus = 'актуальная версия';
+        setTimeout(() => {
+          updateStatus = null;
+        }, 4000);
+      }
+    } catch (err: any) {
+      updateStatus = 'ошибка проверки';
+      setTimeout(() => {
+        updateStatus = null;
+      }, 5000);
+    } finally {
+      isCheckingUpdate = false;
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!availableUpdate) return;
+    isInstallingUpdate = true;
+    updateError = null;
+    updateProgressPercent = 0;
+    try {
+      await installUpdate(availableUpdate);
+    } catch (err: any) {
+      isInstallingUpdate = false;
+      updateError = typeof err === 'string' ? err : err?.message || String(err);
+    }
+  }
+
   // Setup Lifecycle
   onMount(() => {
     refreshStatus();
@@ -404,9 +465,36 @@
     refreshSettings();
     refreshLogs();
 
+    // Load desktop app version
+    getAppVersion()
+      .then((ver) => {
+        appVersion = ver;
+      })
+      .catch((e) => {
+        console.warn('Failed to get app version:', e);
+      });
+
     const unlistens: Array<() => void> = [];
 
     // Real-time Listeners
+    onUpdateProgress((payload) => {
+      updateProgressPercent = payload.percent;
+    }).then((un) => unlistens.push(un));
+
+    // Background silent update check after 5 seconds
+    const silentCheckTimer = setTimeout(async () => {
+      try {
+        const res = await checkForUpdates();
+        if (res.status === 'available') {
+          availableUpdate = res.update;
+          updateStatus = `доступно ${res.update.label} — нажмите`;
+        }
+      } catch (e) {
+        // Silent error ignore in background check
+        console.warn('Silent update check failed:', e);
+      }
+    }, 5000);
+
     onStatusChanged((newState) => {
       if (status) {
         status = { ...status, state: newState };
@@ -435,6 +523,7 @@
     }).then((un) => unlistens.push(un));
 
     return () => {
+      clearTimeout(silentCheckTimer);
       unlistens.forEach((un) => un());
     };
   });
@@ -753,8 +842,15 @@
   </section>
 
   <!-- 6. Version Footer -->
-  <footer class="text-center text-[11px] text-[#64748B] hover:text-[#0F172A] dark:hover:text-white transition-colors cursor-pointer py-0.5">
-    nightly · vnightly (638262e3)
+  <footer class="w-full text-center">
+    <button
+      type="button"
+      onclick={handleFooterClick}
+      disabled={isCheckingUpdate || isInstallingUpdate}
+      class="w-full text-center text-[11px] text-[#64748B] hover:text-[#0F172A] dark:hover:text-white transition-colors cursor-pointer py-1 disabled:cursor-default disabled:opacity-70"
+    >
+      {updateStatus || (appVersion ? (appVersion.displayString || appVersion.display_string) : 'nightly · vnightly (dev)') || 'Outline Proxy'}
+    </button>
   </footer>
 
   <!-- Modal Components -->
@@ -785,5 +881,20 @@
     {logs}
     onClose={() => showLogs = false}
     onClearLogs={handleClearLogs}
+  />
+
+  <UpdateModal
+    isOpen={showUpdateModal}
+    {theme}
+    update={availableUpdate}
+    isInstalling={isInstallingUpdate}
+    progressPercent={updateProgressPercent}
+    error={updateError}
+    onInstall={handleInstallUpdate}
+    onClose={() => {
+      if (!isInstallingUpdate) {
+        showUpdateModal = false;
+      }
+    }}
   />
 </main>
