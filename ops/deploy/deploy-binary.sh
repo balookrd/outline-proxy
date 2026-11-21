@@ -5,7 +5,7 @@
 # Run from the workstation:
 #   ops/deploy/deploy-binary.sh <host> <unit> <local-binary> [keep]
 #
-#   host   ssh target, e.g. sysadm@cloud3.beerloga.su
+#   host   ssh target, e.g. sysadm@cloud1.beerloga.su
 #   unit   outline-server | outline-client
 #   file   path to the cross-built binary
 #   keep   backups to retain (default 3)

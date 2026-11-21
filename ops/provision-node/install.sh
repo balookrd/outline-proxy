@@ -565,35 +565,53 @@ ensure_subscription_extensions() {
     ok "nginx: subscription location now serves .toml too"
 }
 
+# Remove an /etc/nginx/sites-available include for snippets/heartbeat.conf when
+# the target clone does not carry /etc/nginx/snippets/heartbeat.conf (external
+# heartbeat observers are provisioned separately via ambar/ops/heartbeat).
+ensure_nginx_snippets() {
+    local site="/etc/nginx/sites-available/$NGINX_SITE"
+    [ -f "$site" ] || return 0
+    if grep -qE '^[[:space:]]*include[[:space:]]+snippets/heartbeat\.conf;' "$site" \
+       && [ ! -f /etc/nginx/snippets/heartbeat.conf ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            dim "[dry-run] would drop include snippets/heartbeat.conf from $site (absent on this host; heartbeat-watch lives in ambar/ops/heartbeat)"
+            return 0
+        fi
+        local tmp
+        tmp="$(mktemp)"
+        grep -vE '^[[:space:]]*include[[:space:]]+snippets/heartbeat\.conf;' "$site" > "$tmp"
+        cat "$tmp" > "$site"
+        rm -f "$tmp"
+        ok "nginx: dropped missing snippets/heartbeat.conf include from $site"
+    fi
+}
+
 # The service runs with `--config /etc/outline-server/config.toml`, and every
 # on-node caller (save-keys.sh, the key generator) now passes that same /etc
-# path explicitly. The historical /opt/outline/outline-server/config.toml (and
-# legacy /opt/outline/outline-ss-rust/config.toml) — a symlink on five nodes, a
-# drifting plain copy on `sebek`/`nuxt2` (2026-08-11) — bought nothing but the
-# copy-vs-symlink drift that silently desynced the key generator. Consolidate on
-# /etc: rescue an /opt-only copy if /etc is somehow empty, then drop the /opt
-# path entirely so there is one source of truth.
+# path explicitly. The historical /opt/outline/outline-server/config.toml — a
+# symlink on five nodes, a drifting plain copy on `sebek`/`nuxt2` (2026-08-11) —
+# bought nothing but the copy-vs-symlink drift that silently desynced the key
+# generator. Consolidate on /etc: rescue an /opt-only copy if /etc is somehow
+# empty, then drop the /opt path entirely so there is one source of truth.
 remove_ss_config_opt() {
-    local opt etc=/etc/outline-server/config.toml
-    for opt in /opt/outline/outline-server/config.toml /opt/outline/outline-ss-rust/config.toml; do
-        [ -e "$opt" ] || [ -L "$opt" ] || continue
+    local opt=/opt/outline/outline-server/config.toml etc=/etc/outline-server/config.toml
+    [ -e "$opt" ] || [ -L "$opt" ] || return 0
 
-        # A plain /opt copy while /etc is missing is the only live config — promote
-        # it before deleting anything. A dangling symlink is not a file, so `-f`
-        # skips it: there is nothing to rescue there.
-        if [ ! -f "$etc" ] && [ -f "$opt" ] && [ ! -L "$opt" ]; then
-            run install -d -o root -g root -m 0755 "$(dirname "$etc")"
-            run cp -a "$opt" "$etc"
-            ok "server config: promoted $opt to $etc"
-        fi
+    # A plain /opt copy while /etc is missing is the only live config — promote
+    # it before deleting anything. A dangling symlink is not a file, so `-f`
+    # skips it: there is nothing to rescue there.
+    if [ ! -f "$etc" ] && [ -f "$opt" ] && [ ! -L "$opt" ]; then
+        run install -d -o root -g root -m 0755 "$(dirname "$etc")"
+        run cp -a "$opt" "$etc"
+        ok "server config: promoted $opt to $etc"
+    fi
 
-        if [ -f "$etc" ]; then
-            run rm -f "$opt"
-            ok "server config: removed the legacy $opt path (canonical is $etc)"
-        else
-            warn "server config: $etc missing and no usable /opt copy — leaving $opt as is"
-        fi
-    done
+    if [ -f "$etc" ]; then
+        run rm -f "$opt"
+        ok "server config: removed the legacy $opt path (canonical is $etc)"
+    else
+        warn "server config: $etc missing and no usable /opt copy — leaving $opt as is"
+    fi
 }
 
 phase_files() {
@@ -603,7 +621,14 @@ phase_files() {
     untar_payload systemd.tar.gz
     untar_payload etc-nginx.tar.gz
     untar_payload etc-sysctl.tar.gz
+    local before_rsyslog after_rsyslog
+    before_rsyslog="$(sha256_of /etc/rsyslog.d/30-outline.conf 2>/dev/null || echo none)"
     untar_payload etc-extra.tar.gz
+    after_rsyslog="$(sha256_of /etc/rsyslog.d/30-outline.conf 2>/dev/null || echo none)"
+    if [ "$before_rsyslog" != "$after_rsyslog" ] && systemctl is-active --quiet rsyslog 2>/dev/null; then
+        run systemctl restart rsyslog
+        ok "rsyslog config updated, rsyslog restarted"
+    fi
 
     # After the payload, so a repo-owned file wins over the reference's copy of
     # the same path even when a stale bundle still carries one.
@@ -618,6 +643,7 @@ phase_files() {
     if [ -n "$NGINX_SITE" ]; then
         ensure_nginx_locations
         ensure_subscription_extensions
+        ensure_nginx_snippets
         run ln -sfn "/etc/nginx/sites-available/$NGINX_SITE" "/etc/nginx/sites-enabled/$NGINX_SITE"
     fi
     if [ "$OCCTL_SYMLINK" = "1" ]; then
@@ -772,9 +798,6 @@ write_policy_rule_guard() {
     local conf=/etc/systemd/networkd.conf.d/10-keep-foreign-rules.conf
     local unit=/etc/systemd/system/outline-ws0-routing.service
     local init_ws0=/opt/outline/outline-client/init-ws0.sh
-    if [ ! -x "$init_ws0" ] && [ -x /opt/outline/outline-ws-rust/init-ws0.sh ]; then
-        init_ws0=/opt/outline/outline-ws-rust/init-ws0.sh
-    fi
     local conf_body unit_body
     conf_body="# Generated by ops/provision-node/install.sh from profile $PROFILE_NAME.
 # The ws0 policy rule (fwmark 0xa -> table 110) is added imperatively by
@@ -838,9 +861,6 @@ phase_secrets() {
         # keep it off world-readable, alongside ocpasswd (0600). 0640 with the
         # service group lets outline-server read it without opening it up.
         local users_dir=/opt/outline/outline-server
-        if [ ! -d "$users_dir" ] && [ -d /opt/outline/outline-ss-rust ]; then
-            users_dir=/opt/outline/outline-ss-rust
-        fi
         run install -d -o root -g root -m 0755 "$users_dir"
         run install -m 0640 -o root -g outline-server "$BUNDLE/secrets/users.txt" \
             "$users_dir/users.txt"
@@ -1432,7 +1452,7 @@ phase_cron() {
         # keep it a deliberate, separate act.
         # Edits the staged copy, not the live crontab, so it happens even under
         # --dry-run: the preview below is then what would actually be installed.
-        sed -i "s|^\(@reboot.*update_domain.py common cloud .*\)$|#\1  # enable to join the shared cloud.beerloga.su record|" "$tmp"
+        sed -i -E "s|^(@reboot.*update_domain(\.py)? common cloud .*)$|#\1  # enable to join the shared cloud.beerloga.su record|" "$tmp"
     fi
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -1547,8 +1567,6 @@ phase_services() {
     if [ "$ACCESS_KEYS_REGEN" = "1" ]; then
         if [ -x /opt/outline/outline-server/save-keys.sh ]; then
             run bash -c '/opt/outline/outline-server/save-keys.sh > /dev/null || true'
-        elif [ -x /opt/outline/outline-ss-rust/save-keys.sh ]; then
-            run bash -c '/opt/outline/outline-ss-rust/save-keys.sh > /dev/null || true'
         fi
     fi
 
@@ -1558,7 +1576,14 @@ phase_services() {
         # component replaced by something else, for one). Say so rather than
         # dying halfway through the phase.
         if systemctl cat "$unit" >/dev/null 2>&1; then
-            run systemctl enable --now "$unit"
+            run systemctl enable "$unit"
+            if [[ "$unit" == *.timer ]] || [ "$(systemctl show -p Type --value "$unit" 2>/dev/null)" = "oneshot" ]; then
+                run systemctl start "$unit"
+            else
+                # Package postinst (e.g. ndppd on Debian) may start the daemon
+                # with its stock config before the bundle's config lands.
+                run systemctl restart "$unit"
+            fi
         else
             warn "unit $unit is not installed on this node — skipping"
         fi
@@ -1735,9 +1760,6 @@ phase_verify() {
             ok "ws0 policy rule present (v4 + v6)"
         else
             local init_ws0=/opt/outline/outline-client/init-ws0.sh
-            if [ ! -x "$init_ws0" ] && [ -x /opt/outline/outline-ws-rust/init-ws0.sh ]; then
-                init_ws0=/opt/outline/outline-ws-rust/init-ws0.sh
-            fi
             warn "ws0 policy rule missing — marked traffic bypasses the tunnel; run $init_ws0"
             failures=$((failures + 1))
         fi
@@ -1770,7 +1792,7 @@ phase_verify() {
         dim "• peer nodes must know this node's uplink account (register-uplink-user.sh)"
     fi
     if [ ${#NGINX_LOCATIONS[@]} -gt 0 ]; then
-        dim "• nothing scrapes $HOST yet — add it to ops/nas-monitoring/victoria-metrics/scrape.yaml and run ops/nas-monitoring/deploy.sh"
+        dim "• nothing scrapes $HOST yet — add it to ops/nas-monitoring/victoria-metrics/scrape.yaml in the sibling ambar repo and run ops/nas-monitoring/deploy.sh there"
         dim "  (one target block per job; see assets/victoria-metrics/ for the unbound-exporter one)"
     fi
     if [ -f /opt/ocserv/conf/ocpasswd ]; then

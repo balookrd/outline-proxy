@@ -22,8 +22,7 @@
 #   ./register-uplink-user.sh --user cloud2 --template cloud1 \
 #       --out ./cloud2-uplink-creds \
 #       --peer nuxt:sysadm@nuxt.beerloga.su \
-#       --peer senko:sysadm@senko.beerloga.su \
-#       --peer aeza:sysadm@aeza.beerloga.su \
+#       --peer nuxt2:sysadm@nuxt2.beerloga.su \
 #       --alias-cidr 87.242.85.181/32 \
 #       --alias-peer mmv@198.18.1.104:cloud \
 #       --alias-peer mmv@198.18.1.102:cloud
@@ -235,15 +234,13 @@ for peer in $PEERS; do
     vless_id="$(gen_uuid)"
     password="$(gen_password)"
 
-    # Copy the routing-visible fields from the template so the new account is
-    # reachable on exactly the same wires; only the credentials differ.
+    # Copy the non-credential fields from the template (endpoint routing lives
+    # in server `[[endpoint]]` config, so only `method` and `fwmark` apply).
     body="$(printf '%s' "$template_json" | python3 -c '
 import json, sys
 template = json.load(sys.stdin)
 out = {"id": sys.argv[1], "password": sys.argv[2], "vless_id": sys.argv[3]}
-for key in ("method", "fwmark", "ws_path_tcp", "ws_path_udp", "ws_path_ss",
-            "ws_path_vless", "xhttp_path_vless", "xhttp_path_tcp",
-            "xhttp_path_udp", "xhttp_path_ss"):
+for key in ("method", "fwmark"):
     value = template.get(key)
     if value is not None:
         out[key] = value

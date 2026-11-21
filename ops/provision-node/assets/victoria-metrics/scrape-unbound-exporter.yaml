@@ -1,17 +1,19 @@
 # The `unbound-exporter` job as it stands in the VictoriaMetrics scrape config
-# (source: ops/nas-monitoring/victoria-metrics/scrape.yaml, deployed to the NAS
-# by ops/nas-monitoring/deploy.sh). Reference copy only — nothing in
+# (maintained in the sibling `ambar` repo at
+# `ops/nas-monitoring/victoria-metrics/scrape.yaml`, deployed to the NAS by
+# `ops/nas-monitoring/deploy.sh` in `ambar`). Reference copy only — nothing in
 # ops/provision-node writes it: the file lives in the monitoring stack on the
 # NAS, not on the node being provisioned.
 #
 # A new node exporting unbound metrics is invisible until its own two-line
-# target block is added here. The exporter is reached through nginx on 443
+# target block is added there. The exporter is reached through nginx on 443
 # (location /unbound-exporter/metrics → 127.0.0.1:9167/metrics), so the target
 # is the node's public name, not its exporter port.
 #
-# After editing the live file, run ops/nas-monitoring/deploy.sh. No reload or
-# restart is needed: VictoriaMetrics rereads the config every minute
-# (-promscrape.configCheckInterval=1m in ops/nas-monitoring/docker-compose.yaml).
+# After editing the live file in `ambar`, run `./ops/nas-monitoring/deploy.sh`
+# there. No reload or restart is needed: VictoriaMetrics rereads the config
+# every minute (-promscrape.configCheckInterval=1m in `ambar`
+# `ops/nas-monitoring/docker-compose.yaml`).
 #
 # Keep this snippet in step with the live file when the fleet gains or loses a
 # node — it is documentation of the shape, not a source that gets applied.

@@ -35,8 +35,7 @@ to those hostnames.
 # 2. Announce the node to the peers it dials through
 ./register-uplink-user.sh --user relay-b --template relay-a --out ./relay-b-uplink-creds \
     --peer exit-a:sysadm@exit-a.fleet.example \
-    --peer exit-c:sysadm@exit-c.fleet.example \
-    --peer exit-d:sysadm@exit-d.fleet.example \
+    --peer exit-b:sysadm@exit-b.fleet.example \
     --alias-cidr 203.0.113.50/32 \
     --alias-peer mmv@198.51.100.104:cloud \
     --alias-peer mmv@198.51.100.102:cloud
@@ -50,18 +49,19 @@ rsync -a ./relay-b-uplink-creds sysadm@relay-b.fleet.example:/tmp/
 ssh sysadm@relay-b.fleet.example 'sudo /tmp/provision-node/install.sh \
     --bundle /tmp/provision-bundle --host relay-b \
     --uplink-creds /tmp/relay-b-uplink-creds \
-    --shared-uplink fleet-1 --shared-uplink fleet-2 --dry-run'
+    --shared-uplink fleet-1 --shared-uplink fleet-2 \
+    --shared-uplink fleet-3 --shared-uplink fleet-4 --dry-run'
 
 ssh sysadm@relay-b.fleet.example 'sudo /tmp/provision-node/install.sh \
     --bundle /tmp/provision-bundle --host relay-b \
     --uplink-creds /tmp/relay-b-uplink-creds \
-    --shared-uplink fleet-1 --shared-uplink fleet-2'
+    --shared-uplink fleet-1 --shared-uplink fleet-2 \
+    --shared-uplink fleet-3 --shared-uplink fleet-4'
 ```
 
-The `--peer` list in step 2 is the one relay-b was registered with. `exit-c` and
-`exit-d` are no longer reachable from Russia [verify: current `main`-group uplink
-names in `/etc/outline-client/config.toml` on the reference before copying
-this command].
+The `--peer` list in step 2 matches the active `main`-group uplinks in
+`/etc/outline-client/config.toml` on the reference (`exit-a`, `exit-b`), while
+`--shared-uplink` lists the `russia`-group home uplinks (`fleet-1`…`fleet-4`).
 
 Step 2 is entry-node-only. An exit node dials no peers, so cloning `exit-a` is
 just collect → ship → install:
@@ -77,7 +77,8 @@ ssh sysadm@<new-node> 'sudo /tmp/provision-node/install.sh \
 
 `--ipv6-prefix` is what makes a dual-stack clone its own node: the prefix
 rewrites `ndppd.conf` and `[outbound] ipv6_prefix` in the `outline-server` config
-(`REHOST_IPV6_FILES` in the `exit-a` profile), which otherwise still name the
+(`REHOST_IPV6_FILES` in the `exit-a` profile; the WAN interface name in
+`ndppd.conf` is also rewritten via `REHOST_IFACE_FILES`), which otherwise still name the
 reference's `/64`. Without the flag `install.sh` takes the first global prefix
 from `ip -6 route show proto kernel` (excluding `fe80`, `fc`, `fd`). Only when
 none is found does `preflight` warn `no --ipv6-prefix given` and the rewrite is
@@ -178,7 +179,7 @@ reference that still hardcodes its own identity, and to override a wrong guess.
 The fleet identifies a client node in two different ways, so the registration
 script has two modes:
 
-- Per-node account (`--peer`, the `main` group: exit-a, exit-c, exit-d). The peer
+- Per-node account (`--peer`, the `main` group: `exit-a`, `exit-b`). The peer
   keeps one user per node. The new node gets its own account cloned from the
   reference's — same secret paths and `fwmark`, fresh `vless_id`/password. Those
   credentials land in the creds file and `install.sh` swaps them into the
@@ -383,10 +384,12 @@ What still has no automatic answer is anything the *peers* hold: `shard_id`,
   applies users live.
 - Scraping the new node. The exporters answer, nginx serves them and nothing
   collects them: the scrape config belongs to VictoriaMetrics on the NAS
-  (`ops/nas-monitoring`), not to the host being installed. Its source is
-  [`ops/nas-monitoring/victoria-metrics/scrape.yaml`](../nas-monitoring/victoria-metrics/scrape.yaml).
+  (maintained in the sibling `ambar` repository under `ops/nas-monitoring/`),
+  not to the host being installed. Its source is
+  `ops/nas-monitoring/victoria-metrics/scrape.yaml` in `ambar`.
   Add a target block per job — `assets/victoria-metrics/scrape-unbound-exporter.yaml`
-  shows the `unbound-exporter` one — and run `./ops/nas-monitoring/deploy.sh`:
+  shows the `unbound-exporter` one — and run `./ops/nas-monitoring/deploy.sh`
+  in `ambar`:
   it copies the file to the NAS, and VictoriaMetrics re-reads it within a minute
   (`-promscrape.configCheckInterval=1m`), no restart needed. Until 2026-11-09
   the file lived in the k3s PVC `victoria-metrics-data`, and until 2026-08-09 in

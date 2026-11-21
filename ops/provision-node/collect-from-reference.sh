@@ -205,7 +205,7 @@ log "collecting docker image list"
 # Only images backing a running container: a long-lived node accumulates dozens
 # of exited one-shot containers (lego runs, for one) whose images are pulled on
 # demand anyway.
-if ! REF_SSH 'sudo docker ps --format "{{.Image}}" | sort -u' \
+if ! REF_SSH 'ids=$(sudo docker ps -q); [ -z "$ids" ] || sudo docker inspect --format "{{.Config.Image}}" $ids | sort -u' \
         > "$OUT/docker-images.list" 2>/dev/null; then
     : > "$OUT/docker-images.list"
     warn "cannot list docker images on the reference — bundling an empty list"
@@ -329,7 +329,7 @@ WS_VERSION="$(REF_SSH '/usr/local/bin/outline-client --version 2>/dev/null' | he
 # following flags into the value.
 KEYS_DIR="$(REF_SSH "sudo -n sed -n 's#^write_dir *= *\"\(.*\)\"#\1#p' /etc/outline-server/config.toml 2>/dev/null" | head -1)" || KEYS_DIR=""
 if [ -z "$KEYS_DIR" ]; then
-    KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *\([^ ]*\).*#\1#p;s#.*--write-access-keys-dir *\([^ ]*\).*#\1#p' /opt/outline/outline-server/save-keys.sh /opt/outline/outline-ss-rust/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
+    KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *\([^ ]*\).*#\1#p;s#.*--write-access-keys-dir *\([^ ]*\).*#\1#p' /opt/outline/outline-server/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
 fi
 # Third form, and now the canonical one: the directory lives in the node's
 # config.toml as `[access_keys] write_dir`, and save-keys.sh passes no path at

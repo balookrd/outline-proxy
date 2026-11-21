@@ -35,8 +35,7 @@ root-crontab и секреты, которые всё это связывают.
 # 2. Объявить новый узел соседям, через которых он ходит
 ./register-uplink-user.sh --user relay-b --template relay-a --out ./relay-b-uplink-creds \
     --peer exit-a:sysadm@exit-a.fleet.example \
-    --peer exit-c:sysadm@exit-c.fleet.example \
-    --peer exit-d:sysadm@exit-d.fleet.example \
+    --peer exit-b:sysadm@exit-b.fleet.example \
     --alias-cidr 203.0.113.50/32 \
     --alias-peer mmv@198.51.100.104:cloud \
     --alias-peer mmv@198.51.100.102:cloud
@@ -50,18 +49,20 @@ rsync -a ./relay-b-uplink-creds sysadm@relay-b.fleet.example:/tmp/
 ssh sysadm@relay-b.fleet.example 'sudo /tmp/provision-node/install.sh \
     --bundle /tmp/provision-bundle --host relay-b \
     --uplink-creds /tmp/relay-b-uplink-creds \
-    --shared-uplink fleet-1 --shared-uplink fleet-2 --dry-run'
+    --shared-uplink fleet-1 --shared-uplink fleet-2 \
+    --shared-uplink fleet-3 --shared-uplink fleet-4 --dry-run'
 
 ssh sysadm@relay-b.fleet.example 'sudo /tmp/provision-node/install.sh \
     --bundle /tmp/provision-bundle --host relay-b \
     --uplink-creds /tmp/relay-b-uplink-creds \
-    --shared-uplink fleet-1 --shared-uplink fleet-2'
+    --shared-uplink fleet-1 --shared-uplink fleet-2 \
+    --shared-uplink fleet-3 --shared-uplink fleet-4'
 ```
 
-Список `--peer` в шаге 2 — тот, с которым регистрировался relay-b. `exit-c` и
-`exit-d` из РФ больше недоступны [проверить: актуальные имена uplink'ов группы
-`main` в `/etc/outline-client/config.toml` эталона, прежде чем копировать
-команду].
+Список `--peer` в шаге 2 соответствует актуальным uplink'ам группы `main` в
+`/etc/outline-client/config.toml` эталона (`exit-a`, `exit-b`), а
+`--shared-uplink` перечисляет домашние uplink'и группы `russia`
+(`fleet-1`…`fleet-4`).
 
 Шаг 2 нужен только узлу-входу. Узел-выход ни к кому не дозванивается, поэтому
 клонирование `exit-a` — это собрать → доставить → установить:
@@ -77,7 +78,8 @@ ssh sysadm@<new-node> 'sudo /tmp/provision-node/install.sh \
 
 Именно `--ipv6-prefix` делает dual-stack клон отдельным узлом: префикс
 переписывает `ndppd.conf` и `[outbound] ipv6_prefix` в конфиге `outline-server`
-(`REHOST_IPV6_FILES` в профиле `exit-a`), которые иначе так и продолжат называть
+(`REHOST_IPV6_FILES` в профиле `exit-a`; имя WAN-интерфейса в `ndppd.conf`
+также переписывается через `REHOST_IFACE_FILES`), которые иначе так и продолжат называть
 `/64` эталона. Без флага `install.sh` берёт первый глобальный префикс из
 `ip -6 route show proto kernel` (кроме `fe80`, `fc`, `fd`). Только если такого
 нет, `preflight` предупреждает `no --ipv6-prefix given`, и перезапись
@@ -178,7 +180,7 @@ WAN-интерфейс, его адрес и маршрутизируемый `/
 Парк опознаёт клиентский узел двумя разными способами, поэтому у скрипта
 регистрации два режима:
 
-- Учётка на узел (`--peer`, группа `main`: exit-a, exit-c, exit-d). Сосед держит
+- Учётка на узел (`--peer`, группа `main`: `exit-a`, `exit-b`). Сосед держит
   по юзеру на узел. Новый узел получает собственную учётку, склонированную с
   учётки эталона: те же секретные пути и `fwmark`, свежие `vless_id`/пароль. Эти
   креды попадают в creds-файл, а `install.sh` подставляет их в соответствующий
@@ -384,10 +386,12 @@ ACME-материал, пароли ocserv). Не коммитьте его.
   который применяет юзеров на лету.
 - Скрейп нового узла. Экспортеры отвечают, nginx их отдаёт — и никто их не
   собирает: scrape-конфиг принадлежит VictoriaMetrics на NAS
-  (`ops/nas-monitoring`), а не устанавливаемому хосту. Его источник —
-  [`ops/nas-monitoring/victoria-metrics/scrape.yaml`](../nas-monitoring/victoria-metrics/scrape.yaml).
+  (перенесён в соседний репозиторий `ambar`, каталог `ops/nas-monitoring/`),
+  а не устанавливаемому хосту. Его источник —
+  `ops/nas-monitoring/victoria-metrics/scrape.yaml` в репозитории `ambar`.
   Добавьте блок цели в каждый job — `assets/victoria-metrics/scrape-unbound-exporter.yaml`
-  показывает job `unbound-exporter`, — и выполните `./ops/nas-monitoring/deploy.sh`:
+  показывает job `unbound-exporter`, — и выполните `./ops/nas-monitoring/deploy.sh`
+  в `ambar`:
   он копирует файл на NAS, а VictoriaMetrics перечитывает его в течение минуты
   (`-promscrape.configCheckInterval=1m`), рестарт не нужен. До 2026-11-09 файл
   лежал в PVC `victoria-metrics-data` в k3s, до 2026-08-09 — в
