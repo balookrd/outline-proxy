@@ -978,7 +978,7 @@ sudo ./install-server.sh
 
 - По умолчанию — последний stable-релиз сервера под архитектуру хоста
 - `CHANNEL=nightly` — rolling prerelease nightly
-- `VERSION=v1.2.3` — конкретный stable-тег
+- `VERSION=v26.11.0` — конкретный stable-тег
 
 Примеры:
 
@@ -986,7 +986,7 @@ sudo ./install-server.sh
 ./install-server.sh --help
 sudo ./install-server.sh
 sudo CHANNEL=nightly ./install-server.sh
-sudo VERSION=v1.2.3 ./install-server.sh
+sudo VERSION=v26.11.0 ./install-server.sh
 sudo ./install-server.sh --remove
 sudo ./install-server.sh --purge
 ```

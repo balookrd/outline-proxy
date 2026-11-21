@@ -252,8 +252,8 @@ pnpm dev   # http://localhost:5173
 Ноды кластера — aarch64 (NanoPi R5C), отсюда таргет и `--platform`.
 
 Релизный бинарь несёт собранный SPA внутри, поэтому соберите фронтенд первым и
-явно попросите Rust-сборку встроить результат. `<version>` ниже — `version` из
-`bins/outline-ui/Cargo.toml`; тот же тег пропишите в поле `image:` в
+явно попросите Rust-сборку встроить результат. `<version>` ниже — `[workspace.package].version` из
+корневого `Cargo.toml`; тот же тег пропишите в поле `image:` в
 `outline-ui.yaml` до `kubectl apply`.
 
 ```bash

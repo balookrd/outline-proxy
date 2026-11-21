@@ -239,13 +239,13 @@ cargo ws-release-musl-aarch64
 
 ### CI releases
 
-Client workflows live in `.github/workflows/ws-*.yml`; tags of the client carry the `ws-` prefix.
+Nightly builds live in `.github/workflows/ws-nightly-release.yml`; unified stable releases live in `.github/workflows/release.yml` and `.github/workflows/tag-release.yml`.
 
 - A push to `main` that touches `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` or `.cargo/**` runs `Nightly Release (client)`. It moves the rolling tag `ws-nightly` to that commit and republishes the `Client Nightly` prerelease.
 - Nightly publishes `release` builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` plus `SHA256SUMS.txt`. Archives are named `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
-- To cut a stable release, run the manual `Release (client)` workflow with `major_minor`, e.g. `1.7`. CI finds the latest `ws-v1.7.*` tag, increments the patch, updates `Cargo.toml` and `Cargo.lock`, creates a release commit and pushes it to `main`.
-- After the release commit lands on `main`, create and push a signed tag locally (`git tag -s ws-vX.Y.Z -m ws-vX.Y.Z`). The tag push runs `Tag Release (client)`, which builds and publishes the GitHub Release with the same two targets.
-- Pushing a `ws-v*` tag manually also runs `Tag Release (client)`.
+- To cut a unified stable CalVer release, run the manual `Release` workflow with an optional `series` (`YY.M`, defaulting to the current UTC month). CI computes the next patch for `v<YY>.<M>.*`, updates versions across workspace manifests and lockfiles, creates a release commit and pushes it to `main`.
+- After the release commit lands on `main`, create and push a signed tag locally (`git tag -s vYY.M.PATCH -m vYY.M.PATCH`). The tag push runs `Tag Release`, which builds all platforms and publishes the unified GitHub Release.
+- Pushing a `vYY.M.PATCH` tag manually also runs `Tag Release`.
 
 ### Feature flags
 
@@ -1286,10 +1286,10 @@ sudo ./install-client.sh
 Modes:
 
 ```bash
-sudo ./install-client.sh                       # latest stable release (newest ws-v* tag)
+sudo ./install-client.sh                       # latest stable release (/releases/latest)
 sudo ./install-client.sh --force               # reinstall even if the version matches
 sudo CHANNEL=nightly ./install-client.sh       # rolling ws-nightly prerelease
-sudo VERSION=v1.2.3 ./install-client.sh        # pin a stable version (tag ws-v1.2.3)
+sudo VERSION=v26.11.0 ./install-client.sh      # pin a stable version (tag v26.11.0)
 sudo ./install-client.sh --remove              # alias --uninstall
 sudo ./install-client.sh --purge
 ```

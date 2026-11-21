@@ -26,6 +26,8 @@ pub enum UpdateCheckResult {
 struct GithubRelease {
     tag_name: String,
     #[serde(default)]
+    draft: bool,
+    #[serde(default)]
     body: Option<String>,
     #[serde(default)]
     target_commitish: Option<String>,
@@ -116,13 +118,16 @@ impl UpdateChecker {
         client: &reqwest::Client,
         current_version: &str,
     ) -> Result<UpdateCheckResult, String> {
-        let url = "https://api.github.com/repos/balookrd/outline-proxy/releases";
+        let url = "https://api.github.com/repos/balookrd/outline-proxy/releases/latest";
         let resp = client
             .get(url)
             .send()
             .await
-            .map_err(|e| format!("Failed to fetch releases: {e}"))?;
+            .map_err(|e| format!("Failed to fetch latest release: {e}"))?;
 
+        if resp.status().as_u16() == 404 {
+            return Err("No published release found at /releases/latest".into());
+        }
         if !resp.status().is_success() {
             return Err(format!("GitHub API error: HTTP {}", resp.status()));
         }
@@ -130,64 +135,60 @@ impl UpdateChecker {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| format!("Failed to read releases body: {e}"))?;
-        let releases: Vec<GithubRelease> = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Failed to parse GitHub releases: {e}"))?;
+            .map_err(|e| format!("Failed to read latest release body: {e}"))?;
+        let release: GithubRelease = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Failed to parse GitHub release JSON: {e}"))?;
 
-        let mut best_release: Option<(
-            (u32, u32, u32),
-            GithubRelease,
-            GithubAsset,
-            Option<String>,
-        )> = None;
+        Self::evaluate_release(release, current_version)
+    }
 
-        for release in releases {
-            let tag = &release.tag_name;
-            if let Some(semver) = parse_semver(tag) {
-                let matching_asset = release
-                    .assets
-                    .iter()
-                    .find(|a| {
-                        a.name.starts_with("OutlineProxy-")
-                            && a.name.ends_with("-Windows-x86_64.zip")
-                            && !a.name.contains("nightly")
-                    })
-                    .cloned();
-
-                if let Some(asset) = matching_asset {
-                    let checksums_url = release
-                        .assets
-                        .iter()
-                        .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
-                        .map(|a| a.browser_download_url.clone());
-
-                    if let Some((best_ver, _, _, _)) = &best_release {
-                        if &semver > best_ver {
-                            best_release = Some((semver, release, asset, checksums_url));
-                        }
-                    } else {
-                        best_release = Some((semver, release, asset, checksums_url));
-                    }
-                }
-            }
+    fn evaluate_release(
+        release: GithubRelease,
+        current_version: &str,
+    ) -> Result<UpdateCheckResult, String> {
+        let tag = release.tag_name.trim();
+        let is_release_tag = tag
+            .strip_prefix('v')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        if release.draft || !is_release_tag {
+            return Err(format!("Unexpected latest release tag: {}", release.tag_name));
         }
 
-        if let Some(((major, minor, patch), release, asset, checksums_url)) = best_release {
-            let candidate_ver = format!("{major}.{minor}.{patch}");
-            if is_newer_version(&candidate_ver, current_version) {
-                let commit = release.target_commitish.unwrap_or_default();
-                return Ok(UpdateCheckResult::Available(UpdateInfo {
-                    label: format!("v{candidate_ver}"),
-                    asset_name: asset.name,
-                    download_url: asset.browser_download_url,
-                    checksums_url,
-                    notes: release.body.unwrap_or_default(),
-                    commit,
-                }));
-            }
+        let (major, minor, patch) = parse_semver(tag)
+            .ok_or_else(|| format!("Invalid release tag version: {}", release.tag_name))?;
+        let candidate_ver = format!("{major}.{minor}.{patch}");
+
+        if !is_newer_version(&candidate_ver, current_version) {
+            return Ok(UpdateCheckResult::UpToDate);
         }
 
-        Ok(UpdateCheckResult::UpToDate)
+        let asset = release
+            .assets
+            .iter()
+            .find(|a| {
+                a.name.starts_with("OutlineProxy-")
+                    && a.name.ends_with("-Windows-x86_64.zip")
+                    && !a.name.contains("nightly")
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!("No Windows x86_64 zip asset found in release {}", release.tag_name)
+            })?;
+
+        let checksums_url = release
+            .assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+            .map(|a| a.browser_download_url.clone());
+
+        Ok(UpdateCheckResult::Available(UpdateInfo {
+            label: format!("v{candidate_ver}"),
+            asset_name: asset.name,
+            download_url: asset.browser_download_url,
+            checksums_url,
+            notes: release.body.unwrap_or_default(),
+            commit: release.target_commitish.unwrap_or_default(),
+        }))
     }
 }
 
@@ -599,14 +600,65 @@ ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb *OutlineProxy-v
     fn test_semver_and_version_comparison() {
         assert_eq!(parse_semver("1.9.2"), Some((1, 9, 2)));
         assert_eq!(parse_semver("v1.9.2"), Some((1, 9, 2)));
+        assert_eq!(parse_semver("v26.11.0"), Some((26, 11, 0)));
+        assert_eq!(parse_semver("26.11.0"), Some((26, 11, 0)));
         assert_eq!(parse_semver("windows-v1.10.0"), Some((1, 10, 0)));
         assert_eq!(parse_semver("windows-1.10.0-rc1"), Some((1, 10, 0)));
 
         assert!(is_newer_version("1.9.3", "1.9.2"));
         assert!(is_newer_version("1.10.0", "1.9.9"));
         assert!(is_newer_version("2.0.0", "1.99.99"));
+        assert!(is_newer_version("26.11.0", "1.9.2"));
+        assert!(is_newer_version("26.12.0", "26.11.5"));
+        assert!(is_newer_version("27.1.0", "26.12.9"));
+        assert!(!is_newer_version("26.11.0", "26.11.0"));
         assert!(!is_newer_version("1.9.2", "1.9.2"));
         assert!(!is_newer_version("1.9.1", "1.9.2"));
+    }
+
+    #[test]
+    fn test_evaluate_release_calver() {
+        let release = GithubRelease {
+            tag_name: "v26.11.0".to_string(),
+            draft: false,
+            body: Some("Unified release".to_string()),
+            target_commitish: Some("abcdef12".to_string()),
+            assets: vec![
+                GithubAsset {
+                    name: "OutlineProxy-v26.11.0-Windows-x86_64.zip".to_string(),
+                    browser_download_url: "https://example.invalid/win.zip".to_string(),
+                },
+                GithubAsset {
+                    name: "SHA256SUMS.txt".to_string(),
+                    browser_download_url: "https://example.invalid/SHA256SUMS.txt".to_string(),
+                },
+            ],
+        };
+
+        let avail = UpdateChecker::evaluate_release(release, "1.9.2").expect("available");
+        assert_eq!(
+            avail,
+            UpdateCheckResult::Available(UpdateInfo {
+                label: "v26.11.0".to_string(),
+                asset_name: "OutlineProxy-v26.11.0-Windows-x86_64.zip".to_string(),
+                download_url: "https://example.invalid/win.zip".to_string(),
+                checksums_url: Some("https://example.invalid/SHA256SUMS.txt".to_string()),
+                notes: "Unified release".to_string(),
+                commit: "abcdef12".to_string(),
+            })
+        );
+
+        let same_ver = GithubRelease {
+            tag_name: "v26.11.0".to_string(),
+            draft: false,
+            body: None,
+            target_commitish: None,
+            assets: vec![],
+        };
+        assert_eq!(
+            UpdateChecker::evaluate_release(same_ver, "26.11.0").expect("up-to-date"),
+            UpdateCheckResult::UpToDate
+        );
     }
 
     #[test]

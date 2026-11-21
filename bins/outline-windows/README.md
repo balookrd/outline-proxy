@@ -74,8 +74,9 @@ The release channel is set at build time via the `OUTLINE_BUILD_CHANNEL` environ
   GitHub API (`https://api.github.com/repos/balookrd/outline-proxy/releases/tags/windows-nightly`).
   Matches the commit SHA from the `OutlineProxy-x86_64-<commit>.zip` asset against
   the running binary commit (supporting prefix matching and ignoring the `-dirty` suffix).
-- **`release`**: queries GitHub releases with `windows-v*` tags. Finds the highest
-  semantic version and downloads the matching `OutlineProxy-v<ver>-Windows-x86_64.zip` asset.
+- **`release`**: queries the `/releases/latest` endpoint via the GitHub API
+  (`https://api.github.com/repos/balookrd/outline-proxy/releases/latest`), matching
+  unified CalVer `v*` tags and downloading the `OutlineProxy-v<ver>-Windows-x86_64.zip` asset.
 
 ### Integrity Verification via `SHA256SUMS.txt`
 To protect against corrupted downloads or file tampering, strict verification is

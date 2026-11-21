@@ -2,11 +2,12 @@
 
 `outline-proxy` is a single Cargo workspace that merged two formerly separate
 projects — the **`outline-ss-rust`** server and the **`outline-ws-rust`**
-client. The two binaries version and release **independently**, each under its
-own git tags: `ss-v*` / `ws-v*` since the merge (e.g. `ss-v1.5.1`, `ws-v1.5.1`),
-and the shared `v1.0.0` … `v1.4.4` tags from before the split. There is no
-single workspace version; the detailed, version-by-version history lives in the
-per-binary changelogs:
+client — and grew to cover the dashboard UI, Android, macOS, and Windows clients.
+Historical releases used shared `v1.0.0` … `v1.4.4` tags before the split and
+per-component `ss-v*` / `ws-v*` / `ui-v*` / `android-v*` / `macos-v*` tags
+through `1.9.x`. Starting with `v26.11.0`, the entire repository releases
+together under a unified CalVer tag (`vYY.M.PATCH`). Detailed per-component
+history for the earlier `1.x` series lives in:
 
 | Component | Changelog | Русский |
 |-----------|-----------|---------|
@@ -44,7 +45,7 @@ whole system:
 - **An Android VPN client** ([`android/`](android/)) reusing the `outline-ws-rust`
   uplink stack unchanged — now with an in-app tunnel status card (duration,
   traffic, active carrier), a build-version footer, and a signed-APK release
-  pipeline (`android-v*` tags, rolling `android-nightly`) — plus the
+  pipeline (`vYY.M.PATCH` unified releases, rolling `android-nightly`) — plus the
   **`outline-ui`** aggregating dashboard service.
 - **A Windows client** ([`bins/outline-windows/`](bins/outline-windows/)) on Tauri v2
   + Svelte 5 supporting SOCKS5 and TUN (Wintun) modes, built-in auto-updater with

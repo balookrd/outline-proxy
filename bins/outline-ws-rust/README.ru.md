@@ -239,13 +239,13 @@ cargo ws-release-musl-aarch64
 
 ### CI-релизы
 
-Workflow'ы клиента — `.github/workflows/ws-*.yml`; теги клиента имеют префикс `ws-`.
+Nightly-сборка клиента живёт в `.github/workflows/ws-nightly-release.yml`, а единый стабильный релиз — в `.github/workflows/release.yml` и `.github/workflows/tag-release.yml`.
 
 - Push в `main`, затрагивающий `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` или `.cargo/**`, запускает `Nightly Release (client)`. Он переносит rolling-тег `ws-nightly` на этот коммит и заново публикует prerelease `Client Nightly`.
 - Nightly публикует `release`-сборки для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl` и `SHA256SUMS.txt`. Архивы называются `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
-- Для стабильного релиза запустите вручную workflow `Release (client)` с `major_minor`, например `1.7`. CI находит последний тег `ws-v1.7.*`, увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создаёт release-коммит и пушит его в `main`.
-- После появления release-коммита в `main` создайте и отправьте подписанный тег локально (`git tag -s ws-vX.Y.Z -m ws-vX.Y.Z`). Push тега запускает `Tag Release (client)`, который собирает и публикует GitHub Release с теми же двумя таргетами.
-- Ручной push тега `ws-v*` тоже запускает `Tag Release (client)`.
+- Для единого стабильного CalVer-релиза запустите вручную workflow `Release` (опционально с серией `series`, например `26.11`, по умолчанию — текущий месяц UTC). CI вычисляет следующий patch для `v<YY>.<M>.*`, обновляет версии в манифестах и lock-файлах workspace, создаёт release-коммит и пушит его в `main`.
+- После появления release-коммита в `main` создайте и отправьте подписанный тег локально (`git tag -s vYY.M.PATCH -m vYY.M.PATCH`). Push тега запускает `Tag Release`, который собирает все платформы и публикует единый GitHub Release.
+- Ручной push тега `vYY.M.PATCH` тоже запускает `Tag Release`.
 
 ### Feature flags
 
@@ -1289,10 +1289,10 @@ sudo ./install-client.sh
 Режимы:
 
 ```bash
-sudo ./install-client.sh                       # последний stable-релиз (новейший тег ws-v*)
+sudo ./install-client.sh                       # последний stable-релиз (/releases/latest)
 sudo ./install-client.sh --force               # переустановить, даже если версия совпадает
 sudo CHANNEL=nightly ./install-client.sh       # rolling prerelease ws-nightly
-sudo VERSION=v1.2.3 ./install-client.sh        # закрепить stable-версию (тег ws-v1.2.3)
+sudo VERSION=v26.11.0 ./install-client.sh      # закрепить stable-версию (тег v26.11.0)
 sudo ./install-client.sh --remove              # алиас --uninstall
 sudo ./install-client.sh --purge
 ```

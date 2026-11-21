@@ -3,21 +3,22 @@ import Foundation
 /// Checks GitHub for a newer build of *this* app's channel.
 ///
 /// Mirrors the Android client's `UpdateChecker.kt`: channels are identified
-/// differently because they are versioned differently. A release is a tag
-/// (`macos-v1.9.2`) and compares by version, while every nightly shares the
-/// rolling `macos-nightly` tag and is identified only by the commit baked into
-/// its DMG name (`OutlineProxy-nightly-<sha8>-macOS-Universal.dmg`).
+/// differently because they are versioned differently. Stable releases use the
+/// unified repository CalVer tag (`v26.11.0`, resolved via `/releases/latest`)
+/// and compare by version, while every nightly shares the rolling `macos-nightly`
+/// tag and is identified only by the commit baked into its DMG name
+/// (`OutlineProxy-nightly-<sha8>-macOS-Universal.dmg`).
 public enum UpdateChecker {
     static let repo = "balookrd/outline-proxy"
     static let nightlyTag = "macos-nightly"
-    static let releaseTagPrefix = "macos-v"
+    static let releaseTagPrefix = "v"
     static let nightlyAssetPrefix = "OutlineProxy-nightly-"
     static let assetSuffix = "-macOS-Universal.dmg"
     static let checksumsAsset = "SHA256SUMS.txt"
 
     /// A newer build that can be fetched.
     public struct Update: Sendable, Equatable {
-        /// How the build is named on its channel ("v1.9.2", "nightly · 4c7821c4").
+        /// How the build is named on its channel ("v26.11.0", "nightly · 4c7821c4").
         public let label: String
         public let assetName: String
         public let assetURL: URL
@@ -52,9 +53,9 @@ public enum UpdateChecker {
     public static func check() async -> Result {
         do {
             if AppVersion.channel == "release" {
-                let data = try await get("https://api.github.com/repos/\(repo)/releases?per_page=100")
-                let releases = try JSONDecoder().decode([Release].self, from: data)
-                return evaluateRelease(releases, currentVersion: AppVersion.version)
+                let data = try await get("https://api.github.com/repos/\(repo)/releases/latest")
+                let release = try JSONDecoder().decode(Release.self, from: data)
+                return evaluateRelease(release, currentVersion: AppVersion.version)
             }
             let data = try await get("https://api.github.com/repos/\(repo)/releases/tags/\(nightlyTag)")
             let release = try JSONDecoder().decode(Release.self, from: data)
@@ -83,30 +84,24 @@ public enum UpdateChecker {
         return .available(update(release, asset: asset, label: "nightly · \(sha)"))
     }
 
-    /// Releases carry their version in the tag, so the newest `macos-v*` tag
-    /// wins — `/releases/latest` is no help, since the repository also publishes
-    /// server, client and Android releases.
-    static func evaluateRelease(_ releases: [Release], currentVersion: String) -> Result {
-        var best: Release?
-        var bestVersion: [Int] = []
-        for release in releases where release.tag_name.hasPrefix(releaseTagPrefix) && release.draft != true {
-            let version = versionParts(String(release.tag_name.dropFirst(releaseTagPrefix.count)))
-            if compareVersions(version, bestVersion) > 0 {
-                best = release
-                bestVersion = version
-            }
-        }
-        guard let release = best else {
+    /// Stable releases share one unified CalVer tag (`v26.11.0`) published as
+    /// `/releases/latest`.
+    static func evaluateRelease(_ release: Release, currentVersion: String) -> Result {
+        guard release.draft != true,
+              release.tag_name.hasPrefix(releaseTagPrefix),
+              let firstChar = release.tag_name.dropFirst(releaseTagPrefix.count).first,
+              firstChar.isNumber
+        else {
             return .failed("ещё не опубликовано ни одного релиза \(releaseTagPrefix)*")
         }
-        if compareVersions(bestVersion, versionParts(currentVersion)) <= 0 {
+        let remoteVersion = String(release.tag_name.dropFirst(releaseTagPrefix.count))
+        if compareVersions(versionParts(remoteVersion), versionParts(currentVersion)) <= 0 {
             return .upToDate
         }
         guard let asset = dmgAsset(release) else {
             return .failed("в \(release.tag_name) нет DMG")
         }
-        let label = "v" + release.tag_name.dropFirst(releaseTagPrefix.count)
-        return .available(update(release, asset: asset, label: label))
+        return .available(update(release, asset: asset, label: release.tag_name))
     }
 
     static func sameCommit(_ published: String, _ current: String) -> Bool {

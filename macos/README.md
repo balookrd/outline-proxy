@@ -105,7 +105,7 @@ about 0.6 s later.
 ## Installing from a DMG
 
 Download `OutlineProxy-*-macOS-Universal.dmg` from GitHub Releases
-(`macos-nightly` or a `macos-v*` tag), open it and drag Outline Proxy into
+(`macos-nightly` or a `v*` release tag), open it and drag Outline Proxy into
 Applications.
 
 On the first launch macOS will most likely refuse to open the app and offer to
@@ -133,7 +133,7 @@ browser, carry no quarantine mark and open without the dialog.
 ## Updates
 
 The app updates itself from GitHub Releases, following its own build channel:
-a release build (`macos-v*` tag) moves to the newest `macos-v*` version, a
+a release build follows the repository's latest `v*` release (`/releases/latest`), a
 nightly build follows the rolling `macos-nightly` tag and updates whenever the
 published DMG was built from a different commit.
 
@@ -180,7 +180,7 @@ installation:
 | Option | Default | What it does |
 |---|---|---|
 | `--arch <native\|universal\|aarch64\|x86_64>` | `native` | Target architecture of both binaries |
-| `--version <version>` | `version` from `bins/outline-ws-rust/Cargo.toml` | Version in the DMG file name |
+| `--version <version>` | `[workspace.package].version` from root `Cargo.toml` | Version in the DMG file name |
 | `--output-dir <dir>` | `macos/dist` | Where the DMG is written; a relative path is taken from the repository root |
 | `--dmg-name <name>` | see below | Exact DMG file name |
 | `--app-path <path>` | — | Use an already built `.app`; implies `--skip-build` |
@@ -197,5 +197,5 @@ next to it as `<dmg-name>.sha256`.
 |---|---|---|
 | `.github/workflows/ci.yml`, job `macos` | Every pull request and push to `main` | `package-dmg.sh --arch native`; uploads the DMG as the `OutlineProxy-macOS-preview` artifact, kept for 7 days |
 | `.github/workflows/macos-nightly-release.yml` | Push to `main` touching `macos/**`, `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`; manual dispatch | Builds `OutlineProxy-nightly-<sha8>-macOS-Universal.dmg` and updates the rolling `macos-nightly` release |
-| `.github/workflows/macos-tag-release.yml` | Push of a `macos-v*` tag | Builds `OutlineProxy-v<version>-macOS-Universal.dmg`, writes `SHA256SUMS.txt`, generates release notes with `git-cliff` and publishes a GitHub release |
-| `.github/workflows/macos-release.yml` | Manual (`workflow_dispatch`) | Bumps the version and commits `release: cut macos-v...` to `main` |
+| `.github/workflows/tag-release.yml` | Push of a unified `v*` tag | Builds `OutlineProxy-v<version>-macOS-Universal.dmg` alongside the other platforms, writes `SHA256SUMS.txt`, generates release notes with `git-cliff` and publishes a unified GitHub release |
+| `.github/workflows/release.yml` | Manual (`workflow_dispatch`) | Bumps the unified CalVer version across workspace manifests and commits `release: cut v...` to `main` |
