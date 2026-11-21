@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the runtime architecture of `outline-ss-rust`: which listeners the server opens, how a request is routed to a user and a relay, and how traffic reaches the upstream network. It is written for operators and for developers changing the server data plane.
+This document describes the runtime architecture of `outline-server`: which listeners the server opens, how a request is routed to a user and a relay, and how traffic reaches the upstream network. It is written for operators and for developers changing the server data plane.
 
 *Русская версия: [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)*
 
@@ -16,7 +16,7 @@ flowchart TD
         H3["HTTP/3 WebSocket (RFC 9220)"]
     end
 
-    subgraph CORE["outline-ss-rust"]
+    subgraph CORE["outline-server"]
         SNID["L4: SNI Dispatch (optional)"]
         ROUTER["L7: Path Router ([[endpoint]])"]
         FILTER["Endpoint user pool (by kind)"]

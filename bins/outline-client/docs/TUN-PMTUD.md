@@ -1,6 +1,6 @@
 # TUN UDP path-MTU discovery
 
-This document describes how the TUN UDP engine of `outline-ws-rust` (`crates/outline-tun`) handles datagrams that the upstream transport refuses as too large: when it sends an ICMP "packet too big" signal to the sender, what MTU it advertises, and when it stays silent so QUIC clients do not fall back to TCP. It is for operators of the TUN client and developers of the UDP data path.
+This document describes how the TUN UDP engine of `outline-client` (`crates/outline-tun`) handles datagrams that the upstream transport refuses as too large: when it sends an ICMP "packet too big" signal to the sender, what MTU it advertises, and when it stays silent so QUIC clients do not fall back to TCP. It is for operators of the TUN client and developers of the UDP data path.
 
 *Russian version: [TUN-PMTUD.ru.md](TUN-PMTUD.ru.md)*
 

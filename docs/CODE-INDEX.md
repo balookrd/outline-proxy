@@ -38,7 +38,7 @@ Limit the index to the packages a task touches:
 
 ```bash
 python3 scripts/code-index.py --package outline-transport
-python3 scripts/code-index.py --package outline-ss-rust --package outline-wire
+python3 scripts/code-index.py --package outline-server --package outline-wire
 ```
 
 Skip the detached Android workspace when it is not relevant:

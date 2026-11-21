@@ -5,8 +5,8 @@
 Корневой файл монорепо `outline-proxy`. Действует на весь репозиторий. Для
 бинарь-специфичных правил дополнительно читай:
 
-- [`bins/outline-ss-rust/AGENTS.md`](bins/outline-ss-rust/AGENTS.md) — server data plane.
-- [`bins/outline-ws-rust/AGENTS.md`](bins/outline-ws-rust/AGENTS.md) — client (SOCKS5/TUN ingress).
+- [`bins/outline-server/AGENTS.md`](bins/outline-server/AGENTS.md) — server data plane.
+- [`bins/outline-client/AGENTS.md`](bins/outline-client/AGENTS.md) — client (SOCKS5/TUN ingress).
 
 Память проекта и база знаний (топология, история инцидентов, боевые узлы):
 - [`FLEET.local.md`](FLEET.local.md) — локальный некоммитируемый справочник боевого парка (состав узлов, роли, топология, k3s, мониторинг и эксплуатационный регламент).
@@ -19,7 +19,7 @@ per-bin файлах относится к старой раздельной р�
 ## Что это
 
 `outline-proxy` — единый Cargo workspace, объединивший ранее раздельные
-`outline-ss-rust` (сервер) и `outline-ws-rust` (клиент). Они делят общий
+проекты сервера (`outline-server`) и клиента (`outline-client`). Они делят общий
 wire-protocol (Shadowsocks AEAD / VLESS поверх WebSocket / XHTTP / HTTP3),
 поэтому живут в одном дереве с общими крейтами и vendored-копиями.
 
@@ -29,9 +29,9 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
 
 ## Структура
 
-- `bins/outline-ss-rust/` — серверный бинарь: listeners, accept, relay, NAT,
+- `bins/outline-server/` — серверный бинарь: listeners, accept, relay, NAT,
   outbound, control API. Edition 2024.
-- `bins/outline-ws-rust/` — клиентский бинарь: SOCKS5/TUN ingress, uplink LB,
+- `bins/outline-client/` — клиентский бинарь: SOCKS5/TUN ingress, uplink LB,
   routing, dial. Edition 2024.
 - `bins/outline-ui/` — web-UI обоих дашбордов одним сервисом (`/ws` и `/ss` на
   одном порту), без data plane: только агрегация control API узлов. Живёт в k3s.
@@ -52,7 +52,7 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   `cargo check --workspace` его НЕ видит, поэтому у него свои шаги в гейте
   (см. ниже) и свой `target/`. Path-зависимости смотрят вверх, в монорепо.
 - `macos/` — нативное Swift/AppKit приложение для macOS в строке меню (Menu Bar):
-  управление системным SOCKS5-прокси, профилями и подписками через `outline-ws-rust`
+  управление системным SOCKS5-прокси, профилями и подписками через `outline-client`
   без необходимости платного Apple Developer аккаунта. Сборка .app через `./macos/scripts/package-app.sh`,
   упаковка DMG-образов через `./macos/scripts/package-dmg.sh`.
 
@@ -73,11 +73,11 @@ cargo fmt --all          # затрагивает и vendor/* — откатыв
 Один бинарь / cross-build (через корневые `.cargo` aliases):
 
 ```bash
-cargo check -p outline-ss-rust
-cargo check -p outline-ws-rust
+cargo check -p outline-server
+cargo check -p outline-client
 cargo check -p outline-ui
-cargo ss-release-musl-x86_64       # zigbuild server, нужен cargo-zigbuild + zig
-cargo ws-release-musl-aarch64      # zigbuild client
+cargo server-release-musl-x86_64   # zigbuild server, нужен cargo-zigbuild + zig
+cargo client-release-musl-aarch64  # zigbuild client
 cargo ui-release-musl-aarch64      # zigbuild dashboard UI
 ```
 
@@ -87,7 +87,7 @@ cargo ui-release-musl-aarch64      # zigbuild dashboard UI
 vendored-исключения, без которых локальный результат расходится с CI.
 
 ```bash
-cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-ui \
+cargo fmt --check -p outline-server -p outline-client -p outline-ui \
   -p outline-metrics -p outline-net -p outline-routing -p outline-transport \
   -p outline-tun -p outline-uplink -p outline-wire \
   -p shadowsocks-crypto -p socks5-proto
@@ -95,7 +95,7 @@ cargo clippy --workspace --exclude sockudo-ws --exclude outline-windows --all-ta
 cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 # e2e на настоящих бинарях (job `e2e`): без RUN_E2E_FAILOVER=1 каждый тест
 # молча выходит, без test-tls набор e2e_tls_carriers пуст — оба обязательны
-RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
+RUN_E2E_FAILOVER=1 cargo test -p outline-client --features test-tls --test 'e2e_*' -- --test-threads=1
 
 # android/rust — отдельный workspace, ни одна из команд выше его не задевает
 (cd android/rust && cargo fmt --check && cargo clippy --no-deps -- -D warnings)
@@ -207,11 +207,11 @@ lock-файлов вместе с vendored-крейтами, которые об
   опции нет, поэтому тест `malloc_conf_disables_the_calloc_memset_threshold`
   проверяет саму строку, а `malloc_conf_reaches_jemalloc` (только Linux) —
   что jemalloc её читает.
-- **Серверная модель `[[endpoint]]`.** Сервер `outline-ss-rust` использует модель
+- **Серверная модель `[[endpoint]]`.** Сервер `outline-server` использует модель
   множественных эндпоинтов `[[endpoint]]` (пользователи path-independent, padding
   — атрибут эндпоинта). Секция `[dashboard]` в конфигурации серверов запрещена
   (`deny_unknown_fields` роняет бинарник при старте).
-- **SOCKS5 auth — либо одиночный, либо `[[socks5.users]]`.** В `outline-ws-rust`
+- **SOCKS5 auth — либо одиночный, либо `[[socks5.users]]`.** В `outline-client`
   аутентификация SOCKS5 настраивается либо через одиночные `username`/`password` в
   `[socks5]`, либо через массив `[[socks5.users]]`, но никогда не оба одновременно
   (строгий гейт в `auth.rs`).
@@ -224,7 +224,7 @@ lock-файлов вместе с vendored-крейтами, которые об
 ## Экономия токенов и контекста (Token Efficiency)
 
 1. **Строгая изоляция крейтов и бинарей**:
-   - При работе над задачей для конкретного компонента (например, `bins/outline-ss-rust` или `crates/outline-transport`) **не исследовать** соседние нерелевантные крейты или `android/`.
+   - При работе над задачей для конкретного компонента (например, `bins/outline-server` или `crates/outline-transport`) **не исследовать** соседние нерелевантные крейты или `android/`.
    - Ограничивать область поиска целевым пакетом (`-p <crate>`).
 
 2. **Запретные для сканирования и чтения директории**:
@@ -296,8 +296,8 @@ lock-файлов вместе с vendored-крейтами, которые об
 - **H3-keepalive.** На H3-carrier НЕ слать server→client WS `Ping` и не делать
   pong-deadline reaping: клиентские keepalive проглатываются split-reader'ом,
   живость держит QUIC keep-alive, а reactive Pong доставляется таймерным
-  `WsSocket::flush`. Подробности — в `bins/outline-ss-rust/AGENTS.md` и
-  `bins/outline-ws-rust/AGENTS.md` (SS-UDP/TCP/VLESS-over-WS, H3-aware).
+  `WsSocket::flush`. Подробности — в `bins/outline-server/AGENTS.md` и
+  `bins/outline-client/AGENTS.md` (SS-UDP/TCP/VLESS-over-WS, H3-aware).
 - **Bounded resources.** UDP/NAT/session/resumption и любые новые
   долгоживущие socket/task/buffer должны иметь явный лимит/eviction/
   cancellation/shutdown.
@@ -316,7 +316,7 @@ patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-pro
 
 Production-код не обращается к `h3`-патч-API и `sockudo_ws` напрямую — только
 через модули-гейты `crates/outline-transport/src/h3/vendored.rs` (клиент) и
-`bins/outline-ss-rust/src/server/h3/vendored.rs` (сервер); патч `quinn-proto`
+`bins/outline-server/src/server/h3/vendored.rs` (сервер); патч `quinn-proto`
 (`initial_stream_receive_window` и опции `advertise_min_ack_delay`,
 `send_grease_transport_parameter`, `advertise_max_idle_timeout`,
 `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
@@ -327,7 +327,7 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `MtuDiscoveryConfig::first_probe_caps`, `PathStats::plpmtud_settled`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент; `first_probe` для
 `[server.h3].mtu_first_probe` и TP-опции маскировки Caddy — ещё и через серверный гейт
-`bins/outline-ss-rust/src/server/h3/vendored.rs`); патч `rustls`
+`bins/outline-server/src/server/h3/vendored.rs`); патч `rustls`
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только через `crates/outline-transport/src/tls_vendored.rs`
 (клиент: QUIC и TCP); патч `hyper` (`ext::HeaderCaseMap`) — только через

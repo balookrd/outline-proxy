@@ -2,8 +2,8 @@
 
 *Русская версия: [CLUSTER.ru.md](CLUSTER.ru.md)*
 
-This document describes how several `outline-ss-rust` servers act as one
-cluster: an `outline-ws-rust` client may enter through any server, while a
+This document describes how several `outline-server` servers act as one
+cluster: an `outline-client` client may enter through any server, while a
 session stays pinned to its home server. A server that is not the session's home
 (the edge) terminates the client's crypto itself and forwards the application
 plaintext to the home over a QUIC mesh link, routed by a shard id embedded in
@@ -79,7 +79,7 @@ carrier metadata that arrives ahead of the body:
 | First connect (no resume) | — | edge is home: handle locally, mint a session id with `shard = self` |
 
 ```
-            client (ws-rust)
+          client (outline-client)
           resume? X-Outline-Resume
                       │ carrier (WS/H3)
                       ▼
@@ -218,7 +218,7 @@ again.
 On a relayed mux the client sees frames coalesce and split. The direct path
 emits one mux frame per binary WebSocket message; a relayed one forwards mesh
 chunks, so one message may carry several frames or part of one. A
-stream-oriented mux client (which mux.cool framing implies; `outline-ws-rust`
+stream-oriented mux client (which mux.cool framing implies; `outline-client`
 implements no mux at all) sees no difference. A third-party client that parses
 one frame per message must buffer across messages to resume through a foreign
 edge.
@@ -337,7 +337,7 @@ is the intended outcome. On the byte-stream path the name is the only identity
 signal: a park made under Shadowsocks is handed to a VLESS carrier of the same
 account, and the reverse. So `[[users]].id` and every `[users.aliases]` name
 must denote the same person on every node. See
-`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Cross-protocol resume;
+`bins/outline-server/docs/SESSION-RESUMPTION.md` § Cross-protocol resume;
 crossings are counted on
 `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`.
 
@@ -592,7 +592,7 @@ fails locally on its own send instead of putting bytes on the wire.
 
 ## Configuration
 
-Server (`outline-ss-rust`):
+Server (`outline-server`):
 
 ```toml
 [cluster]
@@ -631,7 +631,7 @@ certificate to distribute. It is split by BLAKE3 `derive_key` contexts
 `"outline-proxy cluster mesh-auth v1"` for the interconnect keypair), so one key
 is never used in two crypto contexts.
 
-Client (`outline-ws-rust`): no code changes. The client already resumes to the
+Client (`outline-client`): no code changes. The client already resumes to the
 same uplink with the same session id, and the edge failover path exists. With
 anycast ingress the relay is invisible to it. Without anycast and without
 reliable DNS, list every node as its own uplink and set `shared_resume = true`
@@ -659,7 +659,7 @@ There is no per-peer cap and no LRU eviction of relay streams.
 ## Open risks
 
 1. Mesh data plane (the same silent-corruption class as the TUN pump). Covered
-   by tests in `bins/outline-ss-rust/src/server/tests/resumption/cluster.rs`:
+   by tests in `bins/outline-server/src/server/tests/resumption/cluster.rs`:
    `cluster_relay_streams_large_transfer_sha256` streams 16 MiB through the
    relay as a chunked SS-AEAD stream and checks it byte-exact with SHA-256 in
    both directions; `cluster_session_survives_edge_switch` covers park and

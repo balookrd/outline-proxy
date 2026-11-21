@@ -41,7 +41,7 @@ python3 scripts/code-index.py
 
 ```bash
 python3 scripts/code-index.py --package outline-transport
-python3 scripts/code-index.py --package outline-ss-rust --package outline-wire
+python3 scripts/code-index.py --package outline-server --package outline-wire
 ```
 
 Пропустите detached workspace Android, если он не относится к задаче:

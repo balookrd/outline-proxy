@@ -12,20 +12,20 @@
 сервер, клиент, агрегирующий dashboard-UI, Android-VPN-клиент и клиент для
 строки меню macOS.
 
-- [`outline-ss-rust`](bins/outline-ss-rust/) — серверный data plane.
+- [`outline-server`](bins/outline-server/) — серверный data plane.
   Принимает Shadowsocks AEAD или VLESS поверх WebSocket (HTTP/1.1, RFC 8441 H2,
   RFC 9220 H3) и XHTTP и релеит на произвольные TCP/UDP-назначения. У каждого
   пользователя свои `method`, `fwmark`, флаг `enabled` и IP-`aliases`; сервер
   отдаёт Prometheus-метрики, умеет встроенные TLS- и QUIC/H3-listener'ы и
   mesh-кластер между узлами.
-- [`outline-ws-rust`](bins/outline-ws-rust/) — клиент. Принимает локальный
+- [`outline-client`](bins/outline-client/) — клиент. Принимает локальный
   SOCKS5 (и, опционально, TUN) трафик и отправляет его через те же носители, с
   multi-uplink failover, балансировкой нагрузки и health-пробами.
 - [`outline-ui`](bins/outline-ui/) — отдаёт оба дашборда, серверный и
   клиентский, из одного бинаря (`/ss` и `/ws`). Своего data plane нет, он только
   опрашивает control API каждого узла.
 - [`android/`](android/) — Android-VPN-клиент. Запускает uplink-стек
-  `outline-ws-rust` без изменений под слоем `VpnService` + Compose-UI.
+  `outline-client` без изменений под слоем `VpnService` + Compose-UI.
 - [`macos/`](macos/) — клиент для строки меню macOS. Переключает режимы SOCKS5
   (системный прокси без root) и TUN (L3 VPN через ядровый интерфейс `utun`),
   управляет профилями серверов и показывает журнал; платный аккаунт Apple
@@ -87,7 +87,7 @@ Shadowsocks поверх WebSocket — путь, на котором говор�
 Генератор ключей [`ops/access-keys`](ops/access-keys/) выдаёт пользователю
 Outline-ключ доступа (`$type: websocket`, TCP + UDP), если на сервере есть пара
 раздельных эндпоинтов `ws_ss_tcp` / `ws_ss_udp`. Shadowsocks поверх XHTTP
-работает только со встроенным клиентом `outline-ws-rust`, Outline-ключа для
+работает только со встроенным клиентом `outline-client`, Outline-ключа для
 него нет; вместо этого на каждый combined-эндпоинт (`ws_ss` / `xhttp_ss`)
 генератор выдаёт share-link `ss://…` (SIP002 userinfo) для этого клиента.
 VLESS-эндпоинты (`ws_vless` / `xhttp_vless`) получают share-link `vless://…`.
@@ -97,14 +97,14 @@ VLESS-эндпоинты (`ws_vless` / `xhttp_vless`) получают share-lin
 ```
 outline-proxy/
 ├── bins/
-│   ├── outline-ss-rust/   # серверный бинарь  (+ его README, CHANGELOG, docs/)
-│   ├── outline-ws-rust/   # клиентский бинарь  (+ его README, CHANGELOG, docs/)
+│   ├── outline-server/    # серверный бинарь  (+ его README, CHANGELOG, docs/)
+│   ├── outline-client/    # клиентский бинарь  (+ его README, CHANGELOG, docs/)
 │   └── outline-ui/        # агрегирующий dashboard-UI (+ его README)
 ├── android/               # Android-VPN-клиент (отдельный workspace: Rust-ядро + Gradle/Kotlin-приложение)
 ├── macos/                 # клиент для строки меню macOS (Swift/AppKit)
 ├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # пропатченные h3, sockudo-ws, quinn-proto, rustls, hyper (одна копия, на уровне workspace)
-├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-* / ui-*)
+├── .cargo/config.toml     # cross-build алиасы (server-* / client-* / ui-*)
 ├── .github/workflows/     # CI: lint/test-гейт, единый release / tag пайплайн, nightly по компонентам
 ├── AGENTS.md              # правила для контрибьюторов + монорепо-инварианты
 ├── PATCHES.md             # что меняет каждый vendored-крейт относительно upstream
@@ -112,8 +112,8 @@ outline-proxy/
 ```
 
 Документация по каждому компоненту лежит рядом с ним:
-[README сервера](bins/outline-ss-rust/README.ru.md) ·
-[README клиента](bins/outline-ws-rust/README.ru.md) ·
+[README сервера](bins/outline-server/README.ru.md) ·
+[README клиента](bins/outline-client/README.ru.md) ·
 [README dashboard-UI](bins/outline-ui/README.ru.md) ·
 [README Android-клиента](android/README.ru.md) ·
 [README клиента macOS](macos/README.ru.md). Подробности — в `bins/*/docs/`:
@@ -141,12 +141,12 @@ cargo build --release
 cargo test --workspace --exclude sockudo-ws
 
 # один бинарь
-cargo build --release -p outline-ss-rust
-cargo build --release -p outline-ws-rust
+cargo build --release -p outline-server
+cargo build --release -p outline-client
 
 # musl cross-сборки через алиасы cargo-zigbuild (нужны cargo-zigbuild + zig)
-cargo ss-release-musl-x86_64
-cargo ws-release-musl-aarch64
+cargo server-release-musl-x86_64
+cargo client-release-musl-aarch64
 cargo ui-release-musl-aarch64
 ```
 
@@ -167,15 +167,15 @@ Android-клиент живёт в [`android/`](android/) как отдельн�
 Все шесть продуктов делят единую версию CalVer (`vYY.M.PATCH`, например
 `v26.11.0`) и публикуются в одном общем GitHub Release (*Tag Release*):
 
-- `outline-ss-rust` (сервер, `x86_64` и `aarch64` musl)
-- `outline-ws-rust` (клиент, `x86_64` и `aarch64` musl)
+- `outline-server` (сервер, `x86_64` и `aarch64` musl)
+- `outline-client` (клиент, `x86_64` и `aarch64` musl)
 - `outline-ui` (dashboard-UI, `x86_64` и `aarch64` musl)
 - Android-приложение (`outline-proxy-<версия>-arm64-v8a.apk`)
 - приложение macOS (`OutlineProxy-v<версия>-macOS-Universal.dmg`)
 - приложение Windows (`OutlineProxy-v<версия>-Windows-x86_64.zip`)
 
 Push'и в `main` по-прежнему публикуют скользящие предрелизы по компонентам
-(`ss-nightly`, `ws-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`,
+(`server-nightly`, `client-nightly`, `ui-nightly`, `android-nightly`, `macos-nightly`,
 `windows-nightly`). У каждого nightly-workflow есть path-фильтр, поэтому
 пересобираются только затронутые компоненты; фильтры Android, macOS и Windows
 дополнительно покрывают клиент, общие и vendored-крейты, которые линкует их код.

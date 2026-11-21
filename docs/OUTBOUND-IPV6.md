@@ -3,8 +3,8 @@
 *Русская версия: [OUTBOUND-IPV6.ru.md](OUTBOUND-IPV6.ru.md)*
 
 How `outline-proxy` chooses the source IPv6 address for traffic it sends to the
-internet: the server's upstream connections (`outline-ss-rust`) and the
-client's direct-route dials (`outline-ws-rust`, the `via = "direct"` / TUN
+internet: the server's upstream connections (`outline-server`) and the
+client's direct-route dials (`outline-client`, the `via = "direct"` / TUN
 bypass path). Operators usually want one of two opposite things:
 
 - Stability: keep long-lived connections (SSH, map tiles, streaming) alive
@@ -80,7 +80,7 @@ Different destinations still get different sources, and a destination gets a
 new source after the TTL. Without a prefix or interface source mode the setting
 has no effect.
 
-## Client, direct route (`outline-ws-rust`)
+## Client, direct route (`outline-client`)
 
 The client's uplink traffic is tunnelled to your server and its source is never
 rotated. These settings apply only to the direct route (`via = "direct"` / TUN
@@ -202,7 +202,7 @@ sysctl net.ipv6.conf.{all,default}.use_tempaddr   # is rotation enabled?
 
 ## Config reference
 
-Server (`outline-ss-rust`): the `[outbound]` block or the CLI flags. A flag
+Server (`outline-server`): the `[outbound]` block or the CLI flags. A flag
 (or its environment variable) overrides the config key.
 
 | Key | CLI flag / environment variable | Default | Meaning |
@@ -214,7 +214,7 @@ Server (`outline-ss-rust`): the `[outbound]` block or the CLI flags. A flag
 | `ipv6_sticky` | `--outbound-ipv6-sticky` / `OUTLINE_SS_OUTBOUND_IPV6_STICKY` | `true` | pin the source per destination IP |
 | `ipv6_sticky_ttl_secs` | `--outbound-ipv6-sticky-ttl-secs` / `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS` | 1800 | sticky pin TTL, seconds |
 
-Client (`outline-ws-rust`, top-level config keys):
+Client (`outline-client`, top-level config keys):
 
 | Key | Default | Meaning |
 |-----|---------|---------|

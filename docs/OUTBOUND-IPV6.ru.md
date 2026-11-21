@@ -3,8 +3,8 @@
 *English version: [OUTBOUND-IPV6.md](OUTBOUND-IPV6.md)*
 
 Как `outline-proxy` выбирает исходящий (source) IPv6-адрес для трафика, который
-он отправляет в интернет: для upstream-соединений сервера (`outline-ss-rust`) и
-для direct-дозвонов клиента (`outline-ws-rust`, путь `via = "direct"` / обход
+он отправляет в интернет: для upstream-соединений сервера (`outline-server`) и
+для direct-дозвонов клиента (`outline-client`, путь `via = "direct"` / обход
 TUN). Обычно оператору нужно одно из двух противоположных:
 
 - Стабильность: держать долгие соединения (SSH, тайлы карт, стриминг) живыми,
@@ -80,7 +80,7 @@ deprecated-, tentative- и dadfailed-адреса пропускаются, по
 разные source, а после TTL назначение получает новый source. Без режима source
 по префиксу или интерфейсу настройка ни на что не влияет.
 
-## Клиент, direct-маршрут (`outline-ws-rust`)
+## Клиент, direct-маршрут (`outline-client`)
 
 Uplink-трафик клиента туннелируется на ваш сервер, и его source никогда не
 ротируется. Эти настройки касаются только direct-маршрута (`via = "direct"` /
@@ -203,7 +203,7 @@ sysctl net.ipv6.conf.{all,default}.use_tempaddr   # включена ли рот
 
 ## Справочник конфига
 
-Сервер (`outline-ss-rust`): блок `[outbound]` или флаги CLI. Флаг (или его
+Сервер (`outline-server`): блок `[outbound]` или флаги CLI. Флаг (или его
 переменная окружения) перекрывает ключ конфига.
 
 | Ключ | Флаг CLI / переменная окружения | По умолчанию | Значение |
@@ -215,7 +215,7 @@ sysctl net.ipv6.conf.{all,default}.use_tempaddr   # включена ли рот
 | `ipv6_sticky` | `--outbound-ipv6-sticky` / `OUTLINE_SS_OUTBOUND_IPV6_STICKY` | `true` | закреплять source за IP назначения |
 | `ipv6_sticky_ttl_secs` | `--outbound-ipv6-sticky-ttl-secs` / `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS` | 1800 | TTL закрепления, секунды |
 
-Клиент (`outline-ws-rust`, ключи верхнего уровня конфига):
+Клиент (`outline-client`, ключи верхнего уровня конфига):
 
 | Ключ | По умолчанию | Значение |
 |------|--------------|----------|

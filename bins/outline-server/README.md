@@ -5,13 +5,13 @@
   </picture>
 </p>
 
-# outline-ss-rust
+# outline-server
 
-`outline-ss-rust` is a Shadowsocks and VLESS relay written in Rust, modelled on `outline-ss-server`. It accepts Shadowsocks AEAD or VLESS traffic carried over WebSocket or XHTTP and relays it to arbitrary TCP and UDP destinations. It has multiple users, per-user cipher and `fwmark`, Prometheus metrics and a runtime user-management API; it does not include the Outline management plane.
+`outline-server` is a Shadowsocks and VLESS relay written in Rust, modelled on `outline-ss-server`. It accepts Shadowsocks AEAD or VLESS traffic carried over WebSocket or XHTTP and relays it to arbitrary TCP and UDP destinations. It has multiple users, per-user cipher and `fwmark`, Prometheus metrics and a runtime user-management API; it does not include the Outline management plane.
 
 Real fleet node names, domains and addresses in this document are replaced with stand-ins: `fleet.example` is the fleet domain. The mapping lives in the local, uncommitted `FLEET.local.md`.
 
-This document describes the server binary: transports, the configuration file, the control API, deployment and metrics. The client is `bins/outline-ws-rust`.
+This document describes the server binary: transports, the configuration file, the control API, deployment and metrics. The client is `bins/outline-client`.
 
 *Русская версия: [README.ru.md](README.ru.md)*
 
@@ -79,7 +79,7 @@ flowchart LR
     VL --> XH["XHTTP packet-up (h2/h3)"]
     XH --> S
 
-    H1 --> S["outline-ss-rust"]
+    H1 --> S["outline-server"]
     H2 --> S
     H3 --> S
 
@@ -109,8 +109,8 @@ flowchart LR
 - [src/server/nat/](src/server/nat): UDP NAT session table
 - [src/fwmark.rs](src/fwmark.rs): Linux `SO_MARK` helpers for outbound sockets
 - [config.toml](config.toml): example configuration
-- [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service): systemd unit
-- [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json): Grafana dashboard
+- [systemd/outline-server.service](systemd/outline-server.service): systemd unit
+- [grafana/outline-server-dashboard.json](grafana/outline-server-dashboard.json): Grafana dashboard
 - [PATCHES.md](PATCHES.md): pointer to the monorepo-wide inventory of patches to vendored crates
 
 ## Transport model
@@ -186,7 +186,7 @@ Endpoints replace the old per-category fields `ws_path_tcp` / `ws_path_udp` / `w
 Optional application-layer padding on the WebSocket and XHTTP carriers against classifiers that correlate TLS record sizes with the proxied payload ("proxy-inside-TLS", TLS-in-TLS). Each Shadowsocks chunk on a padded endpoint is wrapped in a `real_len | pad_len | real | pad` frame before it reaches the outer TLS record layer, so the encrypted record size no longer follows the Shadowsocks payload size. The idea is the same as AnyTLS padding, implemented inside the existing carriers instead of a second proxy protocol.
 
 - Per endpoint. Padding is an attribute of the endpoint (`[[endpoint]] padded = true`). Other endpoints keep the plain Shadowsocks-over-WS / XHTTP wire, so third-party clients (Happ, Outline, xray, sing-box) on unpadded endpoints are not affected.
-- Set in config on both ends, not negotiated. There is no capability bit on the wire: the `outline-ws-rust` client must enable `[padding]` too, otherwise its plain frames are fed into the padding decoder and the session fails. Off by default; no padding frames reach the wire until both ends enable it (early-session shaping on h1/h2 does not need padding, see [`docs/PADDING.md`](../../docs/PADDING.md)).
+- Set in config on both ends, not negotiated. There is no capability bit on the wire: `outline-client` must enable `[padding]` too, otherwise its plain frames are fed into the padding decoder and the session fails. Off by default; no padding frames reach the wire until both ends enable it (early-session shaping on h1/h2 does not need padding, see [`docs/PADDING.md`](../../docs/PADDING.md)).
 - Cover traffic. With `cover = true` the downlink sends pad-only frames on an idle connection at a random interval between `cover_jitter_min_ms` and `cover_jitter_max_ms` (defaults 250 and 1500 ms), so idle gaps do not reveal timing.
 
 Applies to SS and VLESS over WebSocket (h1/h2/h3) and over XHTTP. UDP is padded per datagram on every WS carrier, for SS-UDP (split: set `padded = true` on its endpoint; combined: on the shared endpoint) and VLESS-UDP. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in [config.toml](config.toml) lists the parameters.
@@ -230,17 +230,17 @@ At least one data-plane listener must be configured, `[server].listen` or `[serv
 Cross-builds for musl use `cargo-zigbuild` through aliases in the root `.cargo/config.toml`. Run them from the repository root:
 
 ```bash
-cargo ss-build-musl-x86_64
-cargo ss-release-musl-x86_64
-cargo ss-build-musl-aarch64
-cargo ss-release-musl-aarch64
-cargo ss-build-musl-arm
-cargo ss-release-musl-arm
-cargo ss-build-musl-armv7
-cargo ss-release-musl-armv7
+cargo server-build-musl-x86_64
+cargo server-release-musl-x86_64
+cargo server-build-musl-aarch64
+cargo server-release-musl-aarch64
+cargo server-build-musl-arm
+cargo server-release-musl-arm
+cargo server-build-musl-armv7
+cargo server-release-musl-armv7
 ```
 
-They expand to `cargo zigbuild [--release] -p outline-ss-rust --target <triple>` for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `arm-unknown-linux-musleabi` and `armv7-unknown-linux-musleabihf`. Requires `cargo-zigbuild` and `zig`.
+They expand to `cargo zigbuild [--release] -p outline-server --target <triple>` for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `arm-unknown-linux-musleabi` and `armv7-unknown-linux-musleabihf`. Requires `cargo-zigbuild` and `zig`.
 
 `mips` and `mipsel` are not in the current stable Rustup target set. To build for them, use a pinned older toolchain or a `build-std` flow; the aliases and release workflows do not cover them.
 
@@ -429,7 +429,7 @@ The `control` cargo feature (on by default) adds an HTTP API for managing `[[use
 ```toml
 [control]
 listen = "127.0.0.1:7001"
-token_file = "/etc/outline-ss-rust/control.token"
+token_file = "/etc/outline-server/control.token"
 ```
 
 Every request must carry `Authorization: Bearer <token>`. Bind the listener to loopback or a management network. CLI equivalents: `--control-listen`, `--control-token`, `--control-token-file` (and `OUTLINE_SS_CONTROL_*` variables). Build with `--no-default-features` to leave the control module out; note that this also drops the default `jemalloc` feature, so add `--features jemalloc` to keep the allocator.
@@ -533,8 +533,8 @@ method = "chacha20-ietf-poly1305"
 ```toml
 [server]
 listen = "0.0.0.0:5443"
-cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
-key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
+cert_path = "/etc/outline-server/tls/fullchain.pem"
+key_path  = "/etc/outline-server/tls/privkey.pem"
 
 [[endpoint]]
 path = "/tcp"
@@ -576,8 +576,8 @@ Certificate reload. Every configured cert/key file (the default pair and each `[
 ```toml
 [server]
 listen = "0.0.0.0:5443"
-cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
-key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
+cert_path = "/etc/outline-server/tls/fullchain.pem"
+key_path  = "/etc/outline-server/tls/privkey.pem"
 
 [server.h3]
 listen = "0.0.0.0:5443"
@@ -809,7 +809,7 @@ Example scrape config:
 
 ```yaml
 scrape_configs:
-  - job_name: outline-ss-rust
+  - job_name: outline-server
     static_configs:
       - targets:
           - 127.0.0.1:9090
@@ -845,7 +845,7 @@ The binary uses `jemalloc` as the global allocator (cargo feature `jemalloc`, de
 
 ### Grafana
 
-Import [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json) into Grafana. Panels:
+Import [grafana/outline-server-dashboard.json](grafana/outline-server-dashboard.json) into Grafana. Panels:
 
 - active sessions and active TCP upstreams
 - TCP connect error ratio
@@ -992,9 +992,9 @@ sudo ./install-server.sh --purge
 What the script does:
 
 - detects the host architecture and downloads the matching release artifact
-- installs the binary to `/usr/local/bin/outline-ss-rust`
-- creates the `outline-ss-rust` system user and group if they do not exist
-- creates `/etc/outline-ss-rust` and `/var/lib/outline-ss-rust`
+- installs the binary to `/usr/local/bin/outline-server`
+- creates the `outline-server` system user and group if they do not exist
+- creates `/etc/outline-server` and `/var/lib/outline-server`
 - downloads `config.toml` and the systemd unit from the same release tag
 - runs `systemctl daemon-reload`
 - does not start the service on the first install
@@ -1002,12 +1002,12 @@ What the script does:
 
 After the first install:
 
-1. Edit `/etc/outline-ss-rust/config.toml`.
-2. Start the service: `sudo systemctl enable --now outline-ss-rust`.
-3. Check status: `systemctl status outline-ss-rust --no-pager`.
-4. Check logs: `journalctl -u outline-ss-rust -e --no-pager`.
+1. Edit `/etc/outline-server/config.toml`.
+2. Start the service: `sudo systemctl enable --now outline-server`.
+3. Check status: `systemctl status outline-server --no-pager`.
+4. Check logs: `journalctl -u outline-server -e --no-pager`.
 
-Re-run the script to upgrade: it downloads the selected release, replaces the binary, keeps the existing config and restarts `outline-ss-rust.service` if it was active. A stopped service stays stopped.
+Re-run the script to upgrade: it downloads the selected release, replaces the binary, keeps the existing config and restarts `outline-server.service` if it was active. A stopped service stays stopped.
 
 Supported architectures are those with release artifacts: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 
@@ -1018,11 +1018,11 @@ Overrides:
 | `CHANNEL` | `stable` | Release channel, `stable` or `nightly` |
 | `VERSION` | latest | Install a specific stable tag; cannot be combined with `CHANNEL=nightly` |
 | `REPO` | `balookrd/outline-proxy` | Install from another GitHub repository or fork |
-| `SERVICE_NAME` | `outline-ss-rust.service` | Unit name |
+| `SERVICE_NAME` | `outline-server.service` | Unit name |
 | `INSTALL_BIN_DIR` | `/usr/local/bin` | Binary directory |
-| `CONFIG_DIR` | `/etc/outline-ss-rust` | Configuration directory |
-| `STATE_DIR` | `/var/lib/outline-ss-rust` | State directory |
-| `SERVICE_USER` / `SERVICE_GROUP` | `outline-ss-rust` | Account the service runs as |
+| `CONFIG_DIR` | `/etc/outline-server` | Configuration directory |
+| `STATE_DIR` | `/var/lib/outline-server` | State directory |
+| `SERVICE_USER` / `SERVICE_GROUP` | `outline-server` | Account the service runs as |
 
 Removal:
 
@@ -1031,22 +1031,22 @@ sudo ./install-server.sh --remove   # stop+disable the service, drop the unit, b
 sudo ./install-server.sh --purge    # also delete config, state dir and the service user/group
 ```
 
-- `--remove` (alias `--uninstall`): stops and disables `outline-ss-rust.service`, removes the systemd unit (then `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` and the `outline-ss-rust` user and group, so a later reinstall reuses the config.
-- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` and the `outline-ss-rust` user and group. Both modes skip missing artifacts instead of failing, so they can be re-run.
+- `--remove` (alias `--uninstall`): stops and disables `outline-server.service`, removes the systemd unit (then `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-server`, `/var/lib/outline-server` and the `outline-server` user and group, so a later reinstall reuses the config.
+- `--purge`: everything `--remove` does, plus deletes `/etc/outline-server`, `/var/lib/outline-server` and the `outline-server` user and group. Both modes skip missing artifacts instead of failing, so they can be re-run.
 
 ### systemd
 
-The unit is [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service). Manual installation:
+The unit is [systemd/outline-server.service](systemd/outline-server.service). Manual installation:
 
-1. Install the binary to `/usr/local/bin/outline-ss-rust`.
-2. Install the configuration to `/etc/outline-ss-rust/config.toml`.
-3. Copy the unit file to `/etc/systemd/system/outline-ss-rust.service`.
+1. Install the binary to `/usr/local/bin/outline-server`.
+2. Install the configuration to `/etc/outline-server/config.toml`.
+3. Copy the unit file to `/etc/systemd/system/outline-server.service`.
 4. Create the service account:
-   `sudo useradd --system --home /var/lib/outline-ss-rust --shell /usr/sbin/nologin outline-ss-rust`
+   `sudo useradd --system --home /var/lib/outline-server --shell /usr/sbin/nologin outline-server`
 5. Create the directories:
-   `sudo install -d -o outline-ss-rust -g outline-ss-rust /var/lib/outline-ss-rust /etc/outline-ss-rust`
+   `sudo install -d -o outline-server -g outline-server /var/lib/outline-server /etc/outline-server`
 6. Reload systemd and start the service:
-   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ss-rust`
+   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-server`
 
 The unit sets:
 
@@ -1055,7 +1055,7 @@ The unit sets:
 - `LimitNOFILE=1048576`
 - `LimitSTACK=8M`, so threads do not reserve oversized anonymous stack mappings
 - `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN` as ambient capabilities
-- sandboxing: `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`, `MemoryDenyWriteExecute` and related flags; `ReadWritePaths=/etc/outline-ss-rust` lets the control API write the config file
+- sandboxing: `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`, `MemoryDenyWriteExecute` and related flags; `ReadWritePaths=/etc/outline-server` lets the control API write the config file
 
 Without privileged ports and `fwmark` the capabilities can be removed.
 
@@ -1066,7 +1066,7 @@ On Linux the runtime also sets Tokio worker and blocking thread stacks to 2 MiB,
 Logs go through `tracing`. The unit sets:
 
 ```text
-RUST_LOG=outline_ss_rust=info,tower_http=info
+RUST_LOG=outline_server=info,tower_http=info
 ```
 
 Use `debug` only while troubleshooting: it logs every WebSocket connection lifecycle event.
@@ -1105,7 +1105,7 @@ Use `debug` only while troubleshooting: it logs every WebSocket connection lifec
 From the repository root:
 
 ```bash
-cargo test -p outline-ss-rust
+cargo test -p outline-server
 ```
 
 The tests cover, among other things:

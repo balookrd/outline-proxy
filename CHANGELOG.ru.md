@@ -1,7 +1,8 @@
 # История изменений
 
 `outline-proxy` — единый Cargo workspace, объединивший ранее раздельные
-проекты сервера **`outline-ss-rust`** и клиента **`outline-ws-rust`** и
+проекты сервера (ранее **`outline-ss-rust`**, теперь **`outline-server`**) и
+клиента (ранее **`outline-ws-rust`**, теперь **`outline-client`**) и
 расширенный дашбордом и клиентами под Android, macOS и Windows. В исторических
 релизах до разделения использовались общие теги `v1.0.0` … `v1.4.4`, а в
 линейке до `1.9.x` — раздельные теги `ss-v*` / `ws-v*` / `ui-v*` / `android-v*` /
@@ -11,28 +12,29 @@
 
 | Компонент | Changelog | English |
 |-----------|-----------|---------|
-| **Сервер** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) |
-| **Клиент** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) |
+| **Сервер** (`outline-server`) | [`bins/outline-server/CHANGELOG.ru.md`](bins/outline-server/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-server/CHANGELOG.md) |
+| **Клиент** (`outline-client`) | [`bins/outline-client/CHANGELOG.ru.md`](bins/outline-client/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-client/CHANGELOG.md) |
 | **Windows-клиент** (`outline-windows`) | [`bins/outline-windows/CHANGELOG.ru.md`](bins/outline-windows/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-windows/CHANGELOG.md) |
 | **Дашборд** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) |
 | **Android-приложение** | [`android/CHANGELOG.ru.md`](android/CHANGELOG.ru.md) | [`CHANGELOG.md`](android/CHANGELOG.md) |
 
-Оба бинаря на **1.9.0**, выпущены 2026-08-24 (теги `ss-v1.9.0` / `ws-v1.9.0`),
-вместе с `outline-ui` **1.2.0** и Android-приложением **1.2.0** из той же
-нарезки.
+Оба бинаря были на **1.9.0**, выпущены 2026-08-24 под прежними тегами
+`ss-v1.9.0` / `ws-v1.9.0`, вместе с `outline-ui` **1.2.0** и Android-приложением
+**1.2.0** из той же нарезки — до перехода workspace на CalVer (`v26.11.0`) и
+переименования крейтов в `outline-server` / `outline-client`.
 Адаптивный
 carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
 переопределением назначения вышли в этой линейке раньше. Главная недавняя
 работа охватывает всю систему:
 
-- **BREAKING: серверные carrier-эндпоинты объединены (`outline-ss-rust`,
+- **BREAKING: серверные carrier-эндпоинты объединены (`outline-server`,
   ожидает релиза).** Блок `[websocket]`, per-user поля `ws_path_tcp` /
   `ws_path_udp` / `ws_path_vless` / `xhttp_path_*` и `[padding] enabled` /
   `paths` удалены и больше не парсятся. Каждый carrier-путь теперь — одна
   запись `[[endpoint]] { path, kind, padded }` в едином глобальном списке, а
   пользователи — чистые credentials, работающие на каждом эндпоинте своего
   kind; padding — атрибут эндпоинта, а не отдельный список путей. См.
-  [`bins/outline-ss-rust/README.ru.md`](bins/outline-ss-rust/README.ru.md#модель-эндпоинтов)
+  [`bins/outline-server/README.ru.md`](bins/outline-server/README.ru.md#модель-эндпоинтов)
   и [`docs/PADDING.ru.md`](docs/PADDING.ru.md); перед апгрейдом мигрируйте
   `config.toml`.
 - **Mesh-кластер серверов.** Edge-узлы релеят сессию клиента на home-узел, что
@@ -44,7 +46,7 @@ carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
 - **Детерминированный синхронный перевыбор** (`load_balancing.reselect_sync`),
   чтобы клон-пара узлов ротировалась на один uplink и уходила с одного egress.
 - **Android-VPN-клиент** ([`android/`](android/)), переиспользующий uplink-стек
-  `outline-ws-rust` без изменений — теперь с карточкой статуса туннеля в
+  `outline-client` без изменений — теперь с карточкой статуса туннеля в
   приложении (длительность, трафик, активный носитель), футером версии билда и
   конвейером выпуска подписанного APK (единые релизы `vYY.M.PATCH`, rolling
   `android-nightly`) — плюс агрегирующий dashboard-сервис **`outline-ui`**.

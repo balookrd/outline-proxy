@@ -1,6 +1,6 @@
 # TUN GSO / GRO / USO offload (`[tun] gso`, `[tun] gro`, `[tun] uso`)
 
-Документ описывает три настройки TUN offload в `outline-ws-rust` на Linux: что каждая меняет на путях чтения и записи, как проверить, что она работает, и как её откатить. Документ для операторов, запускающих TUN-клиент на Linux.
+Документ описывает три настройки TUN offload в `outline-client` на Linux: что каждая меняет на путях чтения и записи, как проверить, что она работает, и как её откатить. Документ для операторов, запускающих TUN-клиент на Linux.
 
 *English version: [TUN-GSO.md](TUN-GSO.md)*
 
@@ -68,7 +68,7 @@ uso = true   # downlink UDP USO (по умолчанию: следует за gs
 2. Downlink (`gso`): скачайте большой файл через туннель и сравните его `sha256sum` с оригиналом. Хеши должны совпасть.
 3. Uplink (`gro`): загрузите большой файл через туннель и сравните его `sha256sum` на дальней стороне.
 4. UDP (`uso`): проверьте, что DNS резолвится и QUIC-трафик (например, YouTube) воспроизводится, затем прогоните bulk-передачу по UDP. Рост `outline_ws_tun_packets_total{outcome="uso_supersegment"}` означает, что downlink-датаграммы сливаются.
-5. Сравните CPU и частоту syscall с выключенным offload при той же скорости: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)`. С `gso` падает число `write`; с `gro` на bulk-загрузке — число `read`.
+5. Сравните CPU и частоту syscall с выключенным offload при той же скорости: `sudo timeout 5 strace -f -c -p $(pidof outline-client)`. С `gso` падает число `write`; с `gro` на bulk-загрузке — число `read`.
 
 Строки лога при старте `TUN offload negotiated` (поля `req_gso`, `req_gro`, `req_uso`, `vnet_hdr`, `rx_gro`, `udp_gso`) и `TUN loop started` (поля `gso`, `rx_gro`, `udp_gso`) показывают, что приняло ядро.
 

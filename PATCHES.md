@@ -39,7 +39,7 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — client
   (`Protocol::WEBSOCKET` on Extended CONNECT, `Stream::from_h3_client` +
   `WebSocketStream::from_raw`).
-- [`bins/outline-ss-rust/src/server/h3/vendored.rs`](bins/outline-ss-rust/src/server/h3/vendored.rs) — server
+- [`bins/outline-server/src/server/h3/vendored.rs`](bins/outline-server/src/server/h3/vendored.rs) — server
   (the `h3::ext::Protocol` request extension, `Stream::from_h3_server` +
   `WebSocketStream::from_raw`, the restored `WebSocketServer::into_parts`,
   plus re-exports of the sockudo-ws types the server uses, and the patched
@@ -67,8 +67,8 @@ test modules impersonate the client side on purpose.
 
 | CI step | Matched names | Allowed only in |
 |---|---|---|
-| `invariant — vendored sockudo-ws API only behind gate modules` | `sockudo_ws` | `crates/outline-transport/src/h3/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
-| `invariant — patched quinn-proto API only behind the gate module` | `initial_stream_receive_window`, the browser-shaped transport-parameter setters (`.advertise_min_ack_delay(`, `.version_information(`, `.transport_parameter_order(`, …), `.initial_crypto_layout(`, `.fixed_spin_bit(`, `.first_probe(`, `.first_probe_caps(`, `plpmtud_settled` | `crates/outline-transport/src/quic/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
+| `invariant — vendored sockudo-ws API only behind gate modules` | `sockudo_ws` | `crates/outline-transport/src/h3/vendored.rs`, `bins/outline-server/src/server/h3/vendored.rs` |
+| `invariant — patched quinn-proto API only behind the gate module` | `initial_stream_receive_window`, the browser-shaped transport-parameter setters (`.advertise_min_ack_delay(`, `.version_information(`, `.transport_parameter_order(`, …), `.initial_crypto_layout(`, `.fixed_spin_bit(`, `.first_probe(`, `.first_probe_caps(`, `plpmtud_settled` | `crates/outline-transport/src/quic/vendored.rs`, `bins/outline-server/src/server/h3/vendored.rs` |
 | `invariant — patched rustls API only behind the gate module` | `client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`, `kx_group::SECP521R1` | `crates/outline-transport/src/tls_vendored.rs` |
 | `invariant — patched hyper API only behind the gate module` | `HeaderCaseMap`, `hyper::ext::*` (also scans `android/rust/src`) | `crates/outline-transport/src/hyper_vendored.rs` |
 
@@ -124,7 +124,7 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
 1. `h3-noerror` (`src/server.rs`) — treats `ApplicationClose: H3_NO_ERROR`
    as a normal close and suppresses the false-positive `HTTP/3 accept error`
    / `HTTP/3 connection error` `eprintln!`s on a clean shutdown. Also restores
-   `WebSocketServer::into_parts`, which the `outline-ss-rust` accept loop
+   `WebSocketServer::into_parts`, which the `outline-server` accept loop
    needs.
 2. `fix-h3-poll-write` (`src/stream/transport_stream.rs`) — the sockudo half
    of the poll-write fix, applied to the live H3 WebSocket stream `Stream<Http3>`
@@ -492,7 +492,7 @@ Baseline — crates.io `rustls 0.23.46`. Changes carried by
    RNG stream gains one byte for the signature-algorithm GREASE value, which shifts
    the random bytes drawn after it). With `None`, the ClientHello,
    the ServerHello / HelloRetryRequest / EncryptedExtensions handling and the order in
-   which randomness is drawn are byte-for-byte upstream; the server (`outline-ss-rust`) and the cluster mesh
+   which randomness is drawn are byte-for-byte upstream; the server (`outline-server`) and the cluster mesh
    never set the option; every client TLS dial (TCP and QUIC carriers, the certificate check,
    the HTTPS data-path probe) does.
 2. secp521r1 (`src/crypto/aws_lc_rs/mod.rs`, `src/crypto/ring/kx.rs`) — new

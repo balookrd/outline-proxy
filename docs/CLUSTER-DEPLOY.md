@@ -2,7 +2,7 @@
 
 *Русская версия: [CLUSTER-DEPLOY.ru.md](CLUSTER-DEPLOY.ru.md)*
 
-How to turn two or more standalone `outline-ss-rust` servers into a mesh
+How to turn two or more standalone `outline-server` servers into a mesh
 cluster in which a client session survives a switch between edges. The design
 is in [`CLUSTER.md`](CLUSTER.md).
 
@@ -183,7 +183,7 @@ The shared scope covers UDP as well as TCP: with `shared_resume = true`, SS-UDP
 and VLESS-UDP sessions present a group-shared, shard-carrying resume id and
 migrate across an edge switch like TCP (relayed to their home shard). See
 "UDP cross-node migration" in
-[`UPLINK-CONFIGURATIONS.md`](../bins/outline-ws-rust/docs/UPLINK-CONFIGURATIONS.md).
+[`UPLINK-CONFIGURATIONS.md`](../bins/outline-client/docs/UPLINK-CONFIGURATIONS.md).
 
 ## 6. Rollout order
 
@@ -216,7 +216,7 @@ migrate across an edge switch like TCP (relayed to their home shard). See
 - Survival: start a session with a download in flight, force the client onto a
   different node (with §5c, disable or kill the active uplink), and check that
   the download continues.
-- Metrics on each node's `/metrics` (and in the ss-rust Grafana dashboard, row
+- Metrics on each node's `/metrics` (and in the `outline-server` Grafana dashboard, row
   Cluster Mesh):
   - `outline_ss_mesh_relay_opened_total{outcome="ok"}` rising: edges relay
     cross-shard sessions to their homes. `{outcome="fail"}` rising: the OPEN
@@ -303,7 +303,7 @@ migrate across an edge switch like TCP (relayed to their home shard). See
     `outline_ss_mesh_control_datagram_errors_total` and the Mesh Throttle Hints
     & Control Errors panel. Throttle detection is local to the edge, and the mesh
     carries no control datagrams. Remove the panel from any forked dashboard.
-  - On the client (ws-rust dashboard, row Cluster / Soft-switch):
+  - On the client (`outline-client` dashboard, row Cluster / Soft-switch):
     `outline_ws_soft_switch_total{outcome}` counts operator soft-switch
     migrations, mostly `migrated` on a healthy switch;
     `outline_ws_resume_lookup_total{transport,scope,result}` with
