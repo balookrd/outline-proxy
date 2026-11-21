@@ -41,6 +41,8 @@ commit_parsers = [
   { message = "^fix",  group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "^perf", group = "<!-- 3 -->⚡ Performance" },
   { message = "^style", group = "<!-- 4 -->🎨 Styling & UI" },
+  # Rolling nightlies promote refactor/chore/ci/build to Maintenance when empty
+  # (see .github/scripts/gen-release-notes.sh); keep these entries single-line.
   { message = "^refactor", skip = true },
   { message = "^docs",  skip = true },
   { message = "^test",  skip = true },

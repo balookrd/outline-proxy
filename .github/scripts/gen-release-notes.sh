@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Generate a GitHub release body for one component from Conventional Commits.
 #
-#   gen-release-notes.sh <component> <tag> <output-file>
+#   gen-release-notes.sh <component> <tag> <output-file> [end-ref]
 #     component : all | server | client | ui | android | macos | windows
 #     tag       : v26.11.0 (unified release) or <comp>-nightly (rolling)
 #     output    : path to write the markdown body to
+#     end-ref   : optional upper bound ref for rolling tags (default: HEAD)
 #
 # All per-component knowledge (include-path, tag prefix) lives here so the
 # reusable workflows stay identical. Requires git-cliff on PATH and a checkout
@@ -34,7 +35,7 @@ case "$component" in
     ;;
   android)
     prefix="android"
-    paths=(android)
+    paths=(android bins/outline-client crates vendor)
     ;;
   macos)
     prefix="macos"
@@ -82,17 +83,19 @@ else
   fi
 
   if [[ "$rolling" == "true" ]]; then
-    # Rolling: diff from the newest unified CalVer tag up to HEAD; fall back to
-    # the newest historical per-component stable tag before the first CalVer cut.
-    prev="$(git tag -l 'v[0-9][0-9].*' | grep -E '^v[0-9]{2,}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+    # Rolling: diff from the newest unified CalVer tag reachable from end_ref;
+    # fall back to the newest historical per-component stable tag before the
+    # first CalVer cut. `--merged` prevents a newer release tag pushed while a
+    # nightly build is in flight from yielding an empty range.
+    end_ref="${4:-HEAD}"
+    prev="$(git tag --merged "$end_ref" -l 'v[0-9][0-9].*' | grep -E '^v[0-9]{2,}\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
     if [[ -n "$prev" ]]; then
       tag_pattern='^v[0-9]{2,}\.'
     else
-      prev="$(git tag -l "${prefix}-v*" --sort=-v:refname | head -n1 || true)"
+      prev="$(git tag --merged "$end_ref" -l "${prefix}-v*" --sort=-v:refname | head -n1 || true)"
       tag_pattern="^${prefix}-v"
     fi
-    end_ref="HEAD"
-    compare_to="$(git rev-parse HEAD)"
+    compare_to="$(git rev-parse "$end_ref")"
   else
     # Release: previous stable tag is the greatest <prefix>-v* strictly LESS than
     # the current one by semver (not just "the greatest other tag"). Insert the
@@ -132,18 +135,53 @@ for p in "${paths[@]+"${paths[@]}"}"; do
   include_args+=(--include-path "${p}/**")
 done
 
+tmpdir=""
+cleanup() {
+  if [[ -n "$tmpdir" ]]; then
+    rm -rf "$tmpdir"
+  fi
+}
+trap cleanup EXIT
+
+has_bullets() {
+  grep -q '^- ' <<< "$1"
+}
+
+run_cliff() {
+  local cfg="$1"
+  git cliff "$range" \
+    --tag-pattern "$tag_pattern" \
+    ${include_args[@]+"${include_args[@]}"} \
+    --tag "$tag" \
+    --config "$cfg" \
+    --strip all 2>/dev/null
+}
+
 # git-cliff exits non-zero when the range has no releasable commits; capture and
 # fall through to the fallback body instead of failing the release.
 body=""
-if body="$(git cliff "$range" \
-      --tag-pattern "$tag_pattern" \
-      ${include_args[@]+"${include_args[@]}"} \
-      --tag "$tag" \
-      --config "$config" \
-      --strip all 2>/dev/null)"; then
+if body="$(run_cliff "$config")"; then
   :
 else
   body=""
+fi
+
+# Rolling nightlies should still tell users why a build was published when only
+# refactor/chore/build/ci commits landed since the last CalVer cut.
+if [[ "$rolling" == "true" ]] && ! has_bullets "$body"; then
+  tmpdir="$(mktemp -d)"
+  maint_config="${tmpdir}/cliff.toml"
+  sed -E 's/^([[:space:]]*\{[[:space:]]*message[[:space:]]*=[[:space:]]*"\^(refactor|chore|build|ci)",[[:space:]]*)skip[[:space:]]*=[[:space:]]*true([[:space:]]*\},?)$/\1group = "<!-- 5 -->🔧 Maintenance"\3/' \
+    "$config" > "$maint_config"
+  if ! grep -q '🔧 Maintenance' "$maint_config"; then
+    echo "gen-release-notes.sh: failed to derive Maintenance config from $config" >&2
+    exit 1
+  fi
+  if body="$(run_cliff "$maint_config")"; then
+    :
+  else
+    body=""
+  fi
 fi
 
 # Compose the compare-link footer from the exact prev/ref we computed.
@@ -165,7 +203,7 @@ fi
 # Fallback when nothing survived filtering. git-cliff still renders a bare
 # "## What's Changed" header for an empty commit set (version comes from --tag),
 # so detect emptiness by the absence of list items, not overall blankness.
-if ! printf '%s' "$body" | grep -q '^- '; then
+if ! has_bullets "$body"; then
   body="## What's Changed in ${tag}
 
 _No user-facing changes in this release; see the full changelog below._"
