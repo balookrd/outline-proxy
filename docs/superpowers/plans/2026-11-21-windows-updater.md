@@ -31,24 +31,24 @@
 - Функция: `AppVersion::current() -> AppVersionInfo`
 - Функция: `AppVersion::same_commit(published: &str, current: &str) -> bool`
 
-- [ ] **Шаг 1: Написать failing unit-тесты для метаданных версии и сопоставления коммитов**
+- [x] **Шаг 1: Написать failing unit-тесты для метаданных версии и сопоставления коммитов**
   Создать тесты в `bins/outline-windows/src/version.rs`:
   - `test_display_string_nightly()`
   - `test_same_commit_exact_and_prefix()`
   - `test_same_commit_dirty_handling()`
 
-- [ ] **Шаг 2: Запустить тесты и убедиться в ошибке компиляции (отсутствие модуля)**
+- [x] **Шаг 2: Запустить тесты и убедиться в ошибке компиляции (отсутствие модуля)**
   Команда: `cargo test -p outline-windows version`
 
-- [ ] **Шаг 3: Реализовать `build.rs` и `src/version.rs`**
+- [x] **Шаг 3: Реализовать `build.rs` и `src/version.rs`**
   - В `build.rs` определять `OUTLINE_BUILD_COMMIT` через `git rev-parse --short HEAD` (с фолбэком на env `OUTLINE_BUILD_COMMIT` или `"dev"`), `OUTLINE_BUILD_CHANNEL` (фолбэк `"nightly"`).
   - В `version.rs` реализовать структуры и функции нормализации коммита (удаление `-dirty`, сравнение префиксов длиной не менее 7 символов).
   - Подключить `pub mod version;` в `src/lib.rs`.
 
-- [ ] **Шаг 4: Запустить тесты и убедиться в успешном прохождении**
+- [x] **Шаг 4: Запустить тесты и убедиться в успешном прохождении**
   Команда: `cargo test -p outline-windows version`
 
-- [ ] **Шаг 5: Закоммитить изменения**
+- [x] **Шаг 5: Закоммитить изменения**
   Команда: `git add bins/outline-windows/build.rs bins/outline-windows/Cargo.toml bins/outline-windows/src/version.rs bins/outline-windows/src/lib.rs && git commit -m "feat(windows): add build metadata and AppVersion resolver"`
 
 ---
