@@ -113,6 +113,17 @@ case "${OSTYPE:-}" in
         ;;
 esac
 
+# Определение метаданных сборки (коммит и канал)
+if [[ -z "${OUTLINE_BUILD_COMMIT:-}" ]]; then
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        OUTLINE_BUILD_COMMIT="$(git rev-parse --short HEAD)"
+    else
+        OUTLINE_BUILD_COMMIT="dev"
+    fi
+fi
+export OUTLINE_BUILD_COMMIT
+export OUTLINE_BUILD_CHANNEL="${OUTLINE_BUILD_CHANNEL:-nightly}"
+
 compute_sha256() {
     local file="$1"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -220,6 +231,8 @@ if [[ "${CHECK_ONLY}" == "true" ]]; then
     echo "=== Валидация окружения сборки Windows-клиента Outline Proxy ==="
     echo "Платформа хоста: $(uname -s) ($(uname -m))"
     echo "Целевой таргет: ${TARGET_TRIPLE}"
+    echo "Канал сборки: ${OUTLINE_BUILD_CHANNEL}"
+    echo "Коммит: ${OUTLINE_BUILD_COMMIT}"
     if [[ "${IS_WINDOWS}" == "true" ]]; then
         echo "Режим сборки: нативная компиляция (Windows MSVC)"
     else
@@ -327,6 +340,8 @@ fi
 # Основной процесс сборки и бандлинга
 # -----------------------------------------------------------------------------
 echo "=== Сборка Outline Proxy для Windows (${TARGET_TRIPLE}) ==="
+echo "Канал сборки: ${OUTLINE_BUILD_CHANNEL}"
+echo "Коммит: ${OUTLINE_BUILD_COMMIT}"
 
 # 1. Проверка окружения перед выполнением сборки
 if [[ -d "/opt/homebrew/Cellar/llvm@22/22.1.8/bin" && -d "/opt/homebrew/Cellar/lld@22/22.1.8/bin" ]]; then
