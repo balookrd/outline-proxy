@@ -6,6 +6,7 @@ use outline_wire::padding::PaddingDecoder;
 use outline_wire::ss2022::Ss2022Error;
 use parking_lot::Mutex as SyncMutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
@@ -80,11 +81,17 @@ impl ReplayFilter {
     }
 }
 
-struct Ss2022UdpState {
-    client_session_id: u64,
-    next_client_packet_id: u64,
+struct Ss2022UdpRxState {
     server_session_id: Option<u64>,
     replay_filter: ReplayFilter,
+}
+
+struct Ss2022UdpState {
+    client_session_id: u64,
+    next_client_packet_id: AtomicU64,
+    // Separate from TX so sending uplink ACKs never blocks or contends with
+    // downlink decryption / replay checks.
+    rx: SyncMutex<Ss2022UdpRxState>,
 }
 
 enum UdpTransport {
@@ -109,7 +116,7 @@ pub struct UdpWsTransport {
     /// Session master key, wiped on drop: it lives as long as the transport
     /// and every datagram derives a subkey from it.
     master_key: Zeroizing<Vec<u8>>,
-    ss2022: Option<Mutex<Ss2022UdpState>>,
+    ss2022: Option<Ss2022UdpState>,
     /// Carrier padding for the datagram channel, read at construction. When
     /// enabled, each already-encrypted SS-AEAD packet is wrapped in one padding
     /// frame (`real` = the ciphertext, plus a random pad tail) before
@@ -139,7 +146,7 @@ pub struct UdpWsTransport {
     throttle: Option<crate::ThrottleSignalHandle>,
     /// Fires the throttle handler at most once per carrier. `read_packet` is
     /// `&self`, so this is interior-mutable.
-    throttle_fired: std::sync::atomic::AtomicBool,
+    throttle_fired: AtomicBool,
     /// The carrier's loss probe, captured at dial time. `None` for the raw
     /// socket path (no WS-family `TransportStream` to
     /// capture from) and for a WS-family carrier whose family cannot
@@ -250,20 +257,20 @@ impl UdpWsTransport {
             transport: UdpTransport::Channel(channel),
             cipher,
             master_key,
-            ss2022: cipher.is_ss2022().then(|| {
-                Mutex::new(Ss2022UdpState {
-                    client_session_id: rand::random::<u64>(),
-                    next_client_packet_id: 0,
+            ss2022: cipher.is_ss2022().then(|| Ss2022UdpState {
+                client_session_id: rand::random::<u64>(),
+                next_client_packet_id: AtomicU64::new(0),
+                rx: SyncMutex::new(Ss2022UdpRxState {
                     server_session_id: None,
                     replay_filter: ReplayFilter::default(),
-                })
+                }),
             }),
             recv_decoder: padding
                 .scheme
                 .is_enabled()
                 .then(|| SyncMutex::new(PaddingDecoder::new())),
             throttle: None,
-            throttle_fired: std::sync::atomic::AtomicBool::new(false),
+            throttle_fired: AtomicBool::new(false),
             padding,
             loss_probe: None,
             close_signal,
@@ -303,7 +310,7 @@ impl UdpWsTransport {
     /// Invokes the throttle handler for `signal`, once per carrier.
     fn fire_throttle(&self, signal: outline_wire::padding::ControlSignal) {
         if let Some(handle) = &self.throttle
-            && !self.throttle_fired.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && !self.throttle_fired.swap(true, Ordering::Relaxed)
         {
             handle(signal);
         }
@@ -324,19 +331,19 @@ impl UdpWsTransport {
             },
             cipher,
             master_key,
-            ss2022: cipher.is_ss2022().then(|| {
-                Mutex::new(Ss2022UdpState {
-                    client_session_id: rand::random::<u64>(),
-                    next_client_packet_id: 0,
+            ss2022: cipher.is_ss2022().then(|| Ss2022UdpState {
+                client_session_id: rand::random::<u64>(),
+                next_client_packet_id: AtomicU64::new(0),
+                rx: SyncMutex::new(Ss2022UdpRxState {
                     server_session_id: None,
                     replay_filter: ReplayFilter::default(),
-                })
+                }),
             }),
             // Raw socket is not a WS carrier — never framed.
             padding: CarrierPadding::disabled(),
             recv_decoder: None,
             throttle: None,
-            throttle_fired: std::sync::atomic::AtomicBool::new(false),
+            throttle_fired: AtomicBool::new(false),
             // Raw socket has no `TransportStream` to capture a probe from.
             loss_probe: None,
             close_signal,
@@ -437,16 +444,14 @@ impl UdpWsTransport {
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
         let packet = if let Some(state) = &self.ss2022 {
-            let mut state = state.lock().await;
-            let packet = encrypt_udp_packet_2022(
+            let packet_id = state.next_client_packet_id.fetch_add(1, Ordering::Relaxed);
+            encrypt_udp_packet_2022(
                 self.cipher,
                 &self.master_key,
                 state.client_session_id,
-                state.next_client_packet_id,
+                packet_id,
                 payload,
-            )?;
-            state.next_client_packet_id += 1;
-            packet
+            )?
         } else {
             encrypt_udp_packet(self.cipher, &self.master_key, payload)?
         };
@@ -531,12 +536,7 @@ impl UdpWsTransport {
                     // grace, so an idle UDP flow still holds no receive buffer.
                     recv_buf.park(ready).await?;
                     match socket.try_recv_buf(recv_buf.ready()) {
-                        Ok(_) => {
-                            return self
-                                .decrypt_udp_bytes(recv_buf.filled())
-                                .await
-                                .map(Bytes::from);
-                        },
+                        Ok(_) => return self.decrypt_udp_bytes(recv_buf.filled()).map(Bytes::from),
                         Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             continue;
                         },
@@ -546,36 +546,69 @@ impl UdpWsTransport {
                     }
                 }
             },
-            UdpTransport::Channel(chan) => {
-                loop {
-                    let bytes = chan
-                        .recv_datagram()
-                        .await?
-                        .ok_or_else(|| anyhow::Error::from(crate::WsClosed))?;
-                    match &self.recv_decoder {
-                        // Padding off: the datagram is a bare SS packet.
-                        None => return self.decrypt_udp_bytes(&bytes).await.map(Bytes::from),
-                        // Padding on: strip the frame before SS decrypt. A
-                        // cover frame (`real_len = 0`) decodes to nothing, so
-                        // read the next datagram. The guard is dropped before
-                        // the decrypt await.
-                        Some(decoder) => {
-                            let mut decoded = Vec::with_capacity(bytes.len());
-                            let signal = {
-                                let mut guard = decoder.lock();
-                                guard.push(&bytes, &mut decoded);
-                                guard.take_control()
-                            };
-                            if let Some(sig) = signal {
-                                self.fire_throttle(sig);
-                            }
-                            if decoded.is_empty() {
-                                continue;
-                            }
-                            return self.decrypt_udp_bytes(&decoded).await.map(Bytes::from);
-                        },
-                    }
+            UdpTransport::Channel(chan) => loop {
+                let bytes = chan
+                    .recv_datagram()
+                    .await?
+                    .ok_or_else(|| anyhow::Error::from(crate::WsClosed))?;
+                if let Some(packet) = self.decode_channel_datagram(bytes)? {
+                    return Ok(packet);
                 }
+            },
+        }
+    }
+
+    /// Non-blocking dequeue of an already-queued datagram without awaiting.
+    /// Returns `Ok(None)` if no packet is immediately ready, so callers can
+    /// coalesce queued bursts without cancelling a multi-step async future.
+    pub fn try_read_packet(&self) -> Result<Option<Bytes>> {
+        match &self.transport {
+            UdpTransport::Socket { socket, recv_buf } => {
+                if *self.close_signal.borrow() {
+                    return Ok(None);
+                }
+                let Ok(mut recv_buf) = recv_buf.try_lock() else {
+                    return Ok(None);
+                };
+                match socket.try_recv_buf(recv_buf.ready()) {
+                    Ok(_) => self
+                        .decrypt_udp_bytes(recv_buf.filled())
+                        .map(|p| Some(Bytes::from(p))),
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                    Err(error) => Err(error).context("failed to read UDP shadowsocks packet"),
+                }
+            },
+            UdpTransport::Channel(chan) => loop {
+                let Some(bytes) = chan.try_recv_datagram()? else {
+                    return Ok(None);
+                };
+                if let Some(packet) = self.decode_channel_datagram(bytes)? {
+                    return Ok(Some(packet));
+                }
+            },
+        }
+    }
+
+    fn decode_channel_datagram(&self, bytes: Bytes) -> Result<Option<Bytes>> {
+        match &self.recv_decoder {
+            // Padding off: the datagram is a bare SS packet.
+            None => self.decrypt_udp_bytes(&bytes).map(|p| Some(Bytes::from(p))),
+            // Padding on: strip the frame before SS decrypt. A cover frame
+            // (`real_len = 0`) decodes to nothing and the caller skips it.
+            Some(decoder) => {
+                let mut decoded = Vec::with_capacity(bytes.len());
+                let signal = {
+                    let mut guard = decoder.lock();
+                    guard.push(&bytes, &mut decoded);
+                    guard.take_control()
+                };
+                if let Some(sig) = signal {
+                    self.fire_throttle(sig);
+                }
+                if decoded.is_empty() {
+                    return Ok(None);
+                }
+                self.decrypt_udp_bytes(&decoded).map(|p| Some(Bytes::from(p)))
             },
         }
     }
@@ -593,31 +626,25 @@ impl UdpWsTransport {
         UdpSessionTransport::Ss(self)
     }
 
-    async fn decrypt_udp_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+    fn decrypt_udp_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
         if let Some(state) = &self.ss2022 {
-            // One lock spans the whole read-decrypt-update path: the SS2022
-            // decrypt is synchronous, so there is no await between reading
-            // `client_session_id` and committing the replay state. Holding a
-            // single guard both halves the per-datagram lock traffic (was two
-            // acquire/release round trips) and makes the replay check + update
-            // atomic against a concurrent reader instead of racing across the
-            // gap the old two-lock form left open. Mirrors `send_packet`,
-            // which already holds one lock across the synchronous encrypt.
-            let mut state = state.lock().await;
+            // Decrypt before taking the RX replay lock so the lock only guards
+            // the O(1) session/window check, never the AEAD work or TX.
             let (session_id, packet_id, payload) = decrypt_udp_packet_2022(
                 self.cipher,
                 &self.master_key,
                 state.client_session_id,
                 bytes,
             )?;
-            if let Some(expected_session) = state.server_session_id {
+            let mut rx = state.rx.lock();
+            if let Some(expected_session) = rx.server_session_id {
                 if session_id != expected_session {
                     bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
                 }
             } else {
-                state.server_session_id = Some(session_id);
+                rx.server_session_id = Some(session_id);
             }
-            if !state.replay_filter.check_and_update(packet_id) {
+            if !rx.replay_filter.check_and_update(packet_id) {
                 bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
             }
             return Ok(payload);
@@ -668,6 +695,13 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.read_packet().await,
             Self::Vless(t) => t.read_packet().await,
+        }
+    }
+
+    pub fn try_read_packet(&self) -> Result<Option<Bytes>> {
+        match self {
+            Self::Ss(t) => t.try_read_packet(),
+            Self::Vless(t) => t.try_read_packet(),
         }
     }
 

@@ -21,7 +21,7 @@ use outline_transport::AbortOnDrop;
 /// UDP flow's carrier back-pressured or was still dialling. On overflow the
 /// datagram is dropped, which is the correct connectionless response and keeps
 /// the queue (and its memory) bounded per flow.
-pub(super) const UDP_OUTBOUND_QUEUE_CAP: usize = 64;
+pub(super) const UDP_OUTBOUND_QUEUE_CAP: usize = 256;
 
 /// Cap on datagrams buffered on the uplink task *while the carrier is still
 /// being dialled*. Until the dial completes nothing can be sent, so the uplink

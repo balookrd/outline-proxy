@@ -296,3 +296,28 @@ async fn send_fallback_reasons_tell_the_causes_apart() {
         .expect("close timed out");
     assert_eq!(f.channel.try_send_datagram(&small), Err("send_failed"));
 }
+
+#[tokio::test]
+async fn try_recv_datagram_drains_demux_and_stream_fallback_without_blocking() {
+    let f = fixture().await;
+    assert_eq!(f.channel.try_recv_datagram().unwrap(), None);
+
+    f.server.send_datagram(encode_datagram(ID, b"via-demux")).unwrap();
+    f.mock.push(b"via-stream".to_vec());
+
+    // Wait briefly for the QUIC packet from the loopback endpoint to land in the
+    // demux channel before exercising the non-blocking drain.
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        while let Some(pkt) = f.channel.try_recv_datagram().unwrap() {
+            got.push(pkt);
+        }
+        if got.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    got.sort();
+    assert_eq!(got, vec![Bytes::from_static(b"via-demux"), Bytes::from_static(b"via-stream")]);
+    assert_eq!(f.channel.try_recv_datagram().unwrap(), None);
+}

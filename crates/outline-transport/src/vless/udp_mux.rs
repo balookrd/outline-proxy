@@ -380,6 +380,11 @@ impl VlessUdpSessionMux {
         self.core.read_packet().await
     }
 
+    /// Non-blocking dequeue of an already-queued downlink datagram, if any.
+    pub fn try_read_packet(&self) -> Result<Option<Bytes>> {
+        self.core.try_read_packet()
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.core.close().await
     }

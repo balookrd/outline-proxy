@@ -70,6 +70,9 @@ impl DatagramChannel for MockChannel {
             self.pushed.notified().await;
         }
     }
+    fn try_recv_datagram(&self) -> Result<Option<Bytes>> {
+        Ok(self.inbound.lock().pop_front())
+    }
     async fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.pushed.notify_one();
@@ -172,7 +175,7 @@ async fn ss2022_udp_replay_protection_rejects_duplicate_and_reorder() {
     // The transport echoes its own client session id in every uplink and
     // requires the server to echo it back; read it so the crafted server
     // packets pass the client-session check.
-    let client_session_id = transport.ss2022.as_ref().unwrap().lock().await.client_session_id;
+    let client_session_id = transport.ss2022.as_ref().unwrap().client_session_id;
 
     // A fixed SOCKS5 target prefix — `read_packet` returns `target || payload`.
     let target = [1_u8, 127, 0, 0, 1, 0, 53];
@@ -245,7 +248,7 @@ async fn read_packet_payload_failures_classify_as_payload_integrity() {
         CarrierPadding::disabled(),
     )
     .unwrap();
-    let client_session_id = transport.ss2022.as_ref().unwrap().lock().await.client_session_id;
+    let client_session_id = transport.ss2022.as_ref().unwrap().client_session_id;
     let target = [1_u8, 127, 0, 0, 1, 0, 53];
 
     // A datagram far too short to hold even the SS2022 separate header.
@@ -317,4 +320,152 @@ fn only_h3_ss_udp_dials_offer_h3_datagrams() {
     {
         assert!(!super::udp_datagram_requested(mode), "{mode:?}");
     }
+}
+
+#[tokio::test]
+async fn try_read_packet_drains_ss2022_burst_without_dropping_under_concurrent_sends() {
+    let cipher = CipherKind::Aes256Gcm2022;
+    let password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+    let master_key = cipher.derive_master_key(password).unwrap();
+
+    let channel = Arc::new(MockChannel::waiting());
+    let transport = Arc::new(
+        UdpWsTransport::from_channel(
+            channel.clone(),
+            cipher,
+            password,
+            "test",
+            CarrierPadding::disabled(),
+        )
+        .unwrap(),
+    );
+    let client_session_id = transport.ss2022.as_ref().unwrap().client_session_id;
+    let target = [1_u8, 127, 0, 0, 1, 1, 187];
+
+    const TOTAL_DOWNLINK: usize = 200;
+    for seq in 0..TOTAL_DOWNLINK {
+        let payload = format!("pkt-{seq:04}");
+        channel.push(build_server_aes_packet(
+            cipher,
+            &master_key,
+            0x55,
+            seq as u64,
+            client_session_id,
+            &target,
+            payload.as_bytes(),
+        ));
+    }
+
+    // Concurrent uplink sends simulate steady ACKs while the downlink reader
+    // drains the burst using the blocking read + try_read_packet batch pattern.
+    let sender = {
+        let transport = Arc::clone(&transport);
+        tokio::spawn(async move {
+            let mut tx_payload = target.to_vec();
+            tx_payload.extend_from_slice(b"ack");
+            for _ in 0..200 {
+                transport.send_packet(&tx_payload).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+
+    let mut received = Vec::with_capacity(TOTAL_DOWNLINK);
+    while received.len() < TOTAL_DOWNLINK {
+        let first = transport.read_packet().await.unwrap();
+        received.push(first);
+        while received.len() < TOTAL_DOWNLINK {
+            match transport.try_read_packet().unwrap() {
+                Some(next) => received.push(next),
+                None => break,
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        transport.try_read_packet().unwrap().is_none(),
+        "queue must be empty after draining all packets"
+    );
+    sender.await.unwrap();
+    assert_eq!(received.len(), TOTAL_DOWNLINK);
+    for (seq, pkt) in received.iter().enumerate() {
+        let expected_tail = format!("pkt-{seq:04}");
+        assert!(pkt.ends_with(expected_tail.as_bytes()), "mismatch at index {seq}");
+    }
+    assert_eq!(channel.sent.lock().len(), 200);
+}
+
+#[tokio::test]
+async fn try_read_packet_skips_padding_cover_frames_and_returns_none_when_empty() {
+    use outline_wire::padding::PaddingScheme;
+
+    let cipher = CipherKind::Aes256Gcm2022;
+    let password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+    let master_key = cipher.derive_master_key(password).unwrap();
+    let padding = CarrierPadding {
+        scheme: PaddingScheme::new(0, 64),
+        cover: false,
+        cover_jitter_min_ms: 0,
+        cover_jitter_max_ms: 0,
+    };
+
+    let channel = Arc::new(MockChannel::waiting());
+    let transport =
+        UdpWsTransport::from_channel(channel.clone(), cipher, password, "test", padding).unwrap();
+    let client_session_id = transport.ss2022.as_ref().unwrap().client_session_id;
+    let target = [1_u8, 127, 0, 0, 1, 1, 187];
+
+    // Push a cover frame (real_len = 0) followed by a real padded datagram.
+    channel.push(padding.cover_frame());
+    let raw = build_server_aes_packet(
+        cipher,
+        &master_key,
+        0x77,
+        1,
+        client_session_id,
+        &target,
+        b"hello-padded",
+    );
+    let mut framed = Vec::with_capacity(raw.len() + 8);
+    crate::carrier_padding::frame_datagram_into(
+        padding.scheme,
+        &raw,
+        None,
+        &mut rand::rng(),
+        &mut framed,
+    );
+    channel.push(framed);
+
+    let got = transport
+        .try_read_packet()
+        .unwrap()
+        .expect("try_read_packet must skip cover frame and return the real datagram");
+    assert!(got.ends_with(b"hello-padded"));
+    assert!(
+        transport.try_read_packet().unwrap().is_none(),
+        "empty queue must yield Ok(None) without error"
+    );
+
+    // Ensure blocking read_packet still works normally after try_read_packet returned None.
+    let second = build_server_aes_packet(
+        cipher,
+        &master_key,
+        0x77,
+        2,
+        client_session_id,
+        &target,
+        b"after-empty",
+    );
+    let mut second_framed = Vec::with_capacity(second.len() + 8);
+    crate::carrier_padding::frame_datagram_into(
+        padding.scheme,
+        &second,
+        None,
+        &mut rand::rng(),
+        &mut second_framed,
+    );
+    channel.push(second_framed);
+    let got2 = transport.read_packet().await.unwrap();
+    assert!(got2.ends_with(b"after-empty"));
 }

@@ -177,7 +177,7 @@ impl<D: VlessUdpMuxDial> VlessUdpMuxCore<D> {
         source: &'static str,
     ) -> Self {
         let (close_signal, _close_rx) = watch::channel(false);
-        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(256);
+        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(1024);
         let sessions: SessionMap<D::Session> = Arc::new(SyncRwLock::new(HashMap::new()));
         let janitor_task = limits.session_idle_timeout.map(|idle_timeout| {
             spawn_vless_udp_mux_janitor(
@@ -228,6 +228,19 @@ impl<D: VlessUdpMuxDial> VlessUdpMuxCore<D> {
     pub(crate) async fn read_packet(&self) -> Result<Bytes> {
         let mut rx = self.downlink_rx.lock().await;
         rx.recv().await.ok_or_else(|| anyhow::Error::from(WsClosed))?
+    }
+
+    /// Non-blocking dequeue of the next already-queued downlink datagram.
+    pub(crate) fn try_read_packet(&self) -> Result<Option<Bytes>> {
+        let Ok(mut rx) = self.downlink_rx.try_lock() else {
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Ok(res) => res.map(Some),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                Ok(None)
+            },
+        }
     }
 
     pub(crate) async fn close(&self) -> Result<()> {

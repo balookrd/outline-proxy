@@ -579,6 +579,19 @@ impl DatagramChannel for WsDatagramChannel {
         }
     }
 
+    fn try_recv_datagram(&self) -> Result<Option<Bytes>> {
+        let Ok(mut rx) = self.downlink_rx.try_lock() else {
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Ok(Ok(bytes)) => Ok(Some(bytes)),
+            Ok(Err(err)) => Err(err),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                Ok(None)
+            },
+        }
+    }
+
     async fn close(&self) {
         // Unbudgeted: a Close must propagate even when the data queue is full.
         let _ = self.data_tx.send_control(Message::Close(None)).await;

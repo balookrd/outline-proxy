@@ -94,6 +94,13 @@ pub trait DatagramChannel: Send + Sync + 'static {
     async fn send_datagram(&self, data: Bytes) -> Result<()>;
     /// `Ok(None)` on clean EOF, `Err` on transport failure.
     async fn recv_datagram(&self) -> Result<Option<Bytes>>;
+    /// Non-blocking dequeue of an already-queued datagram, if any.
+    /// Returns `Ok(None)` when no packet is immediately ready or on clean EOF
+    /// (the caller's blocking `recv_datagram` observes EOF next), and `Err(_)`
+    /// on a queued transport error. Never consumes a packet without returning it.
+    fn try_recv_datagram(&self) -> Result<Option<Bytes>> {
+        Ok(None)
+    }
     /// [`Self::recv_datagram`], plus where the packet came from. A protocol
     /// that reassembles records out of its stream (VLESS-UDP over an XHTTP
     /// byte stream) must keep a packet that bypassed the stream out of that

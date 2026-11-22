@@ -58,7 +58,7 @@ mod demux {
     use super::decode_datagram;
 
     /// Bytes one registration may hold unread.
-    pub const REGISTRATION_QUEUE_BYTES: usize = 512 * 1024;
+    pub const REGISTRATION_QUEUE_BYTES: usize = 1024 * 1024;
     /// Bytes all registrations of one connection may hold unread.
     pub const CONNECTION_QUEUE_BYTES: usize = 4 * 1024 * 1024;
     /// Unread datagrams one registration may hold, whatever their size.

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::udp::AllUdpUplinksFailed;
 use anyhow::{Result, anyhow};
@@ -21,7 +21,6 @@ use super::types::{
     DirectUdpFlowState, UDP_OUTBOUND_QUEUE_CAP, UDP_PENDING_DIAL_BUFFER_CAP,
     bump_last_seen_if_current, drain_idle_flows, flow_is_current,
 };
-use futures_util::FutureExt as _;
 
 use super::wire::{
     GSO_MAX_UDP_SUPER_PAYLOAD, UDP_GSO_MIN_DATAGRAM, UDP_MAX_SEGMENTS, build_gso_udp_packet,
@@ -424,6 +423,7 @@ impl TunUdpEngine {
                 flow_id,
                 Arc::clone(&transport),
                 uplink_index,
+                Arc::clone(&uplink_name),
                 manager.clone(),
             ));
 
@@ -433,6 +433,8 @@ impl TunUdpEngine {
             // uplink's series via `FailoverCounter`'s `Arc::ptr_eq` check.
             let group_label: Arc<str> = Arc::from(manager.group_name());
             let mut up_counters = metrics::FailoverCounter::new();
+            let bump_interval = (engine.inner.idle_timeout / 4).min(Duration::from_secs(1));
+            let mut last_activity_bump = Instant::now();
 
             // Drain the outbound queue. `recv` yields `None` when the flow
             // record (holding the sender) is removed — the flow's teardown
@@ -535,6 +537,7 @@ impl TunUdpEngine {
                                     flow_id,
                                     Arc::clone(&transport),
                                     uplink_index,
+                                    Arc::clone(&uplink_name),
                                     manager.clone(),
                                 ));
                                 if let Err(retry_error) = transport.send_packet(&payload).await {
@@ -558,14 +561,19 @@ impl TunUdpEngine {
                         }
                     },
                 }
-                // Keep an actively-sending flow from being idle-reaped.
-                bump_last_seen_if_current(
-                    &engine.inner.flows,
-                    &engine.inner.eviction_index,
-                    &key,
-                    flow_id,
-                )
-                .await;
+                // Keep an actively-sending flow from being idle-reaped, quantised
+                // so high-rate ACK streams do not acquire the flow-table lock per
+                // datagram.
+                if last_activity_bump.elapsed() >= bump_interval {
+                    last_activity_bump = Instant::now();
+                    bump_last_seen_if_current(
+                        &engine.inner.flows,
+                        &engine.inner.eviction_index,
+                        &key,
+                        flow_id,
+                    )
+                    .await;
+                }
             }
         }))
     }
@@ -732,6 +740,7 @@ impl TunUdpEngine {
             flow_id,
             Arc::clone(transport),
             *uplink_index,
+            Arc::clone(uplink_name),
             manager.clone(),
         ));
         metrics::record_uplink_selected("udp", manager.group_name(), uplink_name);
@@ -798,16 +807,18 @@ impl TunUdpEngine {
         flow_id: u64,
         transport: Arc<UdpSessionTransport>,
         uplink_index: usize,
+        uplink_name: Arc<str>,
         manager: UplinkManager,
     ) -> AbortOnDrop {
         let engine = self.clone();
         AbortOnDrop::new(tokio::spawn(async move {
-            // Downlink datagram+byte counters, cached across reads. The group is
-            // fixed for the flow; `uplink_name` (re-read from the flow record
-            // each iteration) swaps to a fresh `Arc` on failover, re-resolving
-            // the handle onto the new series via `FailoverCounter`.
+            // Downlink datagram+byte counters resolved once for the reader's
+            // lifetime: reconnects and migrations abort this task and spawn a
+            // fresh reader with the new `uplink_name`.
             let group_label: Arc<str> = Arc::from(manager.group_name());
-            let mut down_counters = metrics::FailoverCounter::new();
+            let down_counters = metrics::udp_flow_counters("down", &group_label, &uplink_name);
+            let bump_interval = (engine.inner.idle_timeout / 4).min(Duration::from_secs(1));
+            let mut last_activity_bump = Instant::now();
             let result = async {
                 let mut carried_over: Option<Bytes> = None;
                 loop {
@@ -834,19 +845,21 @@ impl TunUdpEngine {
 
                     // With USO, coalesce equal-sized datagrams of THIS flow (its
                     // 4-tuple is fixed by `key`, so all reply to the same
-                    // destination) into one GSO_UDP_L4 super-segment. `now_or_never`
-                    // drains only datagrams already queued — no added latency, and
-                    // `read_packet` is left un-polled otherwise. A different-sized
-                    // datagram ends the batch and is carried over (zero-loss); the
-                    // kernel requires every segment but the last to be equal-sized.
+                    // destination) into one GSO_UDP_L4 super-segment.
+                    // `try_read_packet` performs a synchronous, non-blocking
+                    // dequeue with no `.await`, so an empty queue or concurrent
+                    // uplink send never cancels a mid-flight read and drops a
+                    // datagram. A different-sized datagram ends the batch and is
+                    // carried over (zero-loss); the kernel requires every
+                    // segment but the last to be equal-sized.
                     let mut batch: Vec<Bytes> = vec![first_payload];
                     let mut total_payload = datagram_size;
                     if engine.inner.udp_gso && datagram_size >= UDP_GSO_MIN_DATAGRAM {
                         while batch.len() < UDP_MAX_SEGMENTS
                             && total_payload + datagram_size <= GSO_MAX_UDP_SUPER_PAYLOAD
                         {
-                            match transport.read_packet().now_or_never() {
-                                Some(Ok(next_raw)) => {
+                            match transport.try_read_packet()? {
+                                Some(next_raw) => {
                                     let next_payload = extract_udp_payload(&next_raw)?;
                                     if next_payload.len() == datagram_size {
                                         total_payload += next_payload.len();
@@ -856,31 +869,12 @@ impl TunUdpEngine {
                                         break;
                                     }
                                 },
-                                Some(Err(error)) => return Err(error),
                                 None => break,
                             }
                         }
                     }
 
-                    let uplink_name: Arc<str> = {
-                        let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
-                        match handle {
-                            Some(h) => {
-                                let flow = h.lock().await;
-                                if flow.id == flow_id {
-                                    flow.uplink_name.clone()
-                                } else {
-                                    Arc::from("unknown")
-                                }
-                            },
-                            None => Arc::from("unknown"),
-                        }
-                    };
-                    down_counters
-                        .get(&group_label, &uplink_name, |group, uplink| {
-                            metrics::udp_flow_counters("down", group, uplink)
-                        })
-                        .record(total_payload);
+                    down_counters.record(total_payload);
                     // Proven delivery, the UDP mirror of the TCP downlink
                     // reader: datagrams coming back from the uplink are the only
                     // thing that can clear `healthy` on a deployment with no
@@ -926,13 +920,16 @@ impl TunUdpEngine {
                             "accepted",
                         );
                     }
-                    bump_last_seen_if_current(
-                        &engine.inner.flows,
-                        &engine.inner.eviction_index,
-                        &key,
-                        flow_id,
-                    )
-                    .await;
+                    if last_activity_bump.elapsed() >= bump_interval {
+                        last_activity_bump = Instant::now();
+                        bump_last_seen_if_current(
+                            &engine.inner.flows,
+                            &engine.inner.eviction_index,
+                            &key,
+                            flow_id,
+                        )
+                        .await;
+                    }
                 }
                 #[allow(unreachable_code)]
                 Ok::<(), anyhow::Error>(())

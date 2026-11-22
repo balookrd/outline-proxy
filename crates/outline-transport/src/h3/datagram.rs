@@ -166,6 +166,33 @@ impl DatagramChannel for H3DatagramChannel {
         Ok(self.recv_datagram_with_source().await?.map(|(_, packet)| packet))
     }
 
+    fn try_recv_datagram(&self) -> Result<Option<Bytes>> {
+        if *self.closed.borrow() {
+            return Ok(None);
+        }
+        if let Ok(mut guard) = self.registration.try_lock()
+            && let Some(registration) = guard.as_mut()
+            && let Some(datagram) = registration.try_recv()
+        {
+            metrics::record_udp_h3_datagram("down", self.transport, self.proto);
+            return Ok(Some(datagram));
+        }
+        match self.fallback.try_recv_datagram()? {
+            Some(packet) => {
+                if self.count_stream_down {
+                    metrics::record_udp_h3_datagram_fallback(
+                        "down",
+                        self.transport,
+                        self.proto,
+                        "stream",
+                    );
+                }
+                Ok(Some(packet))
+            },
+            None => Ok(None),
+        }
+    }
+
     async fn recv_datagram_with_source(&self) -> Result<Option<(PacketSource, Bytes)>> {
         let mut closed = self.closed.subscribe();
         let mut registration = self.registration.lock().await;
