@@ -2,7 +2,7 @@ name: RustSec audit
 
 # RustSec advisories for every crate in both lockfiles, the vendored ones
 # included: plain `cargo audit` skips path dependencies, so the crates vendored
-# through `[patch.crates-io]` (quinn-proto, rustls, hyper, h3, sockudo-ws) were
+# through `[patch.crates-io]` (quinn-proto, quinn-udp, rustls, hyper, h3, sockudo-ws) were
 # never checked. scripts/audit-vendored.sh audits a copy of each lockfile with
 # them marked as crates.io packages. Kept out of ci.yml on purpose: the weekly
 # run reports new advisories even when no code changes, and a red audit does

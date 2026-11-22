@@ -93,7 +93,7 @@ async fn direct_flows_do_not_take_carrier_slots() {
 
     let key = test_flow_key(40120);
     let mut state = eviction_test_flow_state(&engine, &manager, key.clone(), 1, now);
-    state.routing.route = crate::TunRoute::Direct { fwmark: None };
+    state.routing.route = crate::TunRoute::Direct { fwmark: None, dscp: None };
     engine.insert_flow(key, Arc::new(Mutex::new(state))).await.unwrap();
 
     assert_eq!(slots.in_use(), 0, "a direct flow holds no carrier slot");

@@ -37,6 +37,7 @@ fn uplink(name: &str) -> UplinkConfig {
         password: "Secret0".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -160,10 +161,10 @@ fn target() -> TargetAddr {
 async fn no_table_bypass_group_down_resolves_direct() {
     let manager = manager("main", true);
     let registry = UplinkRegistry::from_single_manager(manager);
-    let routing = TunRouting::new(registry, None, Some(FWMARK), false);
+    let routing = TunRouting::new(registry, None, Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -173,7 +174,7 @@ async fn no_table_bypass_group_healthy_stays_group() {
     let manager = manager("main", true);
     manager.test_set_tcp_health(0, true, 50).await;
     let registry = UplinkRegistry::from_single_manager(manager);
-    let routing = TunRouting::new(registry, None, Some(FWMARK), false);
+    let routing = TunRouting::new(registry, None, Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
@@ -185,7 +186,7 @@ async fn no_table_bypass_group_healthy_stays_group() {
 async fn no_table_down_group_without_bypass_stays_group() {
     let manager = manager("main", false);
     let registry = UplinkRegistry::from_single_manager(manager);
-    let routing = TunRouting::new(registry, None, Some(FWMARK), false);
+    let routing = TunRouting::new(registry, None, Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
@@ -197,10 +198,10 @@ async fn no_table_down_group_without_bypass_stays_group() {
 async fn table_bypass_group_down_resolves_direct() {
     let registry = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
     let table = table(RouteTarget::Group("main".into()), None).await;
-    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
+    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -216,7 +217,7 @@ async fn tcp_healthy_routing() -> TunRouting {
         .test_set_tcp_health(0, true, 50)
         .await;
     let table = table(RouteTarget::Group("main".into()), None).await;
-    TunRouting::new(registry, Some(table), Some(FWMARK), false)
+    TunRouting::new(registry, Some(table), Some(FWMARK), None, false)
 }
 
 /// The bypass criterion is scoped to the flow's own transport: a group whose
@@ -240,7 +241,7 @@ async fn table_tcp_healthy_group_bypasses_udp_flow() {
     let routing = tcp_healthy_routing().await;
 
     match routing.resolve(&target(), TransportKind::Udp).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -263,10 +264,10 @@ async fn any_transport_scope_holds_partially_healthy_group() {
 async fn any_transport_scope_bypasses_fully_down_group() {
     let registry = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
     let table = table(RouteTarget::Group("main".into()), None).await;
-    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
+    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), None, false);
 
     match routing.resolve_any_transport(&target()).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -285,7 +286,7 @@ async fn explicit_route_fallback_wins_over_bypass() {
         .await;
     let table =
         table(RouteTarget::Group("main".into()), Some(RouteTarget::Group("backup".into()))).await;
-    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
+    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "backup"),
@@ -305,10 +306,10 @@ async fn fallback_group_with_bypass_down_resolves_direct() {
     .unwrap();
     let table =
         table(RouteTarget::Group("main".into()), Some(RouteTarget::Group("backup".into()))).await;
-    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
+    let routing = TunRouting::new(registry, Some(table), Some(FWMARK), None, false);
 
     match routing.resolve(&target(), TransportKind::Tcp).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -370,7 +371,7 @@ fn ip_in_10() -> TargetAddr {
 
 async fn sni_routing(ipsec_bypass: bool) -> TunRouting {
     let registry = UplinkRegistry::new_for_test(vec![group_config("main", false)]).unwrap();
-    TunRouting::new(registry, Some(sni_table().await), Some(FWMARK), ipsec_bypass)
+    TunRouting::new(registry, Some(sni_table().await), Some(FWMARK), None, ipsec_bypass)
 }
 
 #[tokio::test]
@@ -379,7 +380,7 @@ async fn sni_domain_rule_steers_route_over_ip() {
     // SNI `bypass.example` → Direct, even though the literal IP (10/8) alone
     // would Drop. The domain pass wins.
     match routing.resolve_udp_sni(Some("api.bypass.example"), &ip_in_10()).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, .. } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
@@ -429,7 +430,64 @@ async fn ipsec_bypass_short_circuits_before_sni() {
     // A UDP/4500 (IKE NAT-T) datagram is Direct regardless of the SNI rule.
     let ike = TargetAddr::IpV4(Ipv4Addr::new(1, 1, 1, 1), 4500);
     match routing.resolve_udp_sni(Some("tunnel.example"), &ike).await {
-        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        TunRoute::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, Some(FWMARK));
+            assert_eq!(dscp, None);
+        },
         other => panic!("expected Direct, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn direct_dscp_propagates_across_direct_ipsec_bypass_and_bypass_when_down() {
+    const DSCP: u8 = 59;
+
+    // 1. Explicit `via = "direct"` rule carries both `direct_fwmark` and `direct_dscp`,
+    //    and `ipsec_bypass` preserves the same pair.
+    let registry_up = UplinkRegistry::new_for_test(vec![group_config("main", false)]).unwrap();
+    let routing_with_both = TunRouting::new(
+        registry_up.clone(),
+        Some(sni_table().await),
+        Some(FWMARK),
+        Some(DSCP),
+        true,
+    );
+    match routing_with_both
+        .resolve_udp_sni(Some("api.bypass.example"), &ip_in_10())
+        .await
+    {
+        TunRoute::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, Some(FWMARK));
+            assert_eq!(dscp, Some(DSCP));
+        },
+        other => panic!("expected Direct for via=direct, got {}", route_kind(&other)),
+    }
+    let ike = TargetAddr::IpV4(Ipv4Addr::new(1, 1, 1, 1), 500);
+    match routing_with_both.resolve_udp_sni(Some("tunnel.example"), &ike).await {
+        TunRoute::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, Some(FWMARK));
+            assert_eq!(dscp, Some(DSCP));
+        },
+        other => panic!("expected Direct for ipsec_bypass, got {}", route_kind(&other)),
+    }
+
+    // 2. DSCP alone (without fwmark) propagates to `via = "direct"` and `bypass_when_down`.
+    let registry_down = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
+    let bypass_table = table(RouteTarget::Group("main".into()), None).await;
+    let routing_dscp_only =
+        TunRouting::new(registry_down, Some(bypass_table), None, Some(DSCP), false);
+    match routing_dscp_only.resolve(&target(), TransportKind::Tcp).await {
+        TunRoute::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, None);
+            assert_eq!(dscp, Some(DSCP));
+        },
+        other => panic!("expected Direct for bypass_when_down TCP, got {}", route_kind(&other)),
+    }
+    match routing_dscp_only.resolve_any_transport(&target()).await {
+        TunRoute::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, None);
+            assert_eq!(dscp, Some(DSCP));
+        },
+        other => panic!("expected Direct for bypass_when_down any, got {}", route_kind(&other)),
     }
 }

@@ -27,7 +27,7 @@ use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_tar
 pub(super) async fn relay_tcp_direct(
     mut client: TcpStream,
     target: TargetAddr,
-    fwmark: Option<u32>,
+    mark: outline_net::SocketMark,
     cache: &outline_transport::DnsCache,
     timeouts: TcpTimeouts,
 ) -> Result<()> {
@@ -48,7 +48,7 @@ pub(super) async fn relay_tcp_direct(
         .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
-    let upstream = outline_net::connect_tcp_socket_direct(addr, fwmark)
+    let upstream = outline_net::connect_tcp_socket_direct(addr, mark)
         .await
         .with_context(|| format!("direct TCP connect to {target} failed"))?;
 

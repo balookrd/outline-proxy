@@ -3,6 +3,7 @@
   import { getWsConfig, patchWsConfig, apply } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
+  import { validateDscp } from '../../lib/uplinkForm';
   import type {
     WsConfigResponse,
     WsProbeConfig,
@@ -114,6 +115,7 @@
   let dialTimeoutSecs = $state<number>(10);
   let fingerprintProfile = $state<string>('off');
   let directFwmark = $state<number | null>(null);
+  let directDscp = $state<number | null>(null);
   let preferPublicIpv6Src = $state<boolean>(false);
 
   // Padding
@@ -253,6 +255,7 @@
         fingerprintProfile = config.fingerprint_profile;
       }
       directFwmark = config.direct_fwmark ?? null;
+      directDscp = config.direct_dscp ?? null;
       preferPublicIpv6Src = config.prefer_public_ipv6_src ?? false;
       if (config.padding) {
         paddingEnabled = config.padding.enabled ?? false;
@@ -301,6 +304,11 @@
     }
     if (paddingCoverJitterMinMs > paddingCoverJitterMaxMs) {
       toast('Cover jitter min_ms cannot exceed max_ms.', 'error');
+      return;
+    }
+    const directDscpErr = validateDscp(directDscp);
+    if (directDscpErr) {
+      toast(`direct_${directDscpErr}`, 'error');
       return;
     }
 
@@ -680,6 +688,9 @@
       }
       if (directFwmark !== (orig.direct_fwmark ?? null)) {
         patch.direct_fwmark = directFwmark;
+      }
+      if (directDscp !== (orig.direct_dscp ?? null)) {
+        patch.direct_dscp = directDscp;
       }
       if (ipv4Only !== (orig.ipv4_only ?? false)) {
         patch.ipv4_only = ipv4Only;
@@ -1335,11 +1346,26 @@
                 <span class="hint">SO_MARK for direct bypass.</span>
               </div>
               <div class="fieldrow">
-                <label class="switch" style="margin-top: 24px;">
-                  <input type="checkbox" bind:checked={preferPublicIpv6Src} onchange={markDirty} />
-                  <span>Prefer public IPv6</span>
-                </label>
+                <label for="direct-dscp">Direct DSCP (0–63)</label>
+                <input
+                  id="direct-dscp"
+                  type="number"
+                  min="0"
+                  max="63"
+                  step="1"
+                  placeholder="e.g. 59 / EF 46"
+                  bind:value={directDscp}
+                  oninput={markDirty}
+                  class="field-mono"
+                />
+                <span class="hint">DSCP (0–63) for direct bypass, e.g. 59 or 46.</span>
               </div>
+            </div>
+            <div class="fieldrow">
+              <label class="switch">
+                <input type="checkbox" bind:checked={preferPublicIpv6Src} onchange={markDirty} />
+                <span>Prefer public IPv6</span>
+              </label>
             </div>
 
             <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-2) 0;"></div>

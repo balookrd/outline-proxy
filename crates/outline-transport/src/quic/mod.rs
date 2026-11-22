@@ -10,6 +10,9 @@
 
 #[cfg(feature = "h3")]
 pub(crate) mod dial_race;
+#[cfg(all(test, unix))]
+#[path = "tests/dscp.rs"]
+mod dscp_tests;
 #[cfg(test)]
 #[path = "tests/loopback.rs"]
 mod loopback;

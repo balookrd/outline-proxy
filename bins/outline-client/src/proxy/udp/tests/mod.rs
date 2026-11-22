@@ -37,6 +37,7 @@ pub(super) fn make_uplink(name: &str) -> UplinkConfig {
         password: "s3cr3t_password".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -151,6 +152,7 @@ pub(super) fn no_router_config() -> ProxyConfig {
         dns_cache: Arc::new(outline_transport::DnsCache::default()),
         router: None,
         direct_fwmark: None,
+        direct_dscp: None,
         tcp_timeouts: TcpTimeouts::DEFAULT,
     }
 }

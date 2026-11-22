@@ -41,6 +41,9 @@ pub struct AppConfig {
     /// back into the TUN device on hosts where all traffic is captured.
     /// Linux only; ignored on other platforms.
     pub direct_fwmark: Option<u32>,
+    /// Optional 6-bit DSCP value (`0..=63`) applied to direct-route TCP/UDP
+    /// sockets (`IP_TOS` / `IPV6_TCLASS`). Unix only (`apply_dscp`).
+    pub direct_dscp: Option<u8>,
     /// Interface whose current global /64 seeds random source addresses for
     /// direct-route IPv6 dials. `None` → disabled (kernel default source).
     /// Linux only; requires the /64 routed back via NDP proxy (ndppd).

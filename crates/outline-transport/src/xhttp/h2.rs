@@ -117,7 +117,7 @@ pub(super) async fn connect_xhttp_h2(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
         let (send_request, loss_probe) =
-            h2_handshake(server_addr, &host, use_tls, network.fwmark).await?;
+            h2_handshake(server_addr, &host, use_tls, network.socket_mark()).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let (in_tx, in_rx) = inbound_channel();
@@ -395,9 +395,9 @@ async fn h2_handshake(
     addr: SocketAddr,
     host: &str,
     use_tls: bool,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
 ) -> Result<(http2::SendRequest<RequestBody>, Option<crate::CarrierLossProbe>)> {
-    let tcp = connect_tcp_socket(addr, fwmark).await?;
+    let tcp = connect_tcp_socket(addr, mark).await?;
     // Captured before the socket is handed to TLS/h2, which is the last
     // point the raw descriptor is reachable — see the shared `SharedH2Connection`
     // dial for the same reasoning.

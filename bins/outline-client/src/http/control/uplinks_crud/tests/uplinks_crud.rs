@@ -993,3 +993,49 @@ fn get_or_init_outline_uplinks_rejects_non_table_outline() {
     let mut doc = "outline = 42\n".parse::<DocumentMut>().unwrap();
     assert!(get_or_init_outline_uplinks(&mut doc).is_err());
 }
+
+#[test]
+fn uplink_and_fallback_dscp_round_trip_and_clear_null() {
+    let create: UplinkPayload = serde_json::from_value(serde_json::json!({
+        "name": "edge",
+        "transport": "vless",
+        "vless_ws_url": "wss://primary.example.com/v",
+        "vless_id": "00000000-0000-0000-0000-000000000000",
+        "method": "chacha20-ietf-poly1305",
+        "password": "some-long-password",
+        "dscp": 59,
+        "fallbacks": [
+            {
+                "transport": "ws",
+                "tcp_ws_url": "wss://fb1.example.com/tcp",
+                "dscp": 0
+            },
+            {
+                "transport": "ws",
+                "tcp_ws_url": "wss://fb2.example.com/tcp",
+                "dscp": 63
+            }
+        ]
+    }))
+    .unwrap();
+
+    let mut tbl = payload_to_table(&create);
+    let json = table_to_json(&tbl).unwrap();
+    assert_eq!(json["dscp"], 59);
+    assert_eq!(json["fallbacks"][0]["dscp"], 0);
+    assert_eq!(json["fallbacks"][1]["dscp"], 63);
+
+    let section = payload_to_section(&create, Some("core")).unwrap();
+    validate_uplink_section(&section, 0).unwrap();
+
+    // Omitting `dscp` preserves existing `dscp`.
+    let omit_patch: UplinkPayload = serde_json::from_value(serde_json::json!({})).unwrap();
+    merge_patch_into_table(&mut tbl, &omit_patch);
+    assert_eq!(table_to_json(&tbl).unwrap()["dscp"], 59);
+
+    // Explicit `null` removes `dscp` from TOML.
+    let clear_patch: UplinkPayload =
+        serde_json::from_value(serde_json::json!({ "dscp": null })).unwrap();
+    merge_patch_into_table(&mut tbl, &clear_patch);
+    assert!(tbl.get("dscp").is_none());
+}

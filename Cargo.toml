@@ -126,5 +126,6 @@ h3 = { path = "vendor/h3" }
 # PATCHES.md) to write xhttp_h1 header names in the browser's case.
 hyper = { path = "vendor/hyper" }
 quinn-proto = { path = "vendor/quinn-proto" }
+quinn-udp = { path = "vendor/quinn-udp" }
 rustls = { path = "vendor/rustls" }
 sockudo-ws = { path = "vendor/sockudo-ws" }

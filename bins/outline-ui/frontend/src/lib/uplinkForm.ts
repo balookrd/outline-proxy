@@ -54,6 +54,7 @@ export interface WireFields {
   method: string;
   password: string;
   fwmark: number | null;
+  dscp: number | null;
   ipv6First: '' | 'true' | 'false';
   ipv4Only: '' | 'true' | 'false';
 }
@@ -103,6 +104,7 @@ export function emptyWireFields(): WireFields {
     method: '',
     password: '',
     fwmark: null,
+    dscp: null,
     ipv6First: '',
     ipv4Only: '',
   };
@@ -164,6 +166,7 @@ function wireFieldsFromConfig(cfg: Record<string, unknown>): WireFields {
     method: typeof cfg.method === 'string' ? cfg.method : '',
     password: typeof cfg.password === 'string' ? cfg.password : '',
     fwmark: typeof cfg.fwmark === 'number' ? cfg.fwmark : null,
+    dscp: typeof cfg.dscp === 'number' ? cfg.dscp : null,
     ipv6First: cfg.ipv6_first === true ? 'true' : cfg.ipv6_first === false ? 'false' : '',
     ipv4Only: cfg.ipv4_only === true ? 'true' : cfg.ipv4_only === false ? 'false' : '',
   };
@@ -221,6 +224,14 @@ export function fallbacksFromConfig(config: UplinkConfig | null | undefined): Fa
 // tcp_ws_url") — catch it here with a clearer message instead. Edit has no
 // required fields in either mode: a PATCH can touch just weight/fwmark/
 // ipv6_first, leaving `link` (or the explicit fields) untouched.
+export function validateDscp(dscp: number | null): string | null {
+  if (dscp === null) return null;
+  if (!Number.isInteger(dscp) || dscp < 0 || dscp > 63) {
+    return 'dscp must be an integer between 0 and 63';
+  }
+  return null;
+}
+
 export function validateUplinkForm(fields: UplinkFormFields, editing: boolean): string | null {
   if (!editing && !fields.name.trim()) {
     return 'name is required';
@@ -228,6 +239,8 @@ export function validateUplinkForm(fields: UplinkFormFields, editing: boolean): 
   if (!editing && fields.useShareLink && !fields.link.trim()) {
     return 'link is required in share-link mode';
   }
+  const dscpErr = validateDscp(fields.dscp);
+  if (dscpErr) return dscpErr;
   return null;
 }
 
@@ -244,6 +257,8 @@ export function validateFallbackForm(fields: FallbackFormFields): string | null 
   if (fields.useShareLink && !fields.link.trim()) {
     return 'link is required in share-link mode';
   }
+  const dscpErr = validateDscp(fields.dscp);
+  if (dscpErr) return dscpErr;
   return null;
 }
 
@@ -283,6 +298,7 @@ export function buildWireFields(fields: WireFields): Record<string, unknown> {
     if (fields.password.trim()) out.password = fields.password.trim();
   }
   if (fields.fwmark !== null) out.fwmark = Math.trunc(fields.fwmark);
+  if (fields.dscp !== null) out.dscp = Math.trunc(fields.dscp);
   if (fields.ipv6First !== '') out.ipv6_first = fields.ipv6First === 'true';
   if (fields.ipv4Only !== '') out.ipv4_only = fields.ipv4Only === 'true';
   return out;
@@ -326,10 +342,14 @@ export function buildUplinkPayload(
   fields: UplinkFormFields,
   editing: boolean,
   fallbacks: FallbackFormFields[],
+  originalConfig?: UplinkConfig | null,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!editing && fields.name.trim()) out.name = fields.name.trim();
   Object.assign(out, buildWireFields(fields));
+  if (editing && fields.dscp === null && originalConfig?.dscp != null) {
+    out.dscp = null;
+  }
   if (fields.weight !== null) out.weight = fields.weight;
   if (fields.shuffleWires !== '') out.shuffle_wires = fields.shuffleWires === 'true';
   if (fields.shuffleTimer.trim()) out.shuffle_timer = fields.shuffleTimer.trim();

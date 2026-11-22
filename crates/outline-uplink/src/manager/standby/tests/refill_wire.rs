@@ -145,11 +145,12 @@ async fn a_refill_dials_with_the_wires_own_network_options() {
         ctx.dial_network_options(),
         DialNetworkOptions {
             fwmark: Some(0x12),
+            dscp: Some(59),
             disable_udp_gso: false,
             ipv6_first: true,
             ipv4_only: false
         },
-        "wire 1 pins its own mark and prefers v6; the parent pins neither",
+        "wire 1 pins its own mark/dscp and prefers v6; the parent pins none",
     );
 }
 

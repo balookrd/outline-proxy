@@ -287,6 +287,7 @@
     if (cfg.method) add(String(cfg.method));
     if (cfg.weight != null) add(`w=${cfg.weight}`);
     if (cfg.fwmark != null) add(`fwmark=${cfg.fwmark}`);
+    if (cfg.dscp != null) add(`dscp=${cfg.dscp}`);
 
     return chips.length ? chips : [{ text: 'no on-disk config', tone: 'off' }];
   }

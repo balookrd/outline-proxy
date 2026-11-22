@@ -42,7 +42,14 @@ async fn relay_tcp_direct_streams_a_bulk_payload_without_loss() {
     let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
     let timeouts = TcpTimeouts::DEFAULT;
     let direct_task = tokio::spawn(async move {
-        relay_tcp_direct(server_side, target, None, &dns_cache, timeouts).await
+        relay_tcp_direct(
+            server_side,
+            target,
+            outline_net::SocketMark::default(),
+            &dns_cache,
+            timeouts,
+        )
+        .await
     });
 
     let payload: Vec<u8> = (0..BULK_PAYLOAD_BYTES).map(|i| (i % 251) as u8).collect();
@@ -100,7 +107,14 @@ async fn relay_tcp_direct_closes_session_after_idle_timeout() {
     let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
     let timeouts = TcpTimeouts::DEFAULT;
     let direct_task = tokio::spawn(async move {
-        relay_tcp_direct(server_side, target, None, &dns_cache, timeouts).await
+        relay_tcp_direct(
+            server_side,
+            target,
+            outline_net::SocketMark::default(),
+            &dns_cache,
+            timeouts,
+        )
+        .await
     });
 
     // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.

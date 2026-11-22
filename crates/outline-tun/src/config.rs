@@ -50,10 +50,11 @@ pub struct TunConfig {
     /// through Outline transports — ESP-in-UDP packets are forwarded
     /// transparently by the direct socket; raw ESP (proto 50) is still
     /// dropped by the TUN classifier regardless. The direct path uses
-    /// `direct_fwmark` to escape the TUN routing loop, so this option only
-    /// works out-of-the-box in split-tunnel setups; with TUN catching the
-    /// default route, set `direct_fwmark` and configure a corresponding
-    /// `ip rule fwmark X lookup Y` table (Linux only).
+    /// `direct_fwmark` / `direct_dscp` to escape the TUN routing loop, so this
+    /// option only works out-of-the-box in split-tunnel setups; with TUN
+    /// catching the default route, set `direct_fwmark` (and configure a
+    /// corresponding `ip rule fwmark X lookup Y` table, Linux only) or
+    /// `direct_dscp` (with matching DSCP policy routing).
     pub ipsec_bypass: bool,
     /// Whether the TUN UDP path is allowed to emit ICMP "Fragmentation
     /// Needed" / "Packet Too Big" replies that advertise a path MTU

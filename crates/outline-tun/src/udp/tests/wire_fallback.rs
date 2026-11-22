@@ -130,6 +130,7 @@ fn ss_fallback(udp_ws_url: Option<Url>) -> FallbackTransport {
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "Secret0".to_string(),
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -159,6 +160,7 @@ fn three_wire_uplink(wire2_live_url: Url) -> UplinkConfig {
         password: "Secret0".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -277,7 +279,7 @@ fn test_tun_writer() -> SharedTunWriter {
 async fn build_engine(manager: UplinkManager) -> TunUdpEngine {
     TunUdpEngine::new(
         test_tun_writer(),
-        TunRouting::new(UplinkRegistry::from_single_manager(manager), None, None, false),
+        TunRouting::new(UplinkRegistry::from_single_manager(manager), None, None, None, false),
         128,
         // No carrier cap: these tests exercise other limits.
         0,
@@ -430,6 +432,7 @@ fn tcp_only_primary_with_udp_fallback(wire1_udp_url: Url) -> UplinkConfig {
         password: "Secret0".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -566,6 +569,7 @@ fn single_wire_uplink(name: &str, udp_ws_url: Url) -> UplinkConfig {
         password: "Secret0".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -602,6 +606,7 @@ fn two_wire_uplink(name: &str, wire0_dead: Url, wire1_live: Url) -> UplinkConfig
         password: "Secret0".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,

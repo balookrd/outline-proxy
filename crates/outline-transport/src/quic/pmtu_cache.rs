@@ -71,6 +71,7 @@ pub(crate) struct PmtuKey {
     pub(crate) server: String,
     pub(crate) port: u16,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) dscp: Option<u8>,
     pub(crate) net: u64,
 }
 
@@ -80,28 +81,34 @@ impl PmtuKey {
     pub(crate) fn for_dial(
         server_name: &str,
         server_addr: SocketAddr,
-        fwmark: Option<u32>,
+        mark: crate::SocketMark,
     ) -> Self {
-        let net = local_source_ip(server_addr, fwmark).map(network_hash).unwrap_or(0);
+        let net = local_source_ip(server_addr, mark).map(network_hash).unwrap_or(0);
         Self {
             server: server_name.to_owned(),
             port: server_addr.port(),
-            fwmark,
+            fwmark: mark.fwmark,
+            dscp: mark.dscp,
             net,
         }
     }
 
     pub(crate) fn as_str(&self) -> String {
         let fw = self.fwmark.map_or_else(|| "-".to_owned(), |m| m.to_string());
-        format!("{}:{}|fw={fw}|net={:016x}", self.server, self.port, self.net)
+        match self.dscp {
+            Some(d) => {
+                format!("{}:{}|fw={fw}|dscp={d}|net={:016x}", self.server, self.port, self.net)
+            },
+            None => format!("{}:{}|fw={fw}|net={:016x}", self.server, self.port, self.net),
+        }
     }
 }
 
-/// Source address the kernel picks for `server_addr` under `fwmark`, found by
+/// Source address the kernel picks for `server_addr` under `mark`, found by
 /// connecting a throwaway UDP socket: `connect` on UDP only consults the
 /// routing table and sends nothing.
-fn local_source_ip(server_addr: SocketAddr, fwmark: Option<u32>) -> Option<IpAddr> {
-    let socket = crate::bind_udp_socket(crate::bind_addr_for(server_addr), fwmark).ok()?;
+fn local_source_ip(server_addr: SocketAddr, mark: crate::SocketMark) -> Option<IpAddr> {
+    let socket = crate::bind_udp_socket(crate::bind_addr_for(server_addr), mark).ok()?;
     socket.connect(server_addr).ok()?;
     socket.local_addr().ok().map(|addr| addr.ip())
 }

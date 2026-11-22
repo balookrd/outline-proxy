@@ -34,6 +34,7 @@ pub struct WsConfigResponse {
     pub fingerprint_profile: Option<String>,
     pub prefer_public_ipv6_src: Option<bool>,
     pub direct_fwmark: Option<u32>,
+    pub direct_dscp: Option<u8>,
     pub direct_ipv6_prefix_interface: Option<String>,
     pub ipv4_only: Option<bool>,
     pub ipv6_first: Option<bool>,
@@ -164,6 +165,12 @@ pub struct WsConfigPatch {
     pub fingerprint_profile: Option<String>,
     pub prefer_public_ipv6_src: Option<bool>,
     pub direct_fwmark: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::http::control::config_edit::deserialize_optional_nullable_u8"
+    )]
+    pub direct_dscp: Option<Option<u8>>,
     pub direct_ipv6_prefix_interface: Option<String>,
     pub ipv4_only: Option<bool>,
     pub ipv6_first: Option<bool>,
@@ -350,6 +357,10 @@ async fn handle_get_config(state: Arc<ControlState>) -> ControlResponse {
         .get("direct_fwmark")
         .and_then(|v| v.as_integer())
         .map(|n| n as u32);
+    let direct_dscp = doc
+        .get("direct_dscp")
+        .and_then(|v| v.as_integer())
+        .and_then(|n| u8::try_from(n).ok());
 
     let direct_ipv6_prefix_interface = doc
         .get("direct_ipv6_prefix_interface")
@@ -395,6 +406,7 @@ async fn handle_get_config(state: Arc<ControlState>) -> ControlResponse {
             fingerprint_profile,
             prefer_public_ipv6_src,
             direct_fwmark,
+            direct_dscp,
             direct_ipv6_prefix_interface,
             ipv4_only,
             ipv6_first,
@@ -722,6 +734,9 @@ fn extract_tcp_timeouts(doc: &DocumentMut) -> Option<TcpTimeoutsConfigView> {
 /// specific error messages; whether the patched file as a whole still loads is
 /// decided by [`validate_patched_config`].
 fn validate_patch_fields(patch: &WsConfigPatch) -> Result<(), String> {
+    if let Some(Some(dscp)) = patch.direct_dscp {
+        outline_net::validate_dscp(dscp).map_err(|e| format!("direct_dscp: {e}"))?;
+    }
     if let Some(probe) = &patch.probe {
         if let Some(i) = probe.interval_secs
             && i == 0
@@ -837,6 +852,15 @@ fn apply_config_patch(doc: &mut DocumentMut, patch: &WsConfigPatch) {
     }
     if let Some(fwmark) = patch.direct_fwmark {
         doc.insert("direct_fwmark", value(fwmark as i64));
+    }
+    match patch.direct_dscp {
+        Some(Some(dscp)) => {
+            doc.insert("direct_dscp", value(i64::from(dscp)));
+        },
+        Some(None) => {
+            doc.remove("direct_dscp");
+        },
+        None => {},
     }
     if let Some(iface) = &patch.direct_ipv6_prefix_interface {
         if iface.trim().is_empty() {

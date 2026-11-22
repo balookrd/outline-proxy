@@ -337,6 +337,7 @@ async fn connect_websocket_with_resume(
 ) -> Result<outline_transport::TransportStream> {
     let network = outline_transport::DialNetworkOptions {
         fwmark,
+        dscp: None,
         ipv6_first,
         ipv4_only: false,
         disable_udp_gso: false,

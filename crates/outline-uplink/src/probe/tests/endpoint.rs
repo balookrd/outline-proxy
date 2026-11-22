@@ -35,6 +35,7 @@ fn ss_ws_uplink(tcp_url: &str) -> UplinkConfig {
         password: "secret".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -67,6 +68,7 @@ fn ws_fallback(tcp_url: &str) -> FallbackTransport {
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -85,6 +87,21 @@ fn wires_sharing_one_host_and_port_collapse_to_a_single_endpoint() {
 
     assert_eq!(endpoints.len(), 1);
     assert_eq!(endpoints[0].label(), "edge.example.com:6443");
+}
+
+#[test]
+fn wires_with_distinct_dscp_produce_distinct_endpoints() {
+    let mut cfg = ss_ws_uplink("wss://edge.example.com:6443/ws");
+    cfg.dscp = Some(59);
+    let mut fb_40 = ws_fallback("wss://edge.example.com:6443/ws2");
+    fb_40.dscp = Some(40);
+    let fb_none = ws_fallback("wss://edge.example.com:6443/ws3");
+    cfg.fallbacks = vec![fb_40, fb_none];
+
+    let endpoints = uplink_endpoints(&cfg);
+    let dscps: Vec<Option<u8>> = endpoints.iter().map(|e| e.dscp).collect();
+
+    assert_eq!(dscps, vec![Some(59), Some(40), None]);
 }
 
 #[test]

@@ -315,6 +315,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         password: "secret".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -1206,4 +1207,199 @@ name = "tun0"
     assert!(updated_file.contains("carrier_migration = true"));
     assert!(updated_file.contains("downlink_max_mbit = 95"));
     assert!(updated_file.contains("sniff_timeout_ms = 250"));
+}
+
+#[tokio::test]
+async fn get_and_patch_config_handles_direct_dscp_set_zero_clear_null_and_rejects_64() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    tokio::fs::write(
+        &cfg_path,
+        r#"direct_dscp = 46
+
+[socks5]
+listen = "127.0.0.1:1080"
+"#,
+    )
+    .await
+    .unwrap();
+
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    async fn send_http(state: Arc<ControlState>, raw_req: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, state).await.unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(&raw_req).await.unwrap();
+        let mut resp = Vec::new();
+        client.read_to_end(&mut resp).await.unwrap();
+        srv.await.unwrap();
+        String::from_utf8(resp).unwrap()
+    }
+
+    fn patch_req(body: &str) -> Vec<u8> {
+        format!(
+            "PATCH /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .into_bytes()
+    }
+
+    let get_resp = send_http(
+        Arc::clone(&state),
+        b"GET /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n".to_vec(),
+    )
+    .await;
+    assert!(get_resp.contains("200 OK"), "{get_resp}");
+    assert!(get_resp.contains("\"direct_dscp\":46"), "{get_resp}");
+
+    let r59 = send_http(Arc::clone(&state), patch_req(r#"{"direct_dscp":59}"#)).await;
+    assert!(r59.contains("200 OK"), "{r59}");
+    assert!(
+        tokio::fs::read_to_string(&cfg_path)
+            .await
+            .unwrap()
+            .contains("direct_dscp = 59")
+    );
+
+    // Omitting `direct_dscp` keeps the existing key untouched.
+    let r_omit = send_http(Arc::clone(&state), patch_req(r#"{"ipv4_only":true}"#)).await;
+    assert!(r_omit.contains("200 OK"), "{r_omit}");
+    assert!(
+        tokio::fs::read_to_string(&cfg_path)
+            .await
+            .unwrap()
+            .contains("direct_dscp = 59")
+    );
+
+    // Boundary 0 stays serialized as `0`, not treated as unset.
+    let r0 = send_http(Arc::clone(&state), patch_req(r#"{"direct_dscp":0}"#)).await;
+    assert!(r0.contains("200 OK"), "{r0}");
+    assert!(
+        tokio::fs::read_to_string(&cfg_path)
+            .await
+            .unwrap()
+            .contains("direct_dscp = 0")
+    );
+
+    // Out-of-range 64 fails with 400 Bad Request and leaves the file intact.
+    let r64 = send_http(Arc::clone(&state), patch_req(r#"{"direct_dscp":64}"#)).await;
+    assert!(r64.contains("400 Bad Request"), "{r64}");
+    assert!(
+        tokio::fs::read_to_string(&cfg_path)
+            .await
+            .unwrap()
+            .contains("direct_dscp = 0")
+    );
+
+    // Explicit `null` removes `direct_dscp` from TOML.
+    let r_null = send_http(Arc::clone(&state), patch_req(r#"{"direct_dscp":null}"#)).await;
+    assert!(r_null.contains("200 OK"), "{r_null}");
+    let after_null = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    assert!(!after_null.contains("direct_dscp"), "{after_null}");
+}
+
+#[tokio::test]
+async fn control_uplinks_http_accepts_valid_dscp_and_rejects_64_on_uplink_or_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    tokio::fs::write(
+        &cfg_path,
+        r#"[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "uplink-01"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://1.2.3.4:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "secret-password-1"
+"#,
+    )
+    .await
+    .unwrap();
+
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    async fn req(state: Arc<ControlState>, method: &str, body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, state).await.unwrap();
+        });
+        let raw = format!(
+            "{method} /control/uplinks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(raw.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        client.read_to_end(&mut resp).await.unwrap();
+        srv.await.unwrap();
+        String::from_utf8(resp).unwrap()
+    }
+
+    // Invalid POST with dscp = 64 on uplink -> 400 Bad Request
+    let bad_post = req(
+        Arc::clone(&state),
+        "POST",
+        r#"{"group":"core","uplink":{"name":"u3","transport":"ws","tcp_ws_url":"wss://3.3.3.3/tcp","method":"chacha20-ietf-poly1305","password":"secret-password-3","dscp":64}}"#,
+    )
+    .await;
+    assert!(bad_post.contains("400 Bad Request"), "{bad_post}");
+
+    // Valid POST with dscp = 59 and fallback dscp = 0 -> 202 Accepted
+    let ok_post = req(
+        Arc::clone(&state),
+        "POST",
+        r#"{"group":"core","uplink":{"name":"u3","transport":"ws","tcp_ws_url":"wss://3.3.3.3/tcp","method":"chacha20-ietf-poly1305","password":"secret-password-3","dscp":59,"fallbacks":[{"transport":"ws","tcp_ws_url":"wss://4.4.4.4/tcp","dscp":0}]}}"#,
+    )
+    .await;
+    assert!(ok_post.contains("202 Accepted"), "{ok_post}");
+
+    // Invalid PATCH with dscp = 64 on fallback -> 400 Bad Request
+    let bad_patch = req(
+        Arc::clone(&state),
+        "PATCH",
+        r#"{"group":"core","name":"u3","patch":{"fallbacks":[{"transport":"ws","tcp_ws_url":"wss://4.4.4.4/tcp","dscp":64}]}}"#,
+    )
+    .await;
+    assert!(bad_patch.contains("400 Bad Request"), "{bad_patch}");
+
+    // Valid PATCH clearing uplink dscp with null -> 202 Accepted
+    let ok_patch = req(
+        Arc::clone(&state),
+        "PATCH",
+        r#"{"group":"core","name":"u3","patch":{"dscp":null}}"#,
+    )
+    .await;
+    assert!(ok_patch.contains("202 Accepted"), "{ok_patch}");
+    let rendered = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    let parsed: toml_edit::DocumentMut = rendered.parse().unwrap();
+    let arr = parsed["outline"]["uplinks"].as_array_of_tables().unwrap();
+    let u3 = arr
+        .iter()
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("u3"))
+        .unwrap();
+    assert!(u3.get("dscp").is_none(), "null patch must remove dscp: {rendered}");
 }

@@ -152,7 +152,14 @@ pub(crate) async fn load_config_from_raw(
         bail!("no ingress configured: set --listen / [socks5].listen");
     }
 
+    if let Some(dscp) = args.dscp {
+        outline_net::validate_dscp(dscp).context("invalid CLI --dscp / OUTLINE_DSCP")?;
+    }
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
+    let direct_dscp = file.as_ref().and_then(|f| f.direct_dscp);
+    if let Some(dscp) = direct_dscp {
+        outline_net::validate_dscp(dscp).context("invalid `direct_dscp`")?;
+    }
     let direct_ipv6_prefix_interface =
         file.as_ref().and_then(|f| f.direct_ipv6_prefix_interface.clone());
     // Absent everywhere → `DEFAULT_FINGERPRINT_PROFILE`. The top-level
@@ -209,6 +216,7 @@ pub(crate) async fn load_config_from_raw(
         udp_send_buf_bytes,
         prefer_public_ipv6_src,
         direct_fwmark,
+        direct_dscp,
         direct_ipv6_prefix_interface,
         state_path,
         tcp_timeouts,

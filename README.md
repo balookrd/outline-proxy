@@ -20,7 +20,8 @@ macOS menu-bar client.
   listeners and a mesh cluster across nodes.
 - [`outline-client`](bins/outline-client/) is the client. It accepts local
   SOCKS5 (and, optionally, TUN) traffic and forwards it over the same carriers,
-  with multi-uplink failover, load balancing and health probes.
+  with multi-uplink failover, load balancing, health probes and per-uplink /
+  direct egress marking (`fwmark` and Unix `dscp` / `direct_dscp`, `0..=63`).
 - [`outline-ui`](bins/outline-ui/) serves both the server and the client
   dashboards from one binary (`/ss` and `/ws`). It has no data plane and only
   queries each node's control API.
@@ -156,7 +157,7 @@ it; CI excludes it, and so does the test command above.
 
 `rustls` uses the `aws-lc-rs` provider across the workspace. The HTTP/3
 WebSocket path depends on the patched `vendor/h3` and `vendor/sockudo-ws`; the
-patches to all five vendored crates are described in [`PATCHES.md`](PATCHES.md).
+patches to all six vendored crates are described in [`PATCHES.md`](PATCHES.md).
 See [`AGENTS.md`](AGENTS.md) for the monorepo invariants and the exact CI gate
 commands.
 

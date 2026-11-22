@@ -178,6 +178,7 @@ tun2udp + tun2tcp"]
 - контроль срока TLS-сертификатов аплинков: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` и поле `cert_not_after_unix_ms` у каждого аплинка в `GET /control/topology`
 - systemd-юниты с песочницей (см. [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
+- Unix-маркировка DSCP на egress (`dscp` / `direct_dscp`, `0..=63`, RFC 2474)
 - IPv6 для слушателей, upstream'ов, проб и SOCKS5-целей
 
 ## Текущие ограничения
@@ -200,7 +201,7 @@ tun2udp + tun2tcp"]
 - [`src/http/`](src/http) — эндпоинт метрик и control plane
 - [`../../crates/outline-uplink/`](../../crates/outline-uplink) — выбор аплинка, пробы, failover, standby-пулы
 - [`../../crates/outline-transport/`](../../crates/outline-transport) — транспорты WebSocket / HTTP/2 / HTTP/3 / XHTTP / VLESS и кросс-транспортный `ResumeCache`
-- [`../../crates/outline-net/`](../../crates/outline-net) — DNS-кэш и сокетные хелперы (fwmark, keepalive, размеры буферов)
+- [`../../crates/outline-net/`](../../crates/outline-net) — DNS-кэш и сокетные хелперы (fwmark, DSCP, keepalive, размеры буферов)
 - [`../../crates/outline-tun/`](../../crates/outline-tun) — TUN-движки (TCP и UDP)
 - [`../../crates/shadowsocks-crypto/`](../../crates/shadowsocks-crypto) — хелперы Shadowsocks AEAD
 - [`../../crates/outline-wire/`](../../crates/outline-wire) — общий с сервером wire-кодек (`CipherKind`, `TargetAddr`, SS2022-заголовки, VLESS/mux)
@@ -548,6 +549,8 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_mode = "h3"
 # fwmark = 100
+# dscp = 59
+# direct_dscp = 46   # верхний уровень; маркирует `direct`-маршруты
 # disable_udp_gso = true
 # ipv6_first = true
 # ipv4_only = true
@@ -609,7 +612,7 @@ via = "main"
 
 ### Поведение параметров конфигурации
 
-- `transport` принимает `ss` (по умолчанию; алиас `shadowsocks`) или `vless`. `ws` / `websocket` — deprecated-алиасы `ss`, будут удалены. VLESS использует те же поля носителя, что и `ss` (`ipv6_first`, `fwmark`, …), но берёт собственную пару URL/режим — `vless_ws_url` или `vless_xhttp_url` плюс `vless_mode` — и аутентифицируется одним `vless_id` вместо Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` при `transport = "vless"` отвергаются на разборе. VLESS UDP открывает по сессии на каждое назначение внутри аплинка, не больше `vless_udp_max_sessions` (по умолчанию `256`, вытеснение LRU), с вытеснением простаивающих через `vless_udp_session_idle_secs` (по умолчанию `60`, `0` отключает), проверка каждые `vless_udp_janitor_interval_secs` (по умолчанию `15`). Эти три ключа задаются в `[outline.load_balancing]` или на каждой `[[uplink_group]]`.
+- `transport` принимает `ss` (по умолчанию; алиас `shadowsocks`) или `vless`. `ws` / `websocket` — deprecated-алиасы `ss`, будут удалены. VLESS использует те же поля носителя, что и `ss` (`ipv6_first`, `fwmark`, `dscp`, …), но берёт собственную пару URL/режим — `vless_ws_url` или `vless_xhttp_url` плюс `vless_mode` — и аутентифицируется одним `vless_id` вместо Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` при `transport = "vless"` отвергаются на разборе. VLESS UDP открывает по сессии на каждое назначение внутри аплинка, не больше `vless_udp_max_sessions` (по умолчанию `256`, вытеснение LRU), с вытеснением простаивающих через `vless_udp_session_idle_secs` (по умолчанию `60`, `0` отключает), проверка каждые `vless_udp_janitor_interval_secs` (по умолчанию `15`). Эти три ключа задаются в `[outline.load_balancing]` или на каждой `[[uplink_group]]`.
 - `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` задаёт VLESS-аплинк одной share-link URI вместо `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется сам. Ссылка `ss://` (SIP002 userinfo) так же задаёт SS-аплинк. То же значение принимают `--vless-link` (алиас `--link`, env `OUTLINE_VLESS_LINK`) и payload `/control/uplinks` (`link`, алиас `share_link`). Смешивать `link` с явными полями нельзя — конфиг отвергается. Query-параметры и ограничения: [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#5-vless-share-link-uris).
 - Нужен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Без них процесс завершается с ошибкой, а не слушает `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (`transport = "ss"`) и `vless_mode` (`transport = "vless"`) выбирают носитель: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (XHTTP; SS берёт URL из `tcp_xhttp_url` / `udp_xhttp_url`, VLESS — из `vless_xhttp_url`). Старые значения `http1` / `h1`, `h2`, `h3` принимаются как алиасы `ws_h1`, `ws_h2`, `ws_h3`; `quic` отвергается (raw QUIC-аплинки удалены). Блоки конфига для каждой формы, цепочки fallback и поведение resume: [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
@@ -635,6 +638,8 @@ via = "main"
 - Аплинки, шаблон проб и настройки балансировки живут под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая плоская форма (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) ещё загружается и пишет deprecation-предупреждение. Если аплинков не задано, top-level `tcp_ws_url` / `password` или CLI-флаги (`--tcp-ws-url`, `--password`, …) создают группу `default` с одним аплинком.
 - Флаги CLI и переменные окружения переопределяют файл. `--metrics-listen` включает метрики без `[metrics]`; `--tun-path` включает TUN без `[tun]`; `--control-listen` + `--control-token` включают control plane без `[control]` — нужны оба, один без другого даёт ошибку старта.
 - `direct_fwmark` (опционально, top-level): `SO_MARK` для TCP- и UDP-сокетов `direct`-соединений. Нужен, когда bypass-трафик надо пометить для policy routing, например чтобы bypass-маршрут не перехватывался снова TUN-интерфейсом.
+- `direct_dscp` (опционально, top-level, `0..=63`): 6-битное значение DSCP по RFC 2474, записываемое (`dscp << 2`) в `IP_TOS` / `IPV6_TCLASS` на TCP- и UDP-сокетах `direct`-соединений (`via = "direct"`, `bypass_when_down`, `tun.ipsec_bypass`). Ортогонально `direct_fwmark` и не требует `CAP_NET_ADMIN` или `PrivateUsers=no`.
+- `dscp` (опционально, `0..=63`, в `[outline]`, `[[outline.uplinks]]`, `[[outline.uplinks.fallbacks]]`, или `--dscp` / `OUTLINE_DSCP`): 6-битный DSCP для исходящих TCP и UDP/QUIC-сокетов жилы аплинка (`0` явно ставит CS0, значения вне диапазона отвергаются при загрузке конфига и в `/control/*` с кодом `400`). Наследование как у `fwmark`: `fallback` → `uplink` → `[outline]` → CLI (`shuffle_wires` сохраняет собственный `dscp` каждой жилы).
 - `[dial] timeout_secs` (по умолчанию `10`, ограничивается диапазоном `2..=120`): верхняя граница одного свежего дозвона носителя — TCP + TLS + HTTP upgrade для WS/XHTTP или QUIC + HTTP/3 handshake — и, в размере 70 % от неё, открытия стрима на установленном H3-соединении. 10 с хватает на broadband и LTE. На 2G один round trip близок к секунде, а одна цепочка сертификатов передаётся несколько секунд, поэтому бюджет в 10 с истекает посреди рукопожатия, каждая попытка засчитывается как runtime-сбой, а повторы съедают полосу, которой рукопожатию не хватило: аплинк числится поднятым и ничего не передаёт. Для таких каналов увеличьте значение. Цена — худшее время failover'а: именно эта граница не даёт дозвону в чёрную дыру держать цепочку `h3 → h2 → h1` весь бюджет SYN-ретрансмитов ОС (Linux ~127 с).
 - `[tcp_timeouts]` ограничивает SOCKS5 TCP-сессии, значения в секундах:
 
@@ -667,6 +672,7 @@ via = "main"
 | `--method` | `SHADOWSOCKS_METHOD` | шифр Shadowsocks |
 | `--password` | `SHADOWSOCKS_PASSWORD` | пароль / PSK Shadowsocks |
 | `--fwmark` | `OUTLINE_FWMARK` | `SO_MARK` аплинка |
+| `--dscp` | `OUTLINE_DSCP` | DSCP аплинка (`0..=63`, RFC 2474) |
 | `--ipv6-first` | `OUTLINE_IPV6_FIRST` | предпочитать IPv6 для аплинка |
 | `--ipv4-only` | `OUTLINE_IPV4_ONLY` | только IPv4 для аплинка |
 | `--metrics-listen` | `METRICS_LISTEN` | адрес слушателя метрик |
@@ -771,7 +777,7 @@ Inline- и файловые префиксы правила объединяют
 
 ### Байпасс на уровне группы (`bypass_when_down`)
 
-Вместо `fallback_direct = true` на каждом маршруте группа может задать `bypass_when_down = true` на своей `[[uplink_group]]`: пока в группе нет здорового аплинка, трафик в неё идёт `direct`, включая неявный диспатч «всё в группу по умолчанию», когда `[[route]]` не задан. Явный fallback маршрута имеет приоритет; байпасс тогда применяется (на один уровень) к группе, куда попал fallback. Решение пересчитывается на каждый дозвон / датаграмму / флоу, поэтому трафик возвращается в туннель, как только любой аплинк восстановится. На хостах, где TUN держит маршрут по умолчанию, задайте `direct_fwmark`, чтобы обходные сокеты не возвращались в TUN. См. «Байпасс полностью упавшей группы» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+Вместо `fallback_direct = true` на каждом маршруте группа может задать `bypass_when_down = true` на своей `[[uplink_group]]`: пока в группе нет здорового аплинка, трафик в неё идёт `direct`, включая неявный диспатч «всё в группу по умолчанию», когда `[[route]]` не задан. Явный fallback маршрута имеет приоритет; байпасс тогда применяется (на один уровень) к группе, куда попал fallback. Решение пересчитывается на каждый дозвон / датаграмму / флоу, поэтому трафик возвращается в туннель, как только любой аплинк восстановится. На хостах, где TUN держит маршрут по умолчанию, задайте `direct_fwmark` или `direct_dscp`, чтобы обходные сокеты не возвращались в TUN. См. «Байпасс полностью упавшей группы» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 
 ## Транспортные режимы
 
@@ -784,7 +790,7 @@ Inline- и файловые префиксы правила объединяют
 - `ws_h3` требует доступности сервера по QUIC (UDP);
 - `xhttp_h2` / `xhttp_h3` — когда WebSocket Upgrade режется на пути; дозвон сам спускается до `xhttp_h1`, если режутся ещё и QUIC, и ALPN h2 (у h1 ниже пропускная способность, но URL тот же, что у xray).
 
-QUIC-эндпоинты. Каждое H3-соединение (`ws_h3`, `xhttp_h3`) получает собственный QUIC-эндпоинт и UDP-сокет на новом локальном порту и живёт ровно столько, сколько соединение. Поэтому NAT-трансляция, застрявшая на мёртвом назначении, затрагивает одно соединение, а не все последующие дозвоны. Каждый эндпоинт выделяет ~2,9 МиБ приёмного буфера на Linux с GRO; gauge `outline_ws_h3_endpoints_active{kind}` считает живые эндпоинты. `fwmark` ставится на сокет до первого `sendmsg`.
+QUIC-эндпоинты. Каждое H3-соединение (`ws_h3`, `xhttp_h3`) получает собственный QUIC-эндпоинт и UDP-сокет на новом локальном порту и живёт ровно столько, сколько соединение. Поэтому NAT-трансляция, застрявшая на мёртвом назначении, затрагивает одно соединение, а не все последующие дозвоны. Каждый эндпоинт выделяет ~2,9 МиБ приёмного буфера на Linux с GRO; gauge `outline_ws_h3_endpoints_active{kind}` считает живые эндпоинты. `fwmark` и `dscp` ставятся на сокет до первого `sendmsg` (а патч vendored `quinn-udp` сохраняет сокетный DSCP вместе с per-packet битами ECN в `IP_TOS` / `IPV6_TCLASS` cmsg).
 
 Если на рукопожатие нет ответа через 1 с, начинается второй дозвон с нового локального порта, а через 3 с — третий; используется первый завершившийся. Некоторые пути выбрасывают UDP-поток целиком, поэтому повторы с того же порта не проходят, а новый порт — это новый поток. Здоровое рукопожатие завершается примерно за два RTT и второй дозвон не запускает. `outline_ws_quic_dial_hedges_total{kind,result}` считает дозвоны с гонкой: `result="won"` — первой завершилась дополнительная попытка, `result="lost"` — первая всё равно выиграла.
 
@@ -826,7 +832,7 @@ Warm-standby следует даунгрейду: пока аплинк огра
 - Размеры. Выбор делается на каждый пакет по текущему `max_datagram_size()`; пакет, который не помещается, идёт по стриму. До PMTUD клиент начинает с MTU 1200, поэтому сразу после подключения большинство полноразмерных пакетов ещё идёт по стриму. Максимальный UDP payload сервера — 1452. Буферы датаграмм — 1 МиБ с каждой стороны.
 - Выкатка. Сначала серверы, потом клиенты; безопасен любой порядок. Откат: `udp_datagrams = false` на стороне, которая сбоит, и перезапуск этого сервиса (без пересборки).
 
-Кэш path MTU. Клиент запоминает path MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark и хэш локального адреса источника, то есть сеть, в которой он находится), в файле рядом с state-файлом с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`; с прилагаемым юнитом — `/var/lib/outline-client/_default/state.pmtu`). Следующий дозвон по тому же пути пробует этот размер первым: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении.
+Кэш path MTU. Клиент запоминает path MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark, dscp и хэш локального адреса источника, то есть сеть, в которой он находится), в файле рядом с state-файлом с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`; с прилагаемым юнитом — `/var/lib/outline-client/_default/state.pmtu`). Следующий дозвон по тому же пути пробует этот размер первым: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении.
 
 | Значение в кэше | Срок жизни | Что происходит при следующем соединении |
 |---|---|---|
@@ -865,7 +871,7 @@ Warm-standby следует даунгрейду: пока аплинк огра
 - TCP URL и режим
 - UDP URL и режим
 - шифр и пароль (или `vless_id`)
-- опциональный Linux `fwmark`
+- опциональные Linux `fwmark` и Unix `dscp` (`0..=63`)
 - приоритет через `weight`. Среди здоровых кандидатов всегда выигрывает больший weight, независимо от EWMA; так помечают резервные аплинки, на которые failover и sticky не должны уходить. При равном weight порядок задаёт скор на основе EWMA, затем индекс в конфиге.
 
 Конвейер выбора:
@@ -999,7 +1005,7 @@ Runtime failover:
 
 `tun.ipsec_bypass = true` отправляет UDP-флоу с портом назначения 500 или 4500 в direct-путь (как `via = "direct"`) мимо policy routing. VoWiFi и другие IKEv2/IPsec-клиенты тогда достают свой шлюз через ESP-in-UDP; голый ESP (IP protocol 50) отбрасывается всегда, потому что TUN-классификатор пропускает только TCP/UDP/ICMP.
 
-Bypass использует локальный сокет direct-пути. На хостах, где TUN держит маршрут по умолчанию, этот сокет вернулся бы в TUN: на Linux задайте `direct_fwmark` и добавьте `ip rule fwmark <mark> lookup <table>`, где `<mark>` — значение `direct_fwmark`, а `<table>` — таблица маршрутизации с физическим маршрутом по умолчанию. Без `direct_fwmark` при старте пишется предупреждение.
+Bypass использует локальный сокет direct-пути. На хостах, где TUN держит маршрут по умолчанию, этот сокет вернулся бы в TUN: на Linux задайте `direct_fwmark` (с `ip rule fwmark <mark> lookup <table>`) или `direct_dscp` (с соответствующим policy routing по DSCP), где `<table>` — таблица маршрутизации с физическим маршрутом по умолчанию. Если не задан ни `direct_fwmark`, ни `direct_dscp`, при старте пишется предупреждение.
 
 По умолчанию `false`. Порты матчатся вместе: IKEv2 переносит IKE_AUTH с 500 на 4500 посреди сессии через NAT_DETECTION, и bypass одного 4500 ломает рукопожатие.
 
@@ -1076,6 +1082,32 @@ Upstream-сокеты при этом живы. Сервер переносит 
 - только Linux
 - `CAP_NET_ADMIN`
 - под systemd `PrivateUsers=no`: `setsockopt(SO_MARK)` проверяется против user namespace, которому принадлежит сетевой стек (init namespace). При `PrivateUsers=true` capability действует только внутри приватного namespace, и каждый помеченный дозвон падает с `EPERM`. Относится и к `fwmark` аплинка, и к top-level `direct_fwmark`.
+
+## Маркировка DSCP на egress
+
+`dscp` аплинка (`[outline]`, `[[outline.uplinks]]`, `[[outline.uplinks.fallbacks]]`, `--dscp` / `OUTLINE_DSCP`) и верхнеуровневый `direct_dscp` выставляют 6-битное значение DSCP по RFC 2474 (`0..=63`, со сдвигом `dscp << 2` в `IP_TOS` / `IPV6_TCLASS`) на исходящих сокетах всех транспортов (TCP до `connect()`, UDP при `bind()`, HTTP/1.1, HTTP/2, HTTP/3, dual-stack IPv6 сокеты, пробы, warm standby и `direct`-маршруты).
+
+Основные свойства:
+
+- **Безопасность для ECN на HTTP/3 и TCP**: `dscp << 2` не трогает младшие 2 бита ECN, а патч vendored `quinn-udp` однократно считывает настроенный DSCP сокета и объединяет `dscp | ecn` в каждом контрольном сообщении `IP_TOS` / `IPV6_TCLASS`.
+- **Не требует `CAP_NET_ADMIN` и `PrivateUsers=no`**: работает без привилегий на всех Unix-платформах (`setsockopt(IPPROTO_IP, IP_TOS)` / `setsockopt(IPPROTO_IPV6, IPV6_TCLASS)`), в отличие от `fwmark`. На не-Unix платформах отличное от `None` значение DSCP явно отклоняется.
+- **Ортогонально `fwmark`**: можно применять отдельно или вместе с `fwmark` на том же аплинке или `direct`-маршруте.
+
+Это особенно удобно внутри контейнеров и подов Kubernetes без прав на `SO_MARK`: клиент помечает исходящие пакеты, например `dscp = 59` (`0x3b`), а хост на бридже (например `cni0`) перекладывает этот DSCP в хостовый `fwmark` до маршрутизации и тут же сбрасывает DSCP обратно в `cs0` (`0`), чтобы метка не уходила в WAN:
+
+```nft
+table inet outline_dscp {
+    chain prerouting {
+        type filter hook prerouting priority mangle; policy accept;
+        iifname "cni0" ip daddr != { 10.0.0.0/8, 198.51.100.0/24, 192.168.0.0/16 } ip dscp 0x3b \
+            meta mark set (meta mark | 0x12) ip dscp set cs0
+        iifname "cni0" ip6 daddr != { fc00::/7, fe80::/10 } ip6 dscp 0x3b \
+            meta mark set (meta mark | 0x12) ip6 dscp set cs0
+    }
+}
+```
+
+На хосте дополните правилом `ip rule fwmark 0x12/0x12 lookup <table_id>` (и `ip -6 rule ...`).
 
 ## Метрики
 
@@ -1172,7 +1204,7 @@ scrape_configs:
 | `GET` / `POST` / `PATCH` / `DELETE /control/uplinks`, `POST /control/uplinks/reorder` | подготовка правок `[[outline.uplinks]]` в файле конфига |
 | `GET` / `POST` / `PATCH` / `DELETE /control/uplink_groups`, `POST /control/uplink_groups/reorder` | подготовка правок `[[uplink_group]]` в файле конфига (см. «`/control/uplink_groups` (CRUD)» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md)) |
 | `GET` / `POST` / `PATCH` / `DELETE /control/routes`, `POST /control/routes/reorder` | подготовка правок `[[route]]`; reorder перемещает правило в списке first-match-wins |
-| `GET` / `PATCH /control/config` | чтение и изменение настроек подсистем клиента в файле конфига (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Возвращает `{ "status": "ok", "apply_required": true, "restart_required": bool }`. Перед записью `PATCH` загружает изменённый файл так же, как это делает старт; если он не загрузится (например, `tun.mtu` меньше 1280 или `dial.timeout_secs = 0`), запрос получает `400` с ошибкой загрузчика, а файл на диске остаётся прежним |
+| `GET` / `PATCH /control/config` | чтение и изменение настроек подсистем клиента в файле конфига (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`, `direct_dscp`). Возвращает `{ "status": "ok", "apply_required": true, "restart_required": bool }`. Перед записью `PATCH` загружает изменённый файл так же, как это делает старт; если он не загрузится (например, `tun.mtu` меньше 1280 или `dial.timeout_secs = 0`), запрос получает `400` с ошибкой загрузчика, а файл на диске остаётся прежним |
 | `POST /control/apply` | применить без рестарта подготовленные правки аплинков и групп, а также маршрутов, если маршрутизация была настроена при старте |
 | `GET /control/alloc` | статистика аллокатора (счётчики jemalloc в сборке по умолчанию) |
 | `POST /switch` | ручное переопределение активного аплинка |
@@ -1389,7 +1421,7 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 - `MemoryHigh=70%`, `MemoryMax=85%`: на хосте с малым объёмом RAM всплеск флоу может исчерпать память быстрее, чем ядро её освободит, и подвесить весь хост; с лимитами ядро убивает по OOM сервис, и systemd его перезапускает. Для фиксированных значений переопределите drop-in'ом
 - `User=outline-client` / `Group=outline-client` и `StateDirectory=outline-client/_default` (шаблон: `outline-client/%i`), чтобы у файлов состояния был постоянный владелец
 - `ReadWritePaths` включает `/etc/outline-client` (шаблон: `/etc/outline-client/instances`), чтобы правки через control API и миграция конфига могли записать файл
-- `AmbientCapabilities=CAP_NET_ADMIN` для `fwmark`; уберите обе строки с capability, если `fwmark` / `direct_fwmark` не используются. Для них нужен ещё `PrivateUsers=no` в drop-in'е: юниты задают `PrivateUsers=true`, а `SO_MARK` внутри приватного user namespace падает с `EPERM` даже при наличии capability
+- `AmbientCapabilities=CAP_NET_ADMIN` для `fwmark`; уберите обе строки с capability, если без `fwmark` / `direct_fwmark` используется только `dscp` / `direct_dscp`. Для `fwmark` нужен ещё `PrivateUsers=no` в drop-in'е: юниты задают `PrivateUsers=true`, а `SO_MARK` внутри приватного user namespace падает с `EPERM` даже при наличии capability (`dscp` не требует ни того, ни другого)
 - `PrivateDevices=false` для доступа к `/dev/net/tun` (TUN-режим)
 - `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` и остальные опции `Protect*` / `Restrict*` в файле юнита
 
@@ -1418,7 +1450,7 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
   | control | 16 | 5 с на чтение заголовков запроса; проверка bearer-токена идёт только после получения заголовков, поэтому именно этот таймаут не даёт неаутентифицированным клиентам держать сокеты |
 
 - HTTP/3-носителям нужна доступность порта сервера по UDP.
-- `fwmark` работает только на Linux и требует `CAP_NET_ADMIN` или root; в песочнице systemd с приватным user namespace нужен ещё `PrivateUsers=no`.
+- `fwmark` работает только на Linux и требует `CAP_NET_ADMIN` или root; в песочнице systemd с приватным user namespace нужен ещё `PrivateUsers=no`. На непривилегированных Unix-установках вместо этого можно использовать `dscp` / `direct_dscp` (`0..=63`).
 - TUN-режиму нужен доступ к `/dev/net/tun` (`PrivateDevices=false`).
 
 ## Тестирование

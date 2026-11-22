@@ -35,7 +35,7 @@ use crate::config::UplinkConfig;
 /// needed to get there the way real traffic would.
 ///
 /// The network options are part of the identity, not decoration: a fallback
-/// wire carrying its own `fwmark` / `ipv6_first` reaches the same `host:port`
+/// wire carrying its own `fwmark` / `dscp` / `ipv6_first` reaches the same `host:port`
 /// over a different route, so it deserves its own connect rather than being
 /// deduplicated away behind the primary's verdict.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -45,6 +45,7 @@ pub(crate) struct Endpoint {
     pub(crate) ipv6_first: bool,
     pub(crate) ipv4_only: bool,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) dscp: Option<u8>,
     /// `fingerprint_profile` pinned by the wire that dials this endpoint
     /// (`None` = inherit the process-wide strategy). Part of the identity for
     /// the same reason as the network options: two wires with different
@@ -76,6 +77,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
          ipv6_first: bool,
          ipv4_only: bool,
          fwmark: Option<u32>,
+         dscp: Option<u8>,
          fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>| {
             if let Some(url) = url
                 && keep(url.scheme())
@@ -88,6 +90,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
                     ipv6_first,
                     ipv4_only,
                     fwmark,
+                    dscp,
                     fingerprint_profile,
                 };
                 if seen.insert(endpoint.clone()) {
@@ -100,6 +103,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
         uplink.ipv6_first,
         uplink.ipv4_only,
         uplink.fwmark,
+        uplink.dscp,
         uplink.fingerprint_profile,
     );
     push(
@@ -107,6 +111,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
         uplink.ipv6_first,
         uplink.ipv4_only,
         uplink.fwmark,
+        uplink.dscp,
         uplink.fingerprint_profile,
     );
     for fallback in &uplink.fallbacks {
@@ -115,6 +120,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
             fallback.ipv6_first,
             fallback.ipv4_only,
             fallback.fwmark,
+            fallback.dscp,
             fallback.fingerprint_profile,
         );
         push(
@@ -122,6 +128,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
             fallback.ipv6_first,
             fallback.ipv4_only,
             fallback.fwmark,
+            fallback.dscp,
             fallback.fingerprint_profile,
         );
     }
@@ -168,7 +175,13 @@ async fn endpoint_reachable(
         .await
         .ok()?;
         for addr in addrs.iter() {
-            if connect_tcp_socket(*addr, endpoint.fwmark).await.is_ok() {
+            if connect_tcp_socket(
+                *addr,
+                outline_transport::SocketMark::new(endpoint.fwmark, endpoint.dscp),
+            )
+            .await
+            .is_ok()
+            {
                 return Some(());
             }
         }

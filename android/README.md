@@ -139,9 +139,9 @@ Notes:
 - The app ships only `arm64-v8a` (`abiFilters` in `app/build.gradle.kts`).
 - `h3` pulls quinn and the patched forks in `vendor/`. `android/rust` is a
   detached workspace, so its `Cargo.toml` repeats the root's
-  `[patch.crates-io]` entries for `h3`, `hyper`, `quinn-proto` and `rustls`;
-  without the `h3` patch the vendored `sockudo-ws` HTTP/3 carrier fails to
-  compile against upstream `h3`.
+  `[patch.crates-io]` entries for `h3`, `hyper`, `quinn-proto`, `quinn-udp` and
+  `rustls`; without the `h3` patch the vendored `sockudo-ws` HTTP/3 carrier fails
+  to compile against upstream `h3`.
 - Bindings are generated from the host library (`.dylib` on macOS, `.so` on
   Linux): a cross-compiled Android `.so` cannot be loaded on the build host. The
   script builds the host library for this.

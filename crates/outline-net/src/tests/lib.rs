@@ -36,7 +36,7 @@ fn ipv6_loopback_connect_succeeds() {
         let server = tokio::spawn(async move {
             let _ = listener.accept().await;
         });
-        let stream = connect_tcp_socket(addr, None)
+        let stream = connect_tcp_socket(addr, super::SocketMark::default())
             .await
             .expect("ipv6 connect must succeed");
         assert!(stream.peer_addr().is_ok());

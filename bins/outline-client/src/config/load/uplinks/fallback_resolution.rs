@@ -90,7 +90,7 @@ fn apply_link<'a>(
 }
 
 /// Validate a single `[[outline.uplinks.fallbacks]]` entry against the parent's
-/// resolved shape. Inheritance: `cipher` / `password` / `fwmark` /
+/// resolved shape. Inheritance: `cipher` / `password` / `fwmark` / `dscp` /
 /// `disable_udp_gso` / `ipv6_first`
 /// / `fingerprint_profile` default to the parent's value when omitted; URLs /
 /// addrs / `vless_id` are not inherited (they are inherently per-wire).
@@ -115,6 +115,12 @@ fn resolve_fallback(
     // Inherited fields (parent → fallback default).
     let cipher = section.method.unwrap_or(parent.cipher);
     let fwmark = section.fwmark.or(parent.fwmark);
+    let dscp = section.dscp.or(parent.dscp);
+    if let Some(dscp_val) = dscp {
+        outline_net::validate_dscp(dscp_val).map_err(|e| {
+            anyhow::anyhow!("uplink {parent_name}: fallbacks[{idx}] invalid dscp: {e}")
+        })?;
+    }
     let disable_udp_gso = section.disable_udp_gso.unwrap_or(parent.disable_udp_gso);
     let ipv6_first = section.ipv6_first.unwrap_or(parent.ipv6_first);
     let ipv4_only = section.ipv4_only.unwrap_or(parent.ipv4_only);
@@ -390,6 +396,7 @@ fn resolve_fallback(
         cipher,
         password: final_password,
         fwmark,
+        dscp,
         disable_udp_gso,
         ipv6_first,
         ipv4_only,

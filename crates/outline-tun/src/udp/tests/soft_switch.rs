@@ -195,7 +195,7 @@ fn test_tun_writer() -> SharedTunWriter {
 async fn build_engine(manager: outline_uplink::UplinkManager) -> TunUdpEngine {
     TunUdpEngine::new(
         test_tun_writer(),
-        TunRouting::new(UplinkRegistry::from_single_manager(manager), None, None, false),
+        TunRouting::new(UplinkRegistry::from_single_manager(manager), None, None, None, false),
         128,
         // No carrier cap: these tests exercise other limits.
         0,

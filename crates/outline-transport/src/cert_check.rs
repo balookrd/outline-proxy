@@ -135,8 +135,8 @@ pub fn leaf_not_after_unix_ms(leaf_der: &[u8]) -> Result<u64> {
 }
 
 /// Open a direct TLS connection to `host:port` — bypassing the tunnel but
-/// honouring the uplink's `fwmark`/`ipv6_first` so it follows the same egress
-/// routing — and return the leaf certificate's `notAfter` as Unix
+/// honouring the uplink's `fwmark`/`dscp`/`ipv6_first` so it follows the same
+/// egress routing — and return the leaf certificate's `notAfter` as Unix
 /// milliseconds. Accepts expired / untrusted certs on purpose: reading the
 /// expiry is the entire point.
 ///
@@ -146,7 +146,7 @@ pub async fn fetch_leaf_cert_not_after_unix_ms(
     cache: &DnsCache,
     host: &str,
     port: u16,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     ipv6_first: bool,
     ipv4_only: bool,
 ) -> Result<u64> {
@@ -164,7 +164,7 @@ pub async fn fetch_leaf_cert_not_after_unix_ms(
             .first()
             .copied()
             .ok_or_else(|| anyhow!("cert check: no addresses for {host}:{port}"))?;
-        let tcp = connect_tcp_socket(addr, fwmark).await?;
+        let tcp = connect_tcp_socket(addr, mark).await?;
         let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
             ServerName::IpAddress(ip.into())
         } else {

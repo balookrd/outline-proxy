@@ -119,10 +119,9 @@ pub(super) async fn connect_xhttp_h1(
         // Header case of both sockets follows the profile's browser as far
         // as hyper allows (see `spawn_h1`).
         let browser_case = crate::request_headers::h1_browser_case(profile);
-        let down_send =
-            h1_handshake(server_addr, &host, use_tls, network.fwmark, browser_case).await?;
-        let up_send =
-            h1_handshake(server_addr, &host, use_tls, network.fwmark, browser_case).await?;
+        let mark = network.socket_mark();
+        let down_send = h1_handshake(server_addr, &host, use_tls, mark, browser_case).await?;
+        let up_send = h1_handshake(server_addr, &host, use_tls, mark, browser_case).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = super::authority_for(use_tls, &host, port);
@@ -191,10 +190,10 @@ async fn h1_handshake(
     addr: SocketAddr,
     host: &str,
     use_tls: bool,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     browser_case: bool,
 ) -> Result<http1::SendRequest<RequestBody>> {
-    let tcp = connect_tcp_socket(addr, fwmark).await?;
+    let tcp = connect_tcp_socket(addr, mark).await?;
     if use_tls {
         let connector = TlsConnector::from(h1_tls_config());
         let server_name = if let Ok(ip) = host.parse::<IpAddr>() {

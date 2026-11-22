@@ -92,7 +92,7 @@ impl UplinkManager {
                         &self.inner.dns_cache,
                         &ep.host,
                         ep.port,
-                        ep.fwmark,
+                        outline_transport::SocketMark::new(ep.fwmark, ep.dscp),
                         ep.ipv6_first,
                         ep.ipv4_only,
                     ),

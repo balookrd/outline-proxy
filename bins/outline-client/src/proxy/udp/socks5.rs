@@ -54,7 +54,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
             };
             let std_sock = outline_net::bind_udp_socket_direct(
                 direct_bind,
-                config.direct_fwmark,
+                outline_net::SocketMark::new(config.direct_fwmark, config.direct_dscp),
             )
             .with_context(|| format!("failed to bind direct UDP socket on {}", direct_bind))?;
             Some(Arc::new(UdpSocket::from_std(std_sock)?))

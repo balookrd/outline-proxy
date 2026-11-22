@@ -11,7 +11,7 @@
 //!
 //! Only the `groups` and `routing` fields of the reloaded config are
 //! applied. Other fields (`listen`, `socks5_auth`, `tun`, `metrics`,
-//! `dashboard`, `h2`, `udp_*_buf_bytes`, `tcp_timeouts`, `direct_fwmark`)
+//! `dashboard`, `h2`, `udp_*_buf_bytes`, `tcp_timeouts`, `direct_fwmark`, `direct_dscp`)
 //! continue to reflect the values from process startup; changing them
 //! requires a full restart. Routing itself is hot-applied only when
 //! `[[route]]` was already present at process startup — enabling it for

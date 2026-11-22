@@ -34,6 +34,9 @@ pub struct ProxyConfig {
     /// SO_MARK applied to outbound sockets for `via = "direct"` routes
     /// (Linux only). Prevents direct traffic from looping back through TUN.
     pub direct_fwmark: Option<u32>,
+    /// Optional 6-bit DSCP value (`0..=63`) applied to outbound sockets for
+    /// `via = "direct"` routes (`IP_TOS` / `IPV6_TCLASS`).
+    pub direct_dscp: Option<u8>,
     /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
     pub tcp_timeouts: TcpTimeouts,
 }

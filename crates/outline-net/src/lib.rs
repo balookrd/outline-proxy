@@ -16,16 +16,50 @@ pub use dns_cache::{AddrPreference, DnsCache};
 pub use ip_alias::{IpAliasError, IpAliasTable};
 pub use relay_buf::{RELAY_BUF_IDLE_GRACE, RelayReadBuf, STREAM_INITIAL_READ_CAPACITY};
 
-#[cfg(not(target_os = "linux"))]
-use anyhow::bail;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use socket2::{Domain, Protocol as SocketProtocol, SockRef, Socket, TcpKeepalive, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
+
+/// Maximum valid 6-bit Differentiated Services Code Point (RFC 2474).
+pub const MAX_DSCP: u8 = 63;
+
+/// Validate that a DSCP value fits within 6 bits (`0..=63`).
+pub fn validate_dscp(dscp: u8) -> Result<()> {
+    if dscp > MAX_DSCP {
+        bail!("invalid DSCP value {dscp}: must be in 0..={MAX_DSCP}");
+    }
+    Ok(())
+}
+
+/// Outbound socket marking options shared across TCP connects and UDP binds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SocketMark {
+    pub fwmark: Option<u32>,
+    pub dscp: Option<u8>,
+}
+
+impl SocketMark {
+    pub const fn new(fwmark: Option<u32>, dscp: Option<u8>) -> Self {
+        Self { fwmark, dscp }
+    }
+
+    pub const fn with_fwmark(fwmark: Option<u32>) -> Self {
+        Self { fwmark, dscp: None }
+    }
+
+    pub const fn with_dscp(dscp: Option<u8>) -> Self {
+        Self { fwmark: None, dscp }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.fwmark.is_none() && self.dscp.is_none()
+    }
+}
 
 static UDP_RECV_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 static UDP_SEND_BUF_BYTES: OnceLock<usize> = OnceLock::new();
@@ -216,19 +250,20 @@ pub fn init_udp_socket_bufs(recv: Option<usize>, send: Option<usize>) {
     }
 }
 
-pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
+pub async fn connect_tcp_socket(addr: SocketAddr, mark: SocketMark) -> Result<TcpStream> {
     // The raw socket2 path is required whenever we must touch the socket
-    // before connect: to set SO_MARK (fwmark) or to request a stable public
-    // IPv6 source (IPV6_PREFER_SRC_PUBLIC). Otherwise use tokio's async
-    // connector so we never block a Tokio worker thread on the handshake.
-    if fwmark.is_none() && !prefer_public_raw_needed(addr) {
+    // before connect: to set SO_MARK (fwmark), IP_TOS/IPV6_TCLASS (dscp), or
+    // to request a stable public IPv6 source (IPV6_PREFER_SRC_PUBLIC).
+    // Otherwise use tokio's async connector so we never block a Tokio worker
+    // thread on the handshake.
+    if mark.is_empty() && !prefer_public_raw_needed(addr) {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
         configure_tcp_stream_low_latency(&stream, addr)?;
         return Ok(stream);
     }
-    connect_tcp_socket_raw(addr, fwmark, None).await
+    connect_tcp_socket_raw(addr, mark, None).await
 }
 
 /// Direct-route TCP connect that honours the rotating /64 source prefix
@@ -238,17 +273,17 @@ pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result
 /// the target is IPv4, or the interface has no usable prefix. Use this only for
 /// direct dials — uplink dials keep [`connect_tcp_socket`] so they are never
 /// source-bound onto the local prefix.
-pub async fn connect_tcp_socket_direct(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
+pub async fn connect_tcp_socket_direct(addr: SocketAddr, mark: SocketMark) -> Result<TcpStream> {
     #[cfg(target_os = "linux")]
     if let Some(src) = direct_source_for(addr) {
-        return connect_tcp_socket_raw(addr, fwmark, Some(src)).await;
+        return connect_tcp_socket_raw(addr, mark, Some(src)).await;
     }
-    connect_tcp_socket(addr, fwmark).await
+    connect_tcp_socket(addr, mark).await
 }
 
 /// Whether the IPv6 stable-source preference forces the raw socket2 path.
 /// Linux-only: on other platforms the option is a no-op, so a plain
-/// fwmark-less connect keeps using tokio's fast path.
+/// unmarked connect keeps using tokio's fast path.
 #[cfg(target_os = "linux")]
 fn prefer_public_raw_needed(addr: SocketAddr) -> bool {
     addr.is_ipv6() && prefer_public_ipv6_src_enabled()
@@ -260,18 +295,21 @@ fn prefer_public_raw_needed(_addr: SocketAddr) -> bool {
 }
 
 /// Raw socket2 path: lets us touch the socket before connect to set SO_MARK
-/// (fwmark) and/or request a stable public IPv6 source
-/// (`IPV6_PREFER_SRC_PUBLIC`). `fwmark` is Linux-only; the stable-IPv6
-/// preference is best-effort and applied only to IPv6 sockets.
-#[cfg(target_os = "linux")]
+/// (`fwmark`), `IP_TOS` / `IPV6_TCLASS` (`dscp`), and/or request a stable
+/// public IPv6 source (`IPV6_PREFER_SRC_PUBLIC`). `fwmark` and the stable-IPv6
+/// preference are Linux-only; `dscp` is supported on all Unix targets.
+#[cfg(unix)]
 async fn connect_tcp_socket_raw(
     addr: SocketAddr,
-    fwmark: Option<u32>,
+    mark: SocketMark,
     bind_source: Option<Ipv6Addr>,
 ) -> Result<TcpStream> {
-    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(SocketProtocol::TCP))
+    let domain = Domain::for_address(addr);
+    let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))
         .context("failed to create TCP socket")?;
-    apply_fwmark(&socket, fwmark)?;
+    apply_fwmark(&socket, mark.fwmark)?;
+    apply_dscp(&socket, domain, mark.dscp, false)?;
+    #[cfg(target_os = "linux")]
     if addr.is_ipv6() {
         match bind_source {
             // Direct rotating /64 source: bind a random (non-configured)
@@ -285,6 +323,8 @@ async fn connect_tcp_socket_raw(
             None => apply_prefer_public_ipv6_src(&socket),
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = bind_source;
     // Set non-blocking BEFORE connect so that the handshake is driven by tokio
     // instead of blocking the current thread.
     socket
@@ -319,21 +359,28 @@ async fn connect_tcp_socket_raw(
     Ok(stream)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 async fn connect_tcp_socket_raw(
     _addr: SocketAddr,
-    _fwmark: Option<u32>,
+    mark: SocketMark,
     _bind_source: Option<Ipv6Addr>,
 ) -> Result<TcpStream> {
-    bail!("fwmark is only supported on Linux")
+    if mark.fwmark.is_some() && mark.dscp.is_none() {
+        bail!("fwmark is only supported on Linux")
+    } else if mark.dscp.is_some() && mark.fwmark.is_none() {
+        bail!("dscp is only supported on Unix")
+    } else {
+        bail!("fwmark and dscp are not supported on this platform")
+    }
 }
 
-pub fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std::net::UdpSocket> {
-    let socket =
-        Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(SocketProtocol::UDP))
-            .context("failed to create UDP socket")?;
+pub fn bind_udp_socket(bind_addr: SocketAddr, mark: SocketMark) -> Result<std::net::UdpSocket> {
+    let domain = Domain::for_address(bind_addr);
+    let socket = Socket::new(domain, Type::DGRAM, Some(SocketProtocol::UDP))
+        .context("failed to create UDP socket")?;
+    let mut dual_stack_v6 = false;
     if bind_addr.is_ipv6() {
-        let _ = socket.set_only_v6(false);
+        dual_stack_v6 = socket.set_only_v6(false).is_ok() || !socket.only_v6().unwrap_or(true);
         if bind_addr.ip().is_unspecified() {
             // Wildcard bind: the kernel picks the source at send time — prefer
             // the stable public address over a rotating privacy-extension one.
@@ -344,7 +391,8 @@ pub fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std
             let _ = set_ipv6_freebind(&socket);
         }
     }
-    apply_fwmark(&socket, fwmark)?;
+    apply_fwmark(&socket, mark.fwmark)?;
+    apply_dscp(&socket, domain, mark.dscp, dual_stack_v6)?;
     if let Some(&size) = UDP_RECV_BUF_BYTES.get() {
         let _ = socket.set_recv_buffer_size(size);
     }
@@ -367,16 +415,16 @@ pub fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std
 /// to [`bind_udp_socket`]. Use this only for direct dials.
 pub fn bind_udp_socket_direct(
     bind_addr: SocketAddr,
-    fwmark: Option<u32>,
+    mark: SocketMark,
 ) -> Result<std::net::UdpSocket> {
     #[cfg(target_os = "linux")]
     if bind_addr.is_ipv6()
         && bind_addr.ip().is_unspecified()
         && let Some(src) = direct_source_for(bind_addr)
     {
-        return bind_udp_socket(SocketAddr::new(IpAddr::V6(src), bind_addr.port()), fwmark);
+        return bind_udp_socket(SocketAddr::new(IpAddr::V6(src), bind_addr.port()), mark);
     }
-    bind_udp_socket(bind_addr, fwmark)
+    bind_udp_socket(bind_addr, mark)
 }
 
 fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Result<()> {
@@ -432,8 +480,6 @@ fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
     };
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::AsRawFd;
-
         let value = mark as libc::c_uint;
         // SAFETY: `socket` borrows the fd for the whole call, so it cannot be
         // closed underneath the syscall. The option pointer refers to a live
@@ -463,6 +509,87 @@ fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
     }
 }
 
+fn apply_dscp(
+    socket: &Socket,
+    domain: Domain,
+    dscp: Option<u8>,
+    dual_stack_v6: bool,
+) -> Result<()> {
+    let Some(dscp) = dscp else {
+        return Ok(());
+    };
+    validate_dscp(dscp)?;
+    #[cfg(unix)]
+    {
+        let tos: libc::c_int = i32::from(dscp) << 2;
+        if domain == Domain::IPV4 {
+            // SAFETY: `socket` borrows a live IPv4 fd for the syscall; `tos`
+            // is an initialized stack `c_int` matching the `int` option value
+            // expected by `IP_TOS` on Unix, and the kernel reads only `optlen`
+            // bytes without writing back. The return code is checked below.
+            let rc = unsafe {
+                libc::setsockopt(
+                    socket.as_raw_fd(),
+                    libc::IPPROTO_IP,
+                    libc::IP_TOS,
+                    &tos as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&tos) as libc::socklen_t,
+                )
+            };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("failed to apply IP_TOS={tos:#x} (dscp={dscp})"));
+            }
+            Ok(())
+        } else if domain == Domain::IPV6 {
+            // SAFETY: `socket` borrows a live IPv6 fd for the syscall; `tos`
+            // is an initialized stack `c_int` matching `IPV6_TCLASS` (RFC 3542),
+            // and the kernel reads only `optlen` bytes. Return code is checked.
+            let rc = unsafe {
+                libc::setsockopt(
+                    socket.as_raw_fd(),
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_TCLASS,
+                    &tos as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&tos) as libc::socklen_t,
+                )
+            };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error()).with_context(|| {
+                    format!("failed to apply IPV6_TCLASS={tos:#x} (dscp={dscp})")
+                });
+            }
+            if dual_stack_v6 {
+                // Best-effort IP_TOS on dual-stack AF_INET6 sockets: Linux
+                // honors it for IPv4-mapped peers (and quinn-udp emits IP_TOS
+                // cmsg for `::ffff:a.b.c.d`), whereas BSD/macOS may reject
+                // IPPROTO_IP options on an AF_INET6 descriptor.
+                //
+                // SAFETY: `socket` borrows a live fd for the syscall; `tos` is
+                // an initialized stack `c_int` of `size_of_val(&tos)` bytes.
+                unsafe {
+                    libc::setsockopt(
+                        socket.as_raw_fd(),
+                        libc::IPPROTO_IP,
+                        libc::IP_TOS,
+                        &tos as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&tos) as libc::socklen_t,
+                    );
+                }
+            }
+            Ok(())
+        } else {
+            let _ = dual_stack_v6;
+            bail!("unsupported socket domain for DSCP")
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (socket, domain, dual_stack_v6);
+        bail!("dscp is only supported on Unix")
+    }
+}
+
 pub fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
     match server_addr.ip() {
         IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -473,3 +600,7 @@ pub fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
 #[cfg(test)]
 #[path = "tests/lib.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/dscp.rs"]
+mod dscp_tests;

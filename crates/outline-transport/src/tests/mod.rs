@@ -100,7 +100,7 @@ async fn connect_tcp_socket_enables_nodelay() {
         let (_stream, _) = listener.accept().await.unwrap();
     });
 
-    let stream = connect_tcp_socket(addr, None).await.unwrap();
+    let stream = connect_tcp_socket(addr, crate::SocketMark::default()).await.unwrap();
     assert!(stream.nodelay().unwrap());
 
     drop(stream);

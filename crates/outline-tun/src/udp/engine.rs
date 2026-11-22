@@ -281,9 +281,14 @@ impl TunUdpEngine {
             None => self.inner.dispatch.resolve_udp(&remote_target).await,
         };
         match route {
-            TunRoute::Direct { fwmark } => {
-                self.handle_direct_packet(key, &remote_target, Bytes::from(packet.payload), fwmark)
-                    .await
+            TunRoute::Direct { fwmark, dscp } => {
+                self.handle_direct_packet(
+                    key,
+                    &remote_target,
+                    Bytes::from(packet.payload),
+                    outline_net::SocketMark::new(fwmark, dscp),
+                )
+                .await
             },
             TunRoute::Drop { reason } => {
                 self.remember_dropped_route(&key);
@@ -556,7 +561,7 @@ impl TunUdpEngine {
         key: UdpFlowKey,
         remote_target: &TargetAddr,
         first_payload: Bytes,
-        fwmark: Option<u32>,
+        mark: outline_net::SocketMark,
     ) -> Result<()> {
         let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
         let bind_addr = match key.remote_ip {
@@ -567,10 +572,9 @@ impl TunUdpEngine {
                 SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0)
             },
         };
-        let std_sock =
-            outline_net::bind_udp_socket_direct(bind_addr, fwmark).with_context(|| {
-                format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
-            })?;
+        let std_sock = outline_net::bind_udp_socket_direct(bind_addr, mark).with_context(|| {
+            format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
+        })?;
         let sock = Arc::new(UdpSocket::from_std(std_sock)?);
 
         let flow_id = self

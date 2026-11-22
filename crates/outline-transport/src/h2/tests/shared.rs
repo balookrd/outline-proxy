@@ -7,18 +7,88 @@ use crate::shared_dial::WsDialer;
 const CHROMIUM: TlsFingerprint = TlsFingerprint::Chromium;
 
 #[test]
-fn h2_shared_connection_key_distinguishes_scheme_server_name_port_fwmark_and_family() {
-    let base = H2ConnectionKey::new("one.example", 443, true, None, CHROMIUM);
+fn h2_shared_connection_key_distinguishes_scheme_server_name_port_fwmark_dscp_and_family() {
+    let none = crate::SocketMark::default();
+    let base = H2ConnectionKey::new("one.example", 443, true, none, CHROMIUM);
 
-    assert_ne!(base, H2ConnectionKey::new("two.example", 443, true, None, CHROMIUM));
-    assert_ne!(base, H2ConnectionKey::new("one.example", 443, false, None, CHROMIUM));
-    assert_ne!(base, H2ConnectionKey::new("one.example", 443, true, Some(42), CHROMIUM));
-    assert_ne!(base, H2ConnectionKey::new("one.example", 8443, true, None, CHROMIUM));
+    assert_ne!(base, H2ConnectionKey::new("two.example", 443, true, none, CHROMIUM));
+    assert_ne!(base, H2ConnectionKey::new("one.example", 443, false, none, CHROMIUM));
     assert_ne!(
         base,
-        H2ConnectionKey::new("one.example", 443, true, None, TlsFingerprint::Firefox)
+        H2ConnectionKey::new(
+            "one.example",
+            443,
+            true,
+            crate::SocketMark::with_fwmark(Some(42)),
+            CHROMIUM
+        )
     );
-    assert_eq!(base, H2ConnectionKey::new("one.example", 443, true, None, CHROMIUM));
+    assert_ne!(
+        base,
+        H2ConnectionKey::new(
+            "one.example",
+            443,
+            true,
+            crate::SocketMark::with_dscp(Some(59)),
+            CHROMIUM
+        )
+    );
+    assert_ne!(
+        H2ConnectionKey::new(
+            "one.example",
+            443,
+            true,
+            crate::SocketMark::with_dscp(Some(59)),
+            CHROMIUM
+        ),
+        H2ConnectionKey::new(
+            "one.example",
+            443,
+            true,
+            crate::SocketMark::with_dscp(Some(40)),
+            CHROMIUM
+        )
+    );
+    assert_ne!(
+        base,
+        H2ConnectionKey::new(
+            "one.example",
+            443,
+            true,
+            crate::SocketMark::with_dscp(Some(0)),
+            CHROMIUM
+        )
+    );
+    assert_ne!(base, H2ConnectionKey::new("one.example", 8443, true, none, CHROMIUM));
+    assert_ne!(
+        base,
+        H2ConnectionKey::new("one.example", 443, true, none, TlsFingerprint::Firefox)
+    );
+    assert_eq!(base, H2ConnectionKey::new("one.example", 443, true, none, CHROMIUM));
+}
+
+#[test]
+fn h2_dialer_key_distinguishes_dscp() {
+    let dialer = H2Dialer::new(true, DialResumeOptions::default(), None);
+    let plain = dialer.make_key("one.example", 443, DialNetworkOptions::default());
+    let dscp_59 = dialer.make_key(
+        "one.example",
+        443,
+        DialNetworkOptions {
+            dscp: Some(59),
+            ..DialNetworkOptions::default()
+        },
+    );
+    let dscp_40 = dialer.make_key(
+        "one.example",
+        443,
+        DialNetworkOptions {
+            dscp: Some(40),
+            ..DialNetworkOptions::default()
+        },
+    );
+    assert_ne!(plain, dscp_59);
+    assert_ne!(dscp_59, dscp_40);
 }
 
 /// The dialer reads the dial-scoped family, so two dials to the same server

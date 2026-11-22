@@ -37,6 +37,11 @@ carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
   [`bins/outline-server/README.ru.md`](bins/outline-server/README.ru.md#модель-эндпоинтов)
   и [`docs/PADDING.ru.md`](docs/PADDING.ru.md); перед апгрейдом мигрируйте
   `config.toml`.
+- **Адаптивный выбор носителя, H3/XHTTP/SOCKS5/TUN и DSCP-маркировка egress.**
+  Клиент поддерживает per-uplink и direct `dscp` (`0..=63`, `direct_dscp`,
+  `--dscp` / `OUTLINE_DSCP`) наряду с Linux `fwmark` — на TCP, UDP, HTTP/2,
+  HTTP/3 (через патч `quinn-udp`, сохраняющий DSCP в `cmsg` вместе с битами
+  ECN), Control API CRUD и в веб-интерфейсе `/ws/*`.
 - **Mesh-кластер серверов.** Edge-узлы релеят сессию клиента на home-узел, что
   ей владеет, с метриками исхода релея и полной миграцией сессии при
   переключении edge — включая single-target UDP и VLESS-mux-бандлы.

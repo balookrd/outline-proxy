@@ -139,8 +139,9 @@ export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
   `app/build.gradle.kts`).
 - `h3` тянет quinn и пропатченные форки из `vendor/`. `android/rust` — отдельный
   (detached) workspace, поэтому его `Cargo.toml` повторяет корневые записи
-  `[patch.crates-io]` для `h3`, `hyper`, `quinn-proto` и `rustls`; без патча `h3`
-  vendored-носитель HTTP/3 `sockudo-ws` не компилируется против апстримного `h3`.
+  `[patch.crates-io]` для `h3`, `hyper`, `quinn-proto`, `quinn-udp` и `rustls`;
+  без патча `h3` vendored-носитель HTTP/3 `sockudo-ws` не компилируется против
+  апстримного `h3`.
 - Биндинги генерируются из библиотеки под хост (`.dylib` на macOS, `.so` на
   Linux): кросс-скомпилированную Android-`.so` на хосте сборки загрузить нельзя.
   Скрипт для этого собирает библиотеку под хост.

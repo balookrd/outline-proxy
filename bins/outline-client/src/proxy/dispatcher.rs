@@ -20,9 +20,10 @@ use super::ProxyConfig;
 /// `udp::serve_udp_associate`).
 pub(crate) enum Route {
     /// Route outside any uplink (via = "direct" route).
-    /// `fwmark` is applied to the outbound socket (Linux SO_MARK) so direct
-    /// traffic does not loop back through TUN.
-    Direct { fwmark: Option<u32> },
+    /// `fwmark` (Linux SO_MARK) and/or `dscp` (`IP_TOS` / `IPV6_TCLASS`) are
+    /// applied to the outbound socket so direct traffic does not loop back
+    /// through TUN.
+    Direct { fwmark: Option<u32>, dscp: Option<u8> },
     /// Policy-blocked (SOCKS5 REP=0x02 for TCP; silent drop for UDP).
     Drop,
     /// Forward through this group's uplink manager.
@@ -38,7 +39,10 @@ fn materialize_target(
     target: RouteTarget,
 ) -> Route {
     match target {
-        RouteTarget::Direct => Route::Direct { fwmark: config.direct_fwmark },
+        RouteTarget::Direct => Route::Direct {
+            fwmark: config.direct_fwmark,
+            dscp: config.direct_dscp,
+        },
         RouteTarget::Drop => Route::Drop,
         RouteTarget::Group(name) => {
             let manager = registry
@@ -119,7 +123,10 @@ async fn resolve_dispatch(
                 group = registry.default_group_name(),
                 "default group has no healthy uplinks, bypassing to direct"
             );
-            return Route::Direct { fwmark: config.direct_fwmark };
+            return Route::Direct {
+                fwmark: config.direct_fwmark,
+                dscp: config.direct_dscp,
+            };
         }
         return Route::Group {
             name: registry.default_group_name().into(),

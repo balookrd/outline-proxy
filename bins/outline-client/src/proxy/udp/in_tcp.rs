@@ -42,10 +42,11 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
             } else {
                 SocketAddr::from(([0u8; 4], 0))
             };
-            let std_sock = outline_net::bind_udp_socket_direct(direct_bind, config.direct_fwmark)
-                .with_context(|| {
-                format!("failed to bind direct UDP socket on {}", direct_bind)
-            })?;
+            let std_sock = outline_net::bind_udp_socket_direct(
+                direct_bind,
+                outline_net::SocketMark::new(config.direct_fwmark, config.direct_dscp),
+            )
+            .with_context(|| format!("failed to bind direct UDP socket on {}", direct_bind))?;
             Some(Arc::new(UdpSocket::from_std(std_sock)?))
         } else {
             None

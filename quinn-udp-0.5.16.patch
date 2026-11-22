@@ -1,0 +1,187 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 3ddebfd..fa2b8db 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -47,15 +47,6 @@ name = "quinn_udp"
+ path = "src/lib.rs"
+ bench = false
+ 
+-[[test]]
+-name = "tests"
+-path = "tests/tests.rs"
+-
+-[[bench]]
+-name = "throughput"
+-path = "benches/throughput.rs"
+-harness = false
+-
+ [dependencies.libc]
+ version = "0.2.158"
+ 
+@@ -69,20 +60,6 @@ features = ["std"]
+ optional = true
+ default-features = false
+ 
+-[dev-dependencies.criterion]
+-version = "0.7"
+-features = ["async_tokio"]
+-default-features = false
+-
+-[dev-dependencies.tokio]
+-version = "1.28.1"
+-features = [
+-    "sync",
+-    "rt",
+-    "rt-multi-thread",
+-    "net",
+-]
+-
+ [build-dependencies.cfg_aliases]
+ version = "0.2"
+ 
+diff --git a/src/unix.rs b/src/unix.rs
+index 5e67bd9..f9c69f9 100644
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -80,6 +80,11 @@ pub struct UdpSocketState {
+     /// In particular, we do not use IP_TOS cmsg_type in this case,
+     /// which is not supported on Linux <3.13 and results in not sending the UDP packet at all.
+     sendmsg_einval: AtomicBool,
++
++    /// Socket DSCP bits (upper 6 bits of TOS / Traffic Class, masked with `0xfc`)
++    /// read once at socket wrap time so `prepare_msg` preserves them alongside per-packet ECN.
++    dscp_v4: u8,
++    dscp_v6: u8,
+ }
+ 
+ impl UdpSocketState {
+@@ -183,6 +188,19 @@ impl UdpSocketState {
+                 !set_socket_option_supported(&*io, libc::IPPROTO_IPV6, IPV6_DONTFRAG, OPTION_ON)?;
+         }
+ 
++        let dscp_v6 = if !is_ipv4 {
++            get_dscp_option(&*io, libc::IPPROTO_IPV6, libc::IPV6_TCLASS).unwrap_or(0)
++        } else {
++            0
++        };
++        let dscp_v4 = if is_ipv4 {
++            get_dscp_option(&*io, libc::IPPROTO_IP, libc::IP_TOS).unwrap_or(0)
++        } else if !io.only_v6()? {
++            get_dscp_option(&*io, libc::IPPROTO_IP, libc::IP_TOS).unwrap_or(dscp_v6)
++        } else {
++            0
++        };
++
+         let now = Instant::now();
+         Ok(Self {
+             last_send_error: Mutex::new(now.checked_sub(2 * IO_ERROR_LOG_INTERVAL).unwrap_or(now)),
+@@ -190,6 +208,8 @@ impl UdpSocketState {
+             gro_segments: gro::gro_segments(),
+             may_fragment,
+             sendmsg_einval: AtomicBool::new(false),
++            dscp_v4,
++            dscp_v6,
+         })
+     }
+ 
+@@ -327,6 +347,8 @@ fn send(
+         &mut cmsgs,
+         encode_src_ip,
+         state.sendmsg_einval(),
++        state.dscp_v4,
++        state.dscp_v6,
+     );
+ 
+     loop {
+@@ -371,6 +393,8 @@ fn send(
+                         &mut cmsgs,
+                         encode_src_ip,
+                         state.sendmsg_einval(),
++                        state.dscp_v4,
++                        state.dscp_v6,
+                     );
+                     continue;
+                 }
+@@ -410,6 +434,8 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
+             &mut ctrls[i],
+             true,
+             state.sendmsg_einval(),
++            state.dscp_v4,
++            state.dscp_v6,
+         );
+         hdrs[i].msg_datalen = chunk.len();
+         cnt += 1;
+@@ -444,6 +470,8 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
+         &mut ctrl,
+         cfg!(apple) || cfg!(target_os = "openbsd") || cfg!(target_os = "netbsd"),
+         state.sendmsg_einval(),
++        state.dscp_v4,
++        state.dscp_v6,
+     );
+     loop {
+         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
+@@ -592,6 +620,9 @@ fn prepare_msg(
+     #[allow(unused_variables)] // only used on FreeBSD & macOS
+     encode_src_ip: bool,
+     sendmsg_einval: bool,
++    #[allow(unused_variables)] // IP_TOS cmsg is not emitted on NetBSD
++    dscp_v4: u8,
++    dscp_v6: u8,
+ ) {
+     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
+     iov.iov_len = transmit.contents.len();
+@@ -619,11 +650,13 @@ fn prepare_msg(
+         if !sendmsg_einval {
+             #[cfg(not(target_os = "netbsd"))]
+             {
+-                encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
++                let tos = libc::c_int::from(dscp_v4) | ecn;
++                encoder.push(libc::IPPROTO_IP, libc::IP_TOS, tos as IpTosTy);
+             }
+         }
+     } else {
+-        encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
++        let tclass = libc::c_int::from(dscp_v6) | ecn;
++        encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, tclass);
+     }
+ 
+     // Only set the segment size if it is less than the size of the contents.
+@@ -1069,6 +1102,38 @@ fn set_socket_option(
+     }
+ }
+ 
++/// Reads the upper 6 DSCP bits (masked with `0xfc`) from an existing socket's
++/// `IP_TOS` or `IPV6_TCLASS` option. Returns `None` if the socket option is
++/// unsupported or cannot be read.
++fn get_dscp_option(
++    socket: &impl AsRawFd,
++    level: libc::c_int,
++    name: libc::c_int,
++) -> Option<u8> {
++    let mut val: libc::c_int = 0;
++    let mut len = mem::size_of_val(&val) as libc::socklen_t;
++    let rc = unsafe {
++        libc::getsockopt(
++            socket.as_raw_fd(),
++            level,
++            name,
++            &mut val as *mut _ as *mut libc::c_void,
++            &mut len,
++        )
++    };
++    if rc != 0 {
++        return None;
++    }
++    let byte = if len as usize == mem::size_of::<u8>() {
++        unsafe { *(&val as *const libc::c_int as *const u8) }
++    } else if len as usize >= mem::size_of::<libc::c_int>() {
++        val as u8
++    } else {
++        return None;
++    };
++    Some(byte & 0xfc)
++}
++
+ const OPTION_ON: libc::c_int = 1;
+ 
+ #[cfg(not(any(target_os = "linux", target_os = "android")))]

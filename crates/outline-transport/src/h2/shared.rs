@@ -73,9 +73,9 @@ fn h2_client_tls_config() -> Arc<ClientConfig> {
 async fn connect_tls_h2(
     addr: SocketAddr,
     host: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
 ) -> Result<(tokio_rustls::client::TlsStream<TcpStream>, Option<crate::CarrierLossProbe>)> {
-    let tcp = connect_tcp_socket(addr, fwmark).await?;
+    let tcp = connect_tcp_socket(addr, mark).await?;
     // Captured before the TLS handshake consumes `tcp`: once wrapped in a
     // `TlsStream` the raw socket is unreachable from the outside, and after
     // this dial completes there is no other point that could recover it.
@@ -221,13 +221,13 @@ impl H2ConnectionKey {
         server_name: &str,
         server_port: u16,
         use_tls: bool,
-        fwmark: Option<u32>,
+        mark: crate::SocketMark,
         tls: TlsFingerprint,
     ) -> Self {
         Self {
             // TCP carrier: UDP GSO is irrelevant, so h2 dials that differ only
             // in it keep sharing one connection.
-            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark, false),
+            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, mark, false),
             use_tls,
             tls,
         }
@@ -514,7 +514,13 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         server_port: u16,
         network: crate::dial_plan::DialNetworkOptions,
     ) -> H2ConnectionKey {
-        H2ConnectionKey::new(server_name, server_port, self.use_tls, network.fwmark, self.tls)
+        H2ConnectionKey::new(
+            server_name,
+            server_port,
+            self.use_tls,
+            network.socket_mark(),
+            self.tls,
+        )
     }
 
     async fn establish(
@@ -525,8 +531,14 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         cache_key: Option<H2ConnectionKey>,
     ) -> Result<Arc<SharedH2Connection>> {
         Ok(Arc::new(
-            connect_h2_connection(addr, server_name, self.use_tls, network.fwmark, cache_key)
-                .await?,
+            connect_h2_connection(
+                addr,
+                server_name,
+                self.use_tls,
+                network.socket_mark(),
+                cache_key,
+            )
+            .await?,
         ))
     }
 
@@ -590,15 +602,15 @@ async fn connect_h2_connection(
     server_addr: SocketAddr,
     server_name: &str,
     use_tls: bool,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     cache_key: Option<H2ConnectionKey>,
 ) -> Result<SharedH2Connection> {
     let (send_request, conn, loss_probe) = timeout(fresh_connect_timeout(), async {
         let (io, loss_probe) = if use_tls {
-            let (tls, loss_probe) = connect_tls_h2(server_addr, server_name, fwmark).await?;
+            let (tls, loss_probe) = connect_tls_h2(server_addr, server_name, mark).await?;
             (H2Io::Tls { inner: tls }, loss_probe)
         } else {
-            let tcp = connect_tcp_socket(server_addr, fwmark).await?;
+            let tcp = connect_tcp_socket(server_addr, mark).await?;
             let loss_probe = crate::CarrierLossProbe::from_tcp_stream(&tcp);
             (H2Io::Plain { inner: tcp }, loss_probe)
         };

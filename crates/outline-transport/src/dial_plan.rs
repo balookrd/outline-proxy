@@ -26,6 +26,7 @@ use crate::dial_timeouts::fresh_connect_timeout as http1_ws_connect_timeout;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DialNetworkOptions {
     pub fwmark: Option<u32>,
+    pub dscp: Option<u8>,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
     /// Keep QUIC (`ws_h3` / `xhttp_h3`) sockets of this dial off UDP GSO:
@@ -35,6 +36,13 @@ pub struct DialNetworkOptions {
     /// `UDP_SEGMENT` send with `EIO` and the first flight of each handshake
     /// is lost. TCP-based carriers ignore it.
     pub disable_udp_gso: bool,
+}
+
+impl DialNetworkOptions {
+    /// Outbound socket mark (`fwmark` + `dscp`) applied to TCP/UDP sockets of this dial.
+    pub const fn socket_mark(&self) -> crate::SocketMark {
+        crate::SocketMark::new(self.fwmark, self.dscp)
+    }
 }
 
 /// Cross-transport resumption and retry-negotiation headers for a dial.
@@ -607,7 +615,7 @@ async fn connect_websocket_http1(
         ack_prefix_advertised_by_server,
         symmetric_replay_advertised_by_server,
     ) = timeout(http1_ws_connect_timeout(), async {
-        let tcp = connect_tcp_socket(server_addr, options.network.fwmark).await?;
+        let tcp = connect_tcp_socket(server_addr, options.network.socket_mark()).await?;
         let secure = options.url.scheme() == "wss";
         // Our fingerprint-aware TLS config, so the dial-scoped browser family
         // set by `DialPlan::connect` flows into the ClientHello via

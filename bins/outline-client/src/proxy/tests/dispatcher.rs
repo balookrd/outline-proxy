@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use url::Url;
 
+use outline_routing::{RoutingTable, RoutingTableConfig, SharedRoutingTable};
 use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
@@ -36,6 +37,7 @@ fn uplink(name: &str) -> UplinkConfig {
         password: "s3cr3t_password".to_string(),
         weight: 1.0,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
@@ -139,14 +141,17 @@ fn group_config(name: &str, bypass_when_down: bool) -> UplinkGroupConfig {
     }
 }
 
-/// Router-less proxy config (`router: None`) with a direct fwmark, so the
-/// bypass fall-through in `resolve_dispatch` is observable.
+/// Router-less proxy config (`router: None`) with a direct fwmark and DSCP,
+/// so the bypass fall-through in `resolve_dispatch` is observable.
+const DIRECT_DSCP: u8 = 46;
+
 fn no_router_config() -> ProxyConfig {
     ProxyConfig {
         socks5_auth: None,
         dns_cache: Arc::new(outline_transport::DnsCache::default()),
         router: None,
         direct_fwmark: Some(FWMARK),
+        direct_dscp: Some(DIRECT_DSCP),
         tcp_timeouts: TcpTimeouts::DEFAULT,
     }
 }
@@ -169,7 +174,38 @@ async fn no_router_bypass_group_down_dispatches_direct() {
     let config = no_router_config();
 
     match resolve_dispatch(&config, &registry, &target(), TransportKind::Tcp).await {
-        Route::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        Route::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, Some(FWMARK));
+            assert_eq!(dscp, Some(DIRECT_DSCP));
+        },
+        other => panic!("expected Direct, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn explicit_direct_rule_preserves_direct_dscp_without_fwmark() {
+    let registry = UplinkRegistry::from_single_manager(manager("main", false));
+    let table = RoutingTable::compile(&RoutingTableConfig {
+        rules: vec![],
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    })
+    .await
+    .unwrap();
+    let config = ProxyConfig {
+        socks5_auth: None,
+        dns_cache: Arc::new(outline_transport::DnsCache::default()),
+        router: Some(SharedRoutingTable::new(table)),
+        direct_fwmark: None,
+        direct_dscp: Some(59),
+        tcp_timeouts: TcpTimeouts::DEFAULT,
+    };
+
+    match resolve_dispatch(&config, &registry, &target(), TransportKind::Tcp).await {
+        Route::Direct { fwmark, dscp } => {
+            assert_eq!(fwmark, None);
+            assert_eq!(dscp, Some(59));
+        },
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }

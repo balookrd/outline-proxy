@@ -701,6 +701,7 @@ export function makeWsConfigResponse(overrides: Partial<WsConfigResponse> = {}):
     fingerprint_profile: 'stable',
     prefer_public_ipv6_src: false,
     direct_fwmark: null,
+    direct_dscp: null,
     direct_ipv6_prefix_interface: null,
     ipv4_only: false,
     ipv6_first: false,

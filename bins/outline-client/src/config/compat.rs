@@ -58,6 +58,7 @@ fn top_level_uplink_fields_present(file: &ConfigFile) -> bool {
         || file.method.is_some()
         || file.password.is_some()
         || file.fwmark.is_some()
+        || file.dscp.is_some()
         || file.ipv6_first.is_some()
         || file.ipv4_only.is_some()
         || file.uplinks.is_some()
@@ -84,6 +85,7 @@ fn from_top_level(file: &ConfigFile) -> OutlineSection {
         method: file.method,
         password: file.password.clone(),
         fwmark: file.fwmark,
+        dscp: file.dscp,
         ipv6_first: file.ipv6_first,
         ipv4_only: file.ipv4_only,
         uplinks: file.uplinks.clone(),
@@ -111,6 +113,7 @@ fn merge_top_level_into(file: &ConfigFile, outline: OutlineSection) -> OutlineSe
         method: outline.method.or(file.method),
         password: outline.password.or_else(|| file.password.clone()),
         fwmark: outline.fwmark.or(file.fwmark),
+        dscp: outline.dscp.or(file.dscp),
         ipv6_first: outline.ipv6_first.or(file.ipv6_first),
         ipv4_only: outline.ipv4_only.or(file.ipv4_only),
         uplinks: outline.uplinks.or_else(|| file.uplinks.clone()),
@@ -149,6 +152,7 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         password: outline.password.clone(),
         weight: Some(1.0),
         fwmark: outline.fwmark,
+        dscp: outline.dscp,
         // Per-uplink knob: the inline shorthand has no such key.
         disable_udp_gso: None,
         ipv6_first: outline.ipv6_first,
@@ -192,6 +196,7 @@ fn outline_has_inline_uplink_fields(outline: &OutlineSection) -> bool {
         || outline.method.is_some()
         || outline.password.is_some()
         || outline.fwmark.is_some()
+        || outline.dscp.is_some()
         || outline.ipv6_first.is_some()
         || outline.ipv4_only.is_some()
 }

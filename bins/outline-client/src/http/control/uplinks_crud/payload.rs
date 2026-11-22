@@ -47,6 +47,11 @@ pub(crate) struct UplinkPayload {
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "crate::http::control::config_edit::deserialize_optional_nullable_u8"
+    )]
+    pub(crate) dscp: Option<Option<u8>>,
     pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
@@ -97,6 +102,7 @@ pub(crate) struct FallbackPayload {
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) dscp: Option<u8>,
     pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
@@ -206,6 +212,9 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     if let Some(fw) = payload.fwmark {
         tbl.insert("fwmark", Item::Value(Value::from(fw as i64)));
     }
+    if let Some(Some(d)) = payload.dscp {
+        tbl.insert("dscp", Item::Value(Value::from(i64::from(d))));
+    }
     if let Some(v) = payload.disable_udp_gso {
         tbl.insert("disable_udp_gso", Item::Value(Value::from(v)));
     }
@@ -264,6 +273,9 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         set_str(&mut sub, "password", fb.password.as_deref());
         if let Some(fw) = fb.fwmark {
             sub.insert("fwmark", Item::Value(Value::from(fw as i64)));
+        }
+        if let Some(d) = fb.dscp {
+            sub.insert("dscp", Item::Value(Value::from(i64::from(d))));
         }
         if let Some(v) = fb.disable_udp_gso {
             sub.insert("disable_udp_gso", Item::Value(Value::from(v)));
@@ -342,6 +354,15 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(fw) = patch.fwmark {
         tbl.insert("fwmark", Item::Value(Value::from(fw as i64)));
+    }
+    match patch.dscp {
+        Some(Some(d)) => {
+            tbl.insert("dscp", Item::Value(Value::from(i64::from(d))));
+        },
+        Some(None) => {
+            tbl.remove("dscp");
+        },
+        None => {},
     }
     if let Some(v) = patch.disable_udp_gso {
         tbl.insert("disable_udp_gso", Item::Value(Value::from(v)));

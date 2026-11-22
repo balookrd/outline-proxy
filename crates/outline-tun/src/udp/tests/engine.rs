@@ -152,6 +152,7 @@ async fn build_engine(
         UplinkRegistry::from_single_manager(manager),
         Some(Arc::clone(&table)),
         None,
+        None,
         false,
     );
     let engine = TunUdpEngine::new(

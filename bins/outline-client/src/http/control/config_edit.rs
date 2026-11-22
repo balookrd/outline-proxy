@@ -10,11 +10,23 @@ use anyhow::Context;
 use http::{Request, StatusCode};
 use hyper::body::Incoming;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 use toml_edit::{DocumentMut, Table};
 
 use crate::http::body::read_limited_body;
 use crate::http::control::{ControlResponse, json_response};
+
+/// Deserialize an optional nullable `u8`: absent → `None`, explicit `null` →
+/// `Some(None)`, integer `v` → `Some(Some(v))`. Distinguishes "omit in PATCH"
+/// from "clear existing key via null".
+pub(crate) fn deserialize_optional_nullable_u8<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u8>::deserialize(deserializer).map(Some)
+}
 
 /// Bounded-body read + JSON deserialize. `label` is the metrics/path tag
 /// forwarded to `read_limited_body` (413 on over-limit, 400 on read error).

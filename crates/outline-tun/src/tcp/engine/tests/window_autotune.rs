@@ -109,6 +109,7 @@ async fn direct_routing() -> TunRouting {
         UplinkRegistry::from_single_manager(manager),
         Some(SharedRoutingTable::new(table)),
         None,
+        None,
         false,
     )
 }

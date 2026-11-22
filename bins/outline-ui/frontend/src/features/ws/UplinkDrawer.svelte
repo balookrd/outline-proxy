@@ -205,6 +205,7 @@
       fields,
       editing,
       fallbackRows.map((row) => row.fields),
+      editingEntry?.config ?? null,
     );
     saving = true;
     try {
@@ -376,6 +377,10 @@
     <div class="fieldrow">
       <label for="uplink-fwmark">fwmark</label>
       <input id="uplink-fwmark" class="field-mono" type="number" step="1" bind:value={fields.fwmark} placeholder="default" />
+    </div>
+    <div class="fieldrow">
+      <label for="uplink-dscp">dscp (0–63)</label>
+      <input id="uplink-dscp" class="field-mono" type="number" min="0" max="63" step="1" bind:value={fields.dscp} placeholder="default (e.g. 59 / EF 46)" />
     </div>
     <div class="fieldrow">
       <label for="uplink-ipv6-first">IPv6 first</label>
@@ -590,6 +595,10 @@
             <div class="fieldrow">
               <label for={`fb-${row.key}-fwmark`}>fwmark</label>
               <input id={`fb-${row.key}-fwmark`} class="field-mono" type="number" step="1" bind:value={row.fields.fwmark} placeholder="inherit parent" />
+            </div>
+            <div class="fieldrow">
+              <label for={`fb-${row.key}-dscp`}>dscp (0–63)</label>
+              <input id={`fb-${row.key}-dscp`} class="field-mono" type="number" min="0" max="63" step="1" bind:value={row.fields.dscp} placeholder="inherit parent (0–63)" />
             </div>
             <div class="fieldrow">
               <label for={`fb-${row.key}-ipv6-first`}>IPv6 first</label>

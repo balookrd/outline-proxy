@@ -563,6 +563,7 @@ export interface WireConfig {
   method?: string;
   password?: string;
   fwmark?: number;
+  dscp?: number | null;
   ipv6_first?: boolean;
   ipv4_only?: boolean;
   [k: string]: unknown;
@@ -816,6 +817,7 @@ export interface WsConfigResponse {
   fingerprint_profile?: string | null;
   prefer_public_ipv6_src?: boolean | null;
   direct_fwmark?: number | null;
+  direct_dscp?: number | null;
   direct_ipv6_prefix_interface?: string | null;
   ipv4_only?: boolean | null;
   ipv6_first?: boolean | null;
@@ -840,6 +842,7 @@ export interface WsConfigPatch {
   fingerprint_profile?: string | null;
   prefer_public_ipv6_src?: boolean | null;
   direct_fwmark?: number | null;
+  direct_dscp?: number | null;
   direct_ipv6_prefix_interface?: string | null;
   ipv4_only?: boolean | null;
   ipv6_first?: boolean | null;

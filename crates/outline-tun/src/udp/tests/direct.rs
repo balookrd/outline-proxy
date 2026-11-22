@@ -90,8 +90,13 @@ async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
         .await
         .unwrap(),
     );
-    let routing =
-        TunRouting::new(UplinkRegistry::from_single_manager(manager), Some(table), None, false);
+    let routing = TunRouting::new(
+        UplinkRegistry::from_single_manager(manager),
+        Some(table),
+        None,
+        None,
+        false,
+    );
     TunUdpEngine::new(
         writer,
         routing,

@@ -213,9 +213,17 @@ fn key_string_hides_the_local_address() {
         server: "example.com".into(),
         port: 443,
         fwmark: Some(18),
+        dscp: None,
         net: 0xdead_beef,
     };
     assert_eq!(key.as_str(), "example.com:443|fw=18|net=00000000deadbeef");
+
+    let key_dscp_zero = PmtuKey { dscp: Some(0), ..key.clone() };
+    assert_eq!(key_dscp_zero.as_str(), "example.com:443|fw=18|dscp=0|net=00000000deadbeef");
+
+    let key_dscp_59 = PmtuKey { dscp: Some(59), ..key };
+    assert_eq!(key_dscp_59.as_str(), "example.com:443|fw=18|dscp=59|net=00000000deadbeef");
+    assert_ne!(key_dscp_zero.as_str(), key_dscp_59.as_str());
 }
 
 /// A clock that went back leaves entries confirmed "in the future"; such an

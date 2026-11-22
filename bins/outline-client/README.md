@@ -178,6 +178,7 @@ tun2udp + tun2tcp"]
 - TLS certificate-expiry tracking for uplinks: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` and field `cert_not_after_unix_ms` per uplink in `GET /control/topology`
 - systemd units with sandboxing (see [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
+- Unix DSCP egress marking (`dscp` / `direct_dscp`, `0..=63`, RFC 2474)
 - IPv6 listeners, upstreams, probes and SOCKS5 targets
 
 ## Current limits
@@ -200,7 +201,7 @@ Paths are relative to `bins/outline-client/`; shared crates live at the workspac
 - [`src/http/`](src/http) — metrics endpoint and control plane
 - [`../../crates/outline-uplink/`](../../crates/outline-uplink) — uplink selection, probing, failover, standby pools
 - [`../../crates/outline-transport/`](../../crates/outline-transport) — WebSocket / HTTP/2 / HTTP/3 / XHTTP / VLESS transports and the cross-transport `ResumeCache`
-- [`../../crates/outline-net/`](../../crates/outline-net) — DNS cache and socket helpers (fwmark, keepalive, buffer sizing)
+- [`../../crates/outline-net/`](../../crates/outline-net) — DNS cache and socket helpers (fwmark, DSCP, keepalive, buffer sizing)
 - [`../../crates/outline-tun/`](../../crates/outline-tun) — TUN relay engines (TCP and UDP)
 - [`../../crates/shadowsocks-crypto/`](../../crates/shadowsocks-crypto) — Shadowsocks AEAD helpers
 - [`../../crates/outline-wire/`](../../crates/outline-wire) — wire codec shared with the server (`CipherKind`, `TargetAddr`, SS2022 headers, VLESS/mux)
@@ -545,6 +546,8 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_mode = "h3"
 # fwmark = 100
+# dscp = 59
+# direct_dscp = 46   # top-level; marks `direct` routes
 # disable_udp_gso = true
 # ipv6_first = true
 # ipv4_only = true
@@ -607,7 +610,7 @@ via = "main"
 
 ### Config behavior
 
-- `transport` accepts `ss` (default; alias `shadowsocks`) or `vless`. `ws` / `websocket` are deprecated aliases for `ss` and will be removed. VLESS uses the same carrier fields as `ss` (`ipv6_first`, `fwmark`, …) but takes its own URL/mode pair — `vless_ws_url` or `vless_xhttp_url` plus `vless_mode` — and authenticates with one `vless_id` instead of Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` with `transport = "vless"` are rejected at parse time. VLESS UDP opens one session per destination inside the uplink, bounded by `vless_udp_max_sessions` (default `256`, LRU eviction), with idle eviction after `vless_udp_session_idle_secs` (default `60`, `0` disables) checked every `vless_udp_janitor_interval_secs` (default `15`). These three keys live in `[outline.load_balancing]` or on each `[[uplink_group]]`.
+- `transport` accepts `ss` (default; alias `shadowsocks`) or `vless`. `ws` / `websocket` are deprecated aliases for `ss` and will be removed. VLESS uses the same carrier fields as `ss` (`ipv6_first`, `fwmark`, `dscp`, …) but takes its own URL/mode pair — `vless_ws_url` or `vless_xhttp_url` plus `vless_mode` — and authenticates with one `vless_id` instead of Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` with `transport = "vless"` are rejected at parse time. VLESS UDP opens one session per destination inside the uplink, bounded by `vless_udp_max_sessions` (default `256`, LRU eviction), with idle eviction after `vless_udp_session_idle_secs` (default `60`, `0` disables) checked every `vless_udp_janitor_interval_secs` (default `15`). These three keys live in `[outline.load_balancing]` or on each `[[uplink_group]]`.
 - `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` configures a VLESS uplink from one share-link URI instead of `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` is implied. An `ss://` link (SIP002 userinfo) configures an SS uplink the same way. The value is also accepted by `--vless-link` (alias `--link`, env `OUTLINE_VLESS_LINK`) and by the `/control/uplinks` payload (`link`, alias `share_link`). Mixing `link` with the explicit fields is rejected. Query parameters and constraints: [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#5-vless-share-link-uris).
 - At least one ingress is required: `--listen` / `[socks5].listen` and/or `[tun]`. Without either, the process exits with an error instead of binding `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (`transport = "ss"`) and `vless_mode` (`transport = "vless"`) select the carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (XHTTP; SS takes the URL from `tcp_xhttp_url` / `udp_xhttp_url`, VLESS from `vless_xhttp_url`). The old values `http1` / `h1`, `h2`, `h3` are accepted as aliases of `ws_h1`, `ws_h2`, `ws_h3`; `quic` is rejected (raw QUIC uplinks were removed). Per-shape config blocks, fallback chains and resume behaviour: [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
@@ -633,6 +636,8 @@ via = "main"
 - Uplinks, the probe template and load-balancing settings live under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The old flat layout (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) still loads and logs a deprecation warning. Without any uplink entry, top-level `tcp_ws_url` / `password` or the CLI flags (`--tcp-ws-url`, `--password`, …) create a single-uplink group named `default`.
 - CLI flags and environment variables override file settings. `--metrics-listen` enables metrics without `[metrics]`; `--tun-path` enables TUN without `[tun]`; `--control-listen` + `--control-token` enable the control plane without `[control]` — both must be given, either alone is a startup error.
 - `direct_fwmark` (optional, top level): `SO_MARK` for TCP and UDP sockets of `direct`-routed connections. Set it when bypass traffic must be marked for policy routing, e.g. so that the bypass route is not captured by the TUN interface again.
+- `direct_dscp` (optional, top level, `0..=63`): 6-bit RFC 2474 DSCP value applied (`dscp << 2`) to `IP_TOS` / `IPV6_TCLASS` on TCP and UDP sockets of `direct`-routed connections (`via = "direct"`, `bypass_when_down`, `tun.ipsec_bypass`). Orthogonal to `direct_fwmark` and requires no `CAP_NET_ADMIN` or `PrivateUsers=no`.
+- `dscp` (optional, `0..=63`, `[outline]`, `[[outline.uplinks]]`, `[[outline.uplinks.fallbacks]]`, or `--dscp` / `OUTLINE_DSCP`): 6-bit DSCP value applied to outbound TCP and UDP/QUIC sockets for the uplink wire (`0` explicitly sets CS0, out-of-range values fail config load and `/control/*` requests with `400`). Inheritance mirrors `fwmark`: `fallback` → `uplink` → `[outline]` → CLI (`shuffle_wires` keeps each wire's own `dscp`).
 - `[dial] timeout_secs` (default `10`, clamped to `2..=120`): upper bound on one fresh carrier dial — TCP + TLS + HTTP upgrade for WS/XHTTP, or the QUIC + HTTP/3 handshake — and, at 70 % of it, on opening a stream on an established H3 connection. 10 s fits broadband and LTE. On 2G a round trip is close to a second and the certificate chain alone takes seconds, so a 10 s budget expires mid-handshake, every attempt counts as a runtime failure, and retries use up the bandwidth the handshake needed: the uplink stays "up" and carries nothing. Raise the value for such links. Cost: worst-case failover latency, because this bound is what stops a dial into a black hole from holding the `h3 → h2 → h1` chain for the OS SYN-retransmit budget (Linux ~127 s).
 - `[tcp_timeouts]` bounds SOCKS5 TCP sessions; values are in seconds:
 
@@ -665,6 +670,7 @@ via = "main"
 | `--method` | `SHADOWSOCKS_METHOD` | Shadowsocks cipher |
 | `--password` | `SHADOWSOCKS_PASSWORD` | Shadowsocks password / PSK |
 | `--fwmark` | `OUTLINE_FWMARK` | uplink `SO_MARK` |
+| `--dscp` | `OUTLINE_DSCP` | uplink DSCP (`0..=63`, RFC 2474) |
 | `--ipv6-first` | `OUTLINE_IPV6_FIRST` | prefer IPv6 for the uplink |
 | `--ipv4-only` | `OUTLINE_IPV4_ONLY` | IPv4 only for the uplink |
 | `--metrics-listen` | `METRICS_LISTEN` | metrics listen address |
@@ -769,7 +775,7 @@ When `via` resolves to a group with no healthy uplink, the rule's fallback targe
 
 ### Group-level bypass (`bypass_when_down`)
 
-Instead of `fallback_direct = true` on every route, a group can set `bypass_when_down = true` on its `[[uplink_group]]`: traffic routed to the group goes `direct` while the group has no healthy uplink, including the implicit "everything to the default group" dispatch when no `[[route]]` is configured. An explicit route fallback takes precedence; the bypass then applies (one level deep) to the group the fallback lands on. The decision is re-evaluated per dial / datagram / flow, so traffic returns to the tunnel as soon as any uplink recovers. On hosts where TUN holds the default route, set `direct_fwmark` so bypassed sockets do not loop back into TUN. See "Bypass on a fully-down group" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+Instead of `fallback_direct = true` on every route, a group can set `bypass_when_down = true` on its `[[uplink_group]]`: traffic routed to the group goes `direct` while the group has no healthy uplink, including the implicit "everything to the default group" dispatch when no `[[route]]` is configured. An explicit route fallback takes precedence; the bypass then applies (one level deep) to the group the fallback lands on. The decision is re-evaluated per dial / datagram / flow, so traffic returns to the tunnel as soon as any uplink recovers. On hosts where TUN holds the default route, set `direct_fwmark` or `direct_dscp` so bypassed sockets do not loop back into TUN. See "Bypass on a fully-down group" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 
 ## Transport modes
 
@@ -782,7 +788,7 @@ Choosing a carrier:
 - `ws_h3` needs QUIC (UDP) reachability to the server;
 - `xhttp_h2` / `xhttp_h3` when WebSocket Upgrade is blocked on the path; the dial falls through to `xhttp_h1` when QUIC and the h2 ALPN are blocked too (h1 has lower throughput but uses the same URL as xray).
 
-QUIC endpoints. Every H3 connection (`ws_h3`, `xhttp_h3`) gets its own QUIC endpoint and UDP socket on a fresh local port, alive for exactly as long as the connection. A NAT translation stuck on a dead destination therefore affects one connection, not every later dial. Each endpoint allocates a ~2.9 MiB receive buffer on Linux with GRO; the gauge `outline_ws_h3_endpoints_active{kind}` counts live endpoints. `fwmark` is applied to the socket before the first `sendmsg`.
+QUIC endpoints. Every H3 connection (`ws_h3`, `xhttp_h3`) gets its own QUIC endpoint and UDP socket on a fresh local port, alive for exactly as long as the connection. A NAT translation stuck on a dead destination therefore affects one connection, not every later dial. Each endpoint allocates a ~2.9 MiB receive buffer on Linux with GRO; the gauge `outline_ws_h3_endpoints_active{kind}` counts live endpoints. `fwmark` and `dscp` are applied to the socket before the first `sendmsg` (and vendored `quinn-udp` preserves socket DSCP alongside per-packet ECN bits in `IP_TOS` / `IPV6_TCLASS` cmsgs).
 
 A handshake still unanswered after 1 s starts a second dial from a fresh local port, and a third at 3 s; the first to finish is used. Some paths discard a whole UDP flow, so retransmitting from the same port cannot get through, while a new port is a new flow. A healthy handshake finishes in about two round trips and never starts a second dial. `outline_ws_quic_dial_hedges_total{kind,result}` counts dials that raced: `result="won"` when a later attempt finished first, `result="lost"` when the first one won anyway.
 
@@ -824,7 +830,7 @@ On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride 
 - Sizes. The choice is made per packet against the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
 - Rollout. Servers first, then clients; either order works. Rollback: set `udp_datagrams = false` on the misbehaving side and restart that service (no rebuild).
 
-Path MTU cache. The client stores the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file with the extension `.pmtu` (default `<config>.state.pmtu`; with the bundled unit `/var/lib/outline-client/_default/state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection.
+Path MTU cache. The client stores the path MTU each H3 path settled at (keyed by server, port, fwmark, dscp and a hash of the local source address, i.e. the network it is on) in a file next to the state file with the extension `.pmtu` (default `<config>.state.pmtu`; with the bundled unit `/var/lib/outline-client/_default/state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection.
 
 | Cached value | Lifetime | Effect on the next connection |
 |---|---|---|
@@ -863,7 +869,7 @@ Each uplink has its own:
 - TCP URL and mode
 - UDP URL and mode
 - cipher and password (or `vless_id`)
-- optional Linux `fwmark`
+- optional Linux `fwmark` and Unix `dscp` (`0..=63`)
 - priority via `weight`. Among healthy candidates the highest weight always wins, regardless of EWMA; use it to mark backups that failover and sticky routing must not drift onto. Equal weights are ordered by the EWMA-based score, then by config index.
 
 Selection pipeline:
@@ -997,7 +1003,7 @@ The process attaches to an existing TUN device. Interface creation, addresses, r
 
 `tun.ipsec_bypass = true` sends UDP flows with destination port 500 or 4500 to the direct path (as `via = "direct"`), bypassing policy routing. VoWiFi and other IKEv2/IPsec clients then reach their gateway with ESP-in-UDP; raw ESP (IP protocol 50) is always dropped because the TUN classifier forwards only TCP/UDP/ICMP.
 
-The bypass uses the direct path's local socket. On hosts where TUN holds the default route, that socket would loop back into TUN: on Linux set `direct_fwmark` and add a matching `ip rule fwmark <mark> lookup <table>`, where `<mark>` is the `direct_fwmark` value and `<table>` a routing table with the physical default route. Without `direct_fwmark` the process logs a warning at startup.
+The bypass uses the direct path's local socket. On hosts where TUN holds the default route, that socket would loop back into TUN: on Linux set `direct_fwmark` (with `ip rule fwmark <mark> lookup <table>`) or `direct_dscp` (with matching DSCP policy routing), where `<table>` is a routing table with the physical default route. Without either `direct_fwmark` or `direct_dscp`, the process logs a warning at startup.
 
 Default: `false`. Both ports are matched together: IKEv2 moves IKE_AUTH from 500 to 4500 mid-session via NAT_DETECTION, so bypassing only 4500 breaks the handshake.
 
@@ -1074,6 +1080,32 @@ Requirements:
 - Linux only
 - `CAP_NET_ADMIN`
 - under systemd, `PrivateUsers=no`: `setsockopt(SO_MARK)` is checked against the user namespace that owns the network stack (the init namespace). With `PrivateUsers=true` the capability applies only inside the private namespace and every marked dial fails with `EPERM`. This applies to per-uplink `fwmark` and to top-level `direct_fwmark`.
+
+## DSCP egress marking
+
+Per-uplink `dscp` (`[outline]`, `[[outline.uplinks]]`, `[[outline.uplinks.fallbacks]]`, `--dscp` / `OUTLINE_DSCP`) and top-level `direct_dscp` set a 6-bit RFC 2474 DSCP value (`0..=63`, shifted left by 2 bits via `IP_TOS` / `IPV6_TCLASS`) on outbound sockets across all transports (TCP before `connect()`, UDP on `bind()`, HTTP/1.1, HTTP/2, HTTP/3, dual-stack IPv6 sockets, probes, warm standby, and `direct` routes).
+
+Key properties:
+
+- **ECN-safe on HTTP/3 and TCP**: `dscp << 2` leaves the lower 2 ECN bits untouched, and the vendored `quinn-udp` patch reads the socket's configured DSCP once and merges `dscp | ecn` into every `IP_TOS` / `IPV6_TCLASS` control message.
+- **No `CAP_NET_ADMIN` or `PrivateUsers=no` required**: works unprivileged on all Unix platforms (`setsockopt(IPPROTO_IP, IP_TOS)` / `setsockopt(IPPROTO_IPV6, IPV6_TCLASS)`), unlike `fwmark`. Non-Unix platforms reject non-`None` DSCP values explicitly.
+- **Orthogonal to `fwmark`**: can be used standalone or together with `fwmark` on the same uplink / direct route.
+
+This is especially useful inside containers or Kubernetes pods without `SO_MARK` privileges: the client marks packets with e.g. `dscp = 59` (`0x3b`), and the host translates that DSCP on the bridge interface (such as `cni0`) into a host `fwmark` before routing and clears DSCP back to `cs0` (`0`) so the mark never leaks to the WAN:
+
+```nft
+table inet outline_dscp {
+    chain prerouting {
+        type filter hook prerouting priority mangle; policy accept;
+        iifname "cni0" ip daddr != { 10.0.0.0/8, 198.51.100.0/24, 192.168.0.0/16 } ip dscp 0x3b \
+            meta mark set (meta mark | 0x12) ip dscp set cs0
+        iifname "cni0" ip6 daddr != { fc00::/7, fe80::/10 } ip6 dscp 0x3b \
+            meta mark set (meta mark | 0x12) ip6 dscp set cs0
+    }
+}
+```
+
+Pair with `ip rule fwmark 0x12/0x12 lookup <table_id>` (and `ip -6 rule ...`) on the host.
 
 ## Metrics
 
@@ -1170,7 +1202,7 @@ With `[control]` configured, the process serves mutating endpoints on a separate
 | `GET` / `POST` / `PATCH` / `DELETE /control/uplinks`, `POST /control/uplinks/reorder` | stage `[[outline.uplinks]]` edits in the config file |
 | `GET` / `POST` / `PATCH` / `DELETE /control/uplink_groups`, `POST /control/uplink_groups/reorder` | stage `[[uplink_group]]` edits in the config file (see "`/control/uplink_groups` (CRUD)" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md)) |
 | `GET` / `POST` / `PATCH` / `DELETE /control/routes`, `POST /control/routes/reorder` | stage `[[route]]` edits; reorder moves a rule within the first-match-wins list |
-| `GET` / `PATCH /control/config` | read and modify client subsystem settings in the config file (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Returns `{ "status": "ok", "apply_required": true, "restart_required": bool }`. Before writing, `PATCH` loads the patched file the way startup does; if it would not load (for example `tun.mtu` below 1280 or `dial.timeout_secs = 0`), the request gets `400` with the loader's error and the file on disk is left unchanged |
+| `GET` / `PATCH /control/config` | read and modify client subsystem settings in the config file (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`, `direct_dscp`). Returns `{ "status": "ok", "apply_required": true, "restart_required": bool }`. Before writing, `PATCH` loads the patched file the way startup does; if it would not load (for example `tun.mtu` below 1280 or `dial.timeout_secs = 0`), the request gets `400` with the loader's error and the file on disk is left unchanged |
 | `POST /control/apply` | hot-apply staged uplink and group edits, and staged route edits when routing was configured at startup, without a restart |
 | `GET /control/alloc` | allocator statistics (jemalloc counters in the default build) |
 | `POST /switch` | manual active-uplink override |
@@ -1386,7 +1418,7 @@ What the units set:
 - `MemoryHigh=70%`, `MemoryMax=85%`: on a low-RAM host a burst of flows can exhaust memory faster than the kernel reclaims it and hang the whole host; with the limits the kernel OOM-kills the service and systemd restarts it. Override with a drop-in for fixed values
 - `User=outline-client` / `Group=outline-client` with `StateDirectory=outline-client/_default` (template: `outline-client/%i`), so state files keep a stable owner
 - `ReadWritePaths` includes `/etc/outline-client` (template: `/etc/outline-client/instances`) so control-API edits and config migration can write the file
-- `AmbientCapabilities=CAP_NET_ADMIN` for `fwmark`; remove both capability lines if `fwmark` / `direct_fwmark` are not used. Using them also requires `PrivateUsers=no` in a drop-in: the units set `PrivateUsers=true`, and `SO_MARK` fails with `EPERM` inside a private user namespace even with the capability
+- `AmbientCapabilities=CAP_NET_ADMIN` for `fwmark`; remove both capability lines if only `dscp` / `direct_dscp` are used without `fwmark` / `direct_fwmark`. Using `fwmark` also requires `PrivateUsers=no` in a drop-in: the units set `PrivateUsers=true`, and `SO_MARK` fails with `EPERM` inside a private user namespace even with the capability (`dscp` needs neither)
 - `PrivateDevices=false` for access to `/dev/net/tun` (TUN mode)
 - `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` and the other `Protect*` / `Restrict*` options in the unit file
 
@@ -1415,7 +1447,7 @@ Two routine events are logged below `warn` because neither indicates a problem i
   | control | 16 | 5 s to read request headers; the bearer check runs only after the headers arrive, so this timeout is what stops unauthenticated peers from holding sockets |
 
 - HTTP/3 carriers need UDP reachability to the server port.
-- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a systemd sandbox with a private user namespace it also requires `PrivateUsers=no`.
+- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a systemd sandbox with a private user namespace it also requires `PrivateUsers=no`. Unprivileged Unix setups can use `dscp` / `direct_dscp` (`0..=63`) instead.
 - TUN mode needs access to `/dev/net/tun` (`PrivateDevices=false`).
 
 ## Testing

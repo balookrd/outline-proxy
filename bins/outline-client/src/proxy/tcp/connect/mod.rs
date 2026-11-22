@@ -37,9 +37,16 @@ pub async fn serve_tcp_connect(
     timeouts: TcpTimeouts,
 ) -> Result<()> {
     let uplinks = match dispatch {
-        Route::Direct { fwmark } => {
+        Route::Direct { fwmark, dscp } => {
             info!(target = %target, "TCP route: direct connection");
-            return relay_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
+            return relay_tcp_direct(
+                client,
+                target,
+                outline_net::SocketMark::new(fwmark, dscp),
+                &dns_cache,
+                timeouts,
+            )
+            .await;
         },
         Route::Drop => {
             info!(target = %target, "TCP route: policy drop");

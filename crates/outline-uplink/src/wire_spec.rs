@@ -44,6 +44,7 @@ pub struct WireSpec<'a> {
     pub password: &'a str,
     pub vless_id: Option<[u8; 16]>,
     pub fwmark: Option<u32>,
+    pub dscp: Option<u8>,
     pub disable_udp_gso: bool,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
@@ -61,6 +62,7 @@ impl<'a> WireSpec<'a> {
     pub fn dial_network(&self) -> outline_transport::DialNetworkOptions {
         outline_transport::DialNetworkOptions {
             fwmark: self.fwmark,
+            dscp: self.dscp,
             ipv6_first: self.ipv6_first,
             ipv4_only: self.ipv4_only,
             disable_udp_gso: self.disable_udp_gso,
@@ -77,6 +79,7 @@ impl<'a> WireSpec<'a> {
             password: &uplink.password,
             vless_id: uplink.vless_id,
             fwmark: uplink.fwmark,
+            dscp: uplink.dscp,
             disable_udp_gso: uplink.disable_udp_gso,
             ipv6_first: uplink.ipv6_first,
             ipv4_only: uplink.ipv4_only,
@@ -100,6 +103,7 @@ impl<'a> WireSpec<'a> {
             password: &fallback.password,
             vless_id: fallback.vless_id,
             fwmark: fallback.fwmark,
+            dscp: fallback.dscp,
             disable_udp_gso: fallback.disable_udp_gso,
             ipv6_first: fallback.ipv6_first,
             ipv4_only: fallback.ipv4_only,

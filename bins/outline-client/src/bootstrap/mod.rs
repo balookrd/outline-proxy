@@ -247,33 +247,35 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<TunFd
         // (assuming TUN catches the default route) and loop forever.
         // Warn loudly rather than silently misbehave.
         #[cfg(target_os = "linux")]
-        if ipsec_bypass && config.direct_fwmark.is_none() {
+        if ipsec_bypass && config.direct_fwmark.is_none() && config.direct_dscp.is_none() {
             tracing::warn!(
-                "tun.ipsec_bypass = true with no direct_fwmark: direct UDP for IKE/IPsec \
-                 (UDP/500, UDP/4500) will reuse the default route. If TUN is the default \
-                 route, packets will loop back into TUN. Set direct_fwmark and add a matching \
-                 `ip rule fwmark X lookup Y` to escape the loop."
+                "tun.ipsec_bypass = true with no direct_fwmark or direct_dscp: direct UDP for \
+                 IKE/IPsec (UDP/500, UDP/4500) will reuse the default route. If TUN is the default \
+                 route, packets will loop back into TUN. Set direct_fwmark (with `ip rule fwmark \
+                 X lookup Y`) or direct_dscp (with matching DSCP policy routing) to escape the loop."
             );
         }
-        // `bypass_when_down` direct sockets rely on the same SO_MARK escape
+        // `bypass_when_down` direct sockets rely on the same SO_MARK / DSCP escape
         // from the TUN routing loop as ipsec_bypass / `via = "direct"` rules.
         #[cfg(target_os = "linux")]
         if config.tun.is_some()
             && config.direct_fwmark.is_none()
+            && config.direct_dscp.is_none()
             && let Some(group) = config.groups.iter().find(|g| g.load_balancing.bypass_when_down)
         {
             tracing::warn!(
                 group = %group.name,
-                "bypass_when_down = true with no direct_fwmark: bypassed traffic will \
-                 reuse the default route. If TUN is the default route, packets will loop \
-                 back into TUN. Set direct_fwmark and add a matching `ip rule fwmark X \
-                 lookup Y` to escape the loop."
+                "bypass_when_down = true with no direct_fwmark or direct_dscp: bypassed traffic \
+                 will reuse the default route. If TUN is the default route, packets will loop \
+                 back into TUN. Set direct_fwmark (with `ip rule fwmark X lookup Y`) or \
+                 direct_dscp (with matching DSCP policy routing) to escape the loop."
             );
         }
         let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
             shared_routing.clone(),
             config.direct_fwmark,
+            config.direct_dscp,
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
@@ -375,6 +377,7 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<TunFd
             dns_cache: dns_cache.clone(),
             router: shared_routing.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
             direct_fwmark: config.direct_fwmark,
+            direct_dscp: config.direct_dscp,
             tcp_timeouts: config.tcp_timeouts,
         });
         if let Some(listener) = listener {

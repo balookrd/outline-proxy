@@ -16,14 +16,15 @@ use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 ///
 /// Resolves destination targets through the policy routing table to pick a
 /// group's [`UplinkManager`], escape the tunnel via a local socket
-/// ([`TunRoute::Direct`], marked with `direct_fwmark` so it does not loop
-/// back through the TUN device), or drop the flow by policy.
+/// ([`TunRoute::Direct`], marked with `direct_fwmark` / `direct_dscp` so it does
+/// not loop back through the TUN device), or drop the flow by policy.
 #[derive(Clone)]
 pub struct TunRouting {
     registry: UplinkRegistry,
     routing: Option<Arc<SharedRoutingTable>>,
     default_group: UplinkManager,
     direct_fwmark: Option<u32>,
+    direct_dscp: Option<u8>,
     ipsec_bypass: bool,
 }
 
@@ -32,12 +33,12 @@ pub struct TunRouting {
 pub enum TunRoute {
     /// Forward this flow through the named group's uplink manager.
     Group { name: Arc<str>, manager: UplinkManager },
-    /// Forward via a local socket (with optional SO_MARK to escape the TUN
-    /// routing loop). The TUN engine opens a plain TCP/UDP connection to the
-    /// destination, relays data bidirectionally, and synthesises IP response
-    /// packets back into the TUN device — same behaviour as the SOCKS5
-    /// `via = "direct"` path.
-    Direct { fwmark: Option<u32> },
+    /// Forward via a local socket (with optional SO_MARK and/or DSCP to escape
+    /// the TUN routing loop). The TUN engine opens a plain TCP/UDP connection
+    /// to the destination, relays data bidirectionally, and synthesises IP
+    /// response packets back into the TUN device — same behaviour as the
+    /// SOCKS5 `via = "direct"` path.
+    Direct { fwmark: Option<u32>, dscp: Option<u8> },
     /// Drop the flow silently (matches `via = "drop"`).
     Drop { reason: &'static str },
 }
@@ -76,6 +77,7 @@ impl TunRouting {
         registry: UplinkRegistry,
         routing: Option<Arc<SharedRoutingTable>>,
         direct_fwmark: Option<u32>,
+        direct_dscp: Option<u8>,
         ipsec_bypass: bool,
     ) -> Self {
         let default_group = registry.default_group().clone();
@@ -84,6 +86,7 @@ impl TunRouting {
             routing,
             default_group,
             direct_fwmark,
+            direct_dscp,
             ipsec_bypass,
         }
     }
@@ -98,6 +101,7 @@ impl TunRouting {
             routing: None,
             default_group: manager,
             direct_fwmark: None,
+            direct_dscp: None,
             ipsec_bypass: false,
         }
     }
@@ -142,7 +146,10 @@ impl TunRouting {
     async fn resolve_scoped(&self, target: &TargetAddr, scope: HealthScope) -> TunRoute {
         let Some(table) = self.routing.as_ref() else {
             if group_bypasses_when_down(&self.default_group, scope).await {
-                return TunRoute::Direct { fwmark: self.direct_fwmark };
+                return TunRoute::Direct {
+                    fwmark: self.direct_fwmark,
+                    dscp: self.direct_dscp,
+                };
             }
             return TunRoute::Group {
                 name: self.registry.default_group_name().into(),
@@ -184,7 +191,10 @@ impl TunRouting {
         ip_target: &TargetAddr,
     ) -> TunRoute {
         if self.ipsec_bypass && is_ipsec_port(target_port(ip_target)) {
-            return TunRoute::Direct { fwmark: self.direct_fwmark };
+            return TunRoute::Direct {
+                fwmark: self.direct_fwmark,
+                dscp: self.direct_dscp,
+            };
         }
         self.resolve_sni(sni_host, ip_target, TransportKind::Udp).await
     }
@@ -205,7 +215,10 @@ impl TunRouting {
         let scope = HealthScope::One(transport);
         let Some(table) = self.routing.as_ref() else {
             if group_bypasses_when_down(&self.default_group, scope).await {
-                return TunRoute::Direct { fwmark: self.direct_fwmark };
+                return TunRoute::Direct {
+                    fwmark: self.direct_fwmark,
+                    dscp: self.direct_dscp,
+                };
             }
             return TunRoute::Group {
                 name: self.registry.default_group_name().into(),
@@ -224,7 +237,10 @@ impl TunRouting {
         scope: HealthScope,
     ) -> TunRoute {
         match primary {
-            RouteTarget::Direct => TunRoute::Direct { fwmark: self.direct_fwmark },
+            RouteTarget::Direct => TunRoute::Direct {
+                fwmark: self.direct_fwmark,
+                dscp: self.direct_dscp,
+            },
             RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
             RouteTarget::Group(name) => {
                 let Some(manager) = self.registry.group_by_name(&name) else {
@@ -250,7 +266,10 @@ impl TunRouting {
                         // Recurse once — fallback doesn't chain further.
                         return Box::pin(self.materialize_target(fb, None, scope)).await;
                     }
-                    return TunRoute::Direct { fwmark: self.direct_fwmark };
+                    return TunRoute::Direct {
+                        fwmark: self.direct_fwmark,
+                        dscp: self.direct_dscp,
+                    };
                 }
                 TunRoute::Group { name, manager: manager.clone() }
             },

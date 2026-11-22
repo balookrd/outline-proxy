@@ -164,6 +164,7 @@ describe('buildUplinkPayload — create, explicit mode', () => {
       password: 'secret',
       weight: 12.5,
       fwmark: 7,
+      dscp: 59,
       ipv6First: 'true',
       ipv4Only: 'true',
       shuffleWires: 'true',
@@ -190,6 +191,7 @@ describe('buildUplinkPayload — create, explicit mode', () => {
       password: 'secret',
       weight: 12.5,
       fwmark: 7,
+      dscp: 59,
       ipv6_first: true,
       ipv4_only: true,
       shuffle_wires: true,
@@ -350,6 +352,7 @@ describe('fieldsFromConfig', () => {
       password: 'p',
       weight: 12,
       fwmark: 5,
+      dscp: null,
       ipv6First: 'false',
       ipv4Only: 'false',
       shuffleWires: 'false',
@@ -420,6 +423,7 @@ describe('emptyUplinkFields', () => {
       password: '',
       weight: null,
       fwmark: null,
+      dscp: null,
       ipv6First: '',
       ipv4Only: '',
       shuffleWires: '',
@@ -460,6 +464,7 @@ describe('buildFallbackPayload — explicit mode', () => {
       method: 'chacha20-ietf-poly1305',
       password: 'fbsecret',
       fwmark: 9,
+      dscp: 46,
       ipv6First: 'true',
       ipv4Only: 'false',
     };
@@ -481,6 +486,7 @@ describe('buildFallbackPayload — explicit mode', () => {
       method: 'chacha20-ietf-poly1305',
       password: 'fbsecret',
       fwmark: 9,
+      dscp: 46,
       ipv6_first: true,
       ipv4_only: false,
     });
@@ -581,6 +587,7 @@ describe('fallbackFieldsFromConfig', () => {
       method: 'aes-256-gcm',
       password: 'p',
       fwmark: 5,
+      dscp: null,
       ipv6First: 'false',
       ipv4Only: 'true',
     });
@@ -665,6 +672,7 @@ describe('emptyFallbackFields', () => {
       method: '',
       password: '',
       fwmark: null,
+      dscp: null,
       ipv6First: '',
       ipv4Only: '',
     });
@@ -742,5 +750,63 @@ describe('buildUplinkPayload — fallbacks (Task 8c)', () => {
         { link: 'ss://ZmFrZTpmYWtl@host:8443' },
       ],
     });
+  });
+});
+
+describe('dscp support on uplinks and fallbacks (0..=63, clear-null, share-link)', () => {
+  it('validates dscp bounds 0..=63 and rejects negative/out-of-range/fractional values', () => {
+    for (const valid of [null, 0, 59, 63]) {
+      expect(validateUplinkForm({ ...emptyUplinkFields(), name: 'up', dscp: valid }, false)).toBeNull();
+      expect(validateFallbackForm({ ...emptyFallbackFields(), dscp: valid })).toBeNull();
+    }
+    for (const invalid of [-1, 64, 255, 1.5, Number.NaN]) {
+      const errUp = validateUplinkForm({ ...emptyUplinkFields(), name: 'up', dscp: invalid }, false);
+      expect(errUp).toBeTruthy();
+      expect(errUp).toMatch(/0.*63/);
+      const errFb = validateFallbackForm({ ...emptyFallbackFields(), dscp: invalid });
+      expect(errFb).toBeTruthy();
+      expect(errFb).toMatch(/0.*63/);
+    }
+  });
+
+  it('serializes explicit dscp including 0 on both explicit and share-link payloads', () => {
+    const upZero = buildUplinkPayload({ ...emptyUplinkFields(), name: 'up', dscp: 0 }, false, []);
+    expect(upZero).toMatchObject({ dscp: 0 });
+
+    const upLink = buildUplinkPayload(
+      {
+        ...emptyUplinkFields(),
+        name: 'up',
+        useShareLink: true,
+        link: 'vless://uuid@host:443?type=ws',
+        dscp: 59,
+      },
+      false,
+      [],
+    );
+    expect(upLink).toEqual({
+      name: 'up',
+      link: 'vless://uuid@host:443?type=ws',
+      dscp: 59,
+      fallbacks: [],
+    });
+
+    const fbZero = buildFallbackPayload({ ...emptyFallbackFields(), dscp: 0 });
+    expect(fbZero).toMatchObject({ dscp: 0 });
+  });
+
+  it('reads dscp: 0 from config without treating 0 as unset, and emits null on edit clear only when previously set', () => {
+    const cfgWithZero: UplinkConfig = { transport: 'ss', dscp: 0, fallbacks: [{ transport: 'ss', dscp: 0 }] };
+    const fields = fieldsFromConfig(cfgWithZero);
+    const fbFields = fallbackFieldsFromConfig(cfgWithZero.fallbacks![0]);
+    expect(fields.dscp).toBe(0);
+    expect(fbFields.dscp).toBe(0);
+
+    // Clearing dscp when original config had dscp emits explicit null to remove the TOML key on PATCH.
+    fields.dscp = null;
+    expect(buildUplinkPayload(fields, true, [], cfgWithZero)).toMatchObject({ dscp: null });
+
+    // Clearing/leaving blank when original config had no dscp omits the key.
+    expect(buildUplinkPayload(fields, true, [], { transport: 'ss' })).not.toHaveProperty('dscp');
   });
 });

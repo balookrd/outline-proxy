@@ -37,6 +37,11 @@ whole system:
   [`bins/outline-server/README.md`](bins/outline-server/README.md#endpoint-model)
   and [`docs/PADDING.md`](docs/PADDING.md); migrate `config.toml` before
   upgrading.
+- **Adaptive carrier selection, H3/XHTTP/SOCKS5/TUN, and DSCP egress marking.**
+  The client carries per-uplink and direct-route `dscp` (`0..=63`, `direct_dscp`,
+  `--dscp` / `OUTLINE_DSCP`) alongside Linux `fwmark` — across TCP, UDP,
+  HTTP/2, HTTP/3 (with a `quinn-udp` patch preserving socket DSCP cmsgs and
+  ECN bits), control API CRUD, and the `/ws/*` UI.
 - **Server mesh cluster.** Edge nodes relay a client's session to the home node
   that owns it, with per-outcome relay metrics and full session migration across
   an edge switch — single-target UDP, VLESS-mux bundles included.

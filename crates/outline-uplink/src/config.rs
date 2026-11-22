@@ -77,8 +77,8 @@ pub struct UplinkGroupConfig {
 /// session. Fallbacks share the parent's identity (`name`, `weight`, `group`)
 /// and are not separate uplinks from the load-balancer's point of view.
 ///
-/// `cipher` / `password` / `fwmark` / `ipv6_first` / `fingerprint_profile` are
-/// inherited from the parent uplink when omitted; the loader fills them in
+/// `cipher` / `password` / `fwmark` / `dscp` / `ipv6_first` / `fingerprint_profile`
+/// are inherited from the parent uplink when omitted; the loader fills them in
 /// during validation. `vless_id` is mandatory for `transport = "vless"` and is
 /// **not** inherited from the parent (different VLESS endpoints use different
 /// uuids by definition).
@@ -118,6 +118,7 @@ pub struct FallbackTransport {
     pub cipher: CipherKind,
     pub password: String,
     pub fwmark: Option<u32>,
+    pub dscp: Option<u8>,
     /// Keep this wire's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO. For
     /// egress devices that reject segmented sends (no TX checksum offload,
     /// e.g. a VLAN on some NICs), typically paired with an `fwmark` route.
@@ -251,6 +252,7 @@ pub struct UplinkConfig {
     pub password: String,
     pub weight: f64,
     pub fwmark: Option<u32>,
+    pub dscp: Option<u8>,
     /// Keep this wire's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO. For
     /// egress devices that reject segmented sends (no TX checksum offload,
     /// e.g. a VLAN on some NICs), typically paired with an `fwmark` route.
@@ -320,6 +322,7 @@ impl UplinkConfig {
     pub fn dial_network(&self) -> outline_transport::DialNetworkOptions {
         outline_transport::DialNetworkOptions {
             fwmark: self.fwmark,
+            dscp: self.dscp,
             ipv6_first: self.ipv6_first,
             ipv4_only: self.ipv4_only,
             disable_udp_gso: self.disable_udp_gso,
@@ -460,6 +463,7 @@ impl UplinkConfig {
             password: fb.password.clone(),
             weight: self.weight,
             fwmark: fb.fwmark,
+            dscp: fb.dscp,
             disable_udp_gso: fb.disable_udp_gso,
             ipv6_first: fb.ipv6_first,
             ipv4_only: fb.ipv4_only,

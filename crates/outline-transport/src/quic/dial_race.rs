@@ -114,7 +114,7 @@ pub(crate) async fn connect_hedged(
     what: &'static str,
     server_addr: SocketAddr,
     server_name: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     first_probe: Option<FirstProbe>,
     pooled: bool,
@@ -134,7 +134,7 @@ pub(crate) async fn connect_hedged(
             // task-local browser profile.
             let client_config = super::h3_quic_client_config_with_first_probe(first_probe);
             async move {
-                let endpoint = client_endpoint(bind_addr, fwmark, disable_udp_gso, kind)
+                let endpoint = client_endpoint(bind_addr, mark, disable_udp_gso, kind)
                     .with_context(|| format!("failed to bind {what} endpoint for {server_addr}"))?;
                 let connection = endpoint
                     .connect_with(client_config, server_addr, server_name)

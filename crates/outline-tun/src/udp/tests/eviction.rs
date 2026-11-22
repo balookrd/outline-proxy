@@ -333,6 +333,7 @@ async fn build_direct_engine(max_flows: usize, max_carrier_flows: usize) -> TunU
         outline_uplink::UplinkRegistry::from_single_manager(manager),
         Some(table),
         None,
+        None,
         false,
     );
     TunUdpEngine::new(

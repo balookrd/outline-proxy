@@ -3,14 +3,16 @@
 Единый источник истины по локальным патчам на vendored-крейты.
 *English version: [PATCHES.md](PATCHES.md).*
 
-Монорепо vendor'ит и патчит пять upstream-крейтов: `h3` и `sockudo-ws` — ради
+Монорепо vendor'ит и патчит шесть upstream-крейтов: `h3` и `sockudo-ws` — ради
 WebSocket поверх HTTP/3 (RFC 9220) и фиксов записи / shutdown на H3, описанных
-ниже; `quinn-proto`, `rustls` и `hyper` — чтобы QUIC transport parameters, TLS
-ClientHello и регистр HTTP/1.1-заголовков клиента совпадали с браузерными.
+ниже; `quinn-proto`, `quinn-udp`, `rustls` и `hyper` — чтобы QUIC transport
+parameters, DSCP в `cmsg` QUIC-сокетов, TLS ClientHello и регистр
+HTTP/1.1-заголовков клиента совпадали с профилем и политикой маршрутизации ОС.
 Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`,
-`vendor/rustls` и `vendor/hyper`, подключены через `[patch.crates-io]` в корневом
-`Cargo.toml`. Файлы `.patch` в корне репозитория — review- и
-maintenance-артефакты; сборки используют vendored-копии.
+`vendor/quinn-udp`, `vendor/rustls` и `vendor/hyper`, подключены через
+`[patch.crates-io]` в корневом `Cargo.toml` (и `android/rust/Cargo.toml`). Файлы
+`.patch` в корне репозитория — review- и maintenance-артефакты; сборки
+используют vendored-копии.
 
 Регенерированы против:
 
@@ -18,6 +20,7 @@ maintenance-артефакты; сборки используют vendored-ко�
 - `sockudo-ws` — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
 - `quinn-proto` — crates.io `quinn-proto 0.11.19`.
+- `quinn-udp` — crates.io `quinn-udp 0.5.16`.
 - `rustls` — crates.io `rustls 0.23.46`.
 - `hyper` — crates.io `hyper 1.12.0`.
 
@@ -28,6 +31,7 @@ maintenance-артефакты; сборки используют vendored-ко�
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws` от GitHub-тега `v1.7.5` (`src/` и `Cargo.toml`) |
 | [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.19` (`src/` и `Cargo.toml`) |
+| [`quinn-udp-0.5.16.patch`](quinn-udp-0.5.16.patch) | все отличия `vendor/quinn-udp` от upstream `quinn-udp 0.5.16` (`src/` и `Cargo.toml`) |
 | [`rustls-0.23.46.patch`](rustls-0.23.46.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.46` (`src/` и `Cargo.toml`) |
 | [`hyper-1.12.0.patch`](hyper-1.12.0.patch) | все отличия `vendor/hyper` от upstream `hyper 1.12.0` (только `src/`) |
 
@@ -573,6 +577,34 @@ dev-зависимости hyper для path-крейта вне workspace не 
 Проверка соответствия: применить патч к чистой копии crates.io 1.12.0 (в объёме
 vendored-файлов) и сравнить `diff -r` — пусто.
 
+## quinn-udp (0.5.16)
+
+Baseline — crates.io `quinn-udp 0.5.16`. Сохранённые файлы: `Cargo.toml`,
+`Cargo.toml.orig`, `LICENSE-APACHE`, `LICENSE-MIT`, `build.rs`, `src/`
+(`tests/`, `benches/` и `Cargo.lock` не включаются). Публичный API не изменён
+(поведенческий патч; отдельный gate-модуль не требуется).
+
+Изменения, которые несёт `quinn-udp-0.5.16.patch`:
+
+- `vendoring-trim` (`Cargo.toml`) — убирает `[[test]]`, `[[bench]]`,
+  `[dev-dependencies.criterion]` и `[dev-dependencies.tokio]` (path-крейт вне
+  членов workspace не резолвит dev-зависимости).
+- `preserve-socket-dscp` (`src/unix.rs`) — в upstream `prepare_msg` безусловно
+  клал `cmsg` `IPPROTO_IP / IP_TOS` и `IPPROTO_IPV6 / IPV6_TCLASS` только с
+  2-битным ECN пакета, чем на каждом `sendmsg`/`sendmsg_x` затирал старшие 6 бит
+  DSCP, выставленные через `setsockopt` до обёртки сокета. `UdpSocketState::new`
+  однократно читает `getsockopt` (`IP_TOS` / `IPV6_TCLASS`, включая best-effort
+  `IP_TOS` на dual-stack сокете с fallback к `dscp_v6`), накладывает маску
+  `0xfc` и сохраняет `(dscp_v4, dscp_v6)`; все четыре ветки `send()` передают их
+  в `prepare_msg`, который пишет `(dscp_v4 as c_int) | ecn` и
+  `(dscp_v6 as c_int) | ecn`. Когда DSCP на сокете не задан (`0`), провод
+  остаётся побайтово равен upstream (`0 | ecn`); биты ECN (`0x03`) никогда не
+  затираются. `src/windows.rs` не менялся (на не-Unix DSCP запрещён на уровне
+  настройки сокетов/конфига).
+
+Проверка соответствия: применить `quinn-udp-0.5.16.patch` к чистой копии
+crates.io `0.5.16` (в объёме vendored-файлов) и сравнить `diff -r` — пусто.
+
 ## Регенерация
 
 Чтобы пересобрать артефакты-патчи после правки vendored-исходников:
@@ -584,7 +616,7 @@ vendored-файлов) и сравнить `diff -r` — пусто.
   `vendor/sockudo-ws/src` и `vendor/sockudo-ws/Cargo.toml` и взять
   `git diff -- Cargo.toml src` как патч (оба уже в raw upstream-форматировании);
   проверка — как выше.
-- `quinn-proto` / `rustls` / `hyper` — распаковать чистый крейт с crates.io в новый
+- `quinn-proto` / `quinn-udp` / `rustls` / `hyper` — распаковать чистый крейт с crates.io в новый
   одноразовый git-репозиторий (оставив только vendored-набор файлов),
   закоммитить, скопировать поверх vendored-файлы и взять `git diff` как патч;
   проверка — применить его `patch -p1` к другой чистой копии и сравнить `diff -r`

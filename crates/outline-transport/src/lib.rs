@@ -190,6 +190,8 @@ pub use guards::AbortOnDrop;
 pub(crate) use guards::TransportConnectGuard;
 pub(crate) use ws_stream::SharedConnectionHealth;
 
+pub use outline_net::SocketMark;
+
 /// Local wrapper around `outline_net::connect_tcp_socket` that layers the
 /// transport-level `TransportOperation::Connect` context onto the error so
 /// classifiers in `outline-uplink` / `outline-tun` can recognise connect
@@ -198,10 +200,10 @@ pub(crate) use ws_stream::SharedConnectionHealth;
 /// depend on the `TransportOperation` enum.
 ///
 /// Public so the uplink probe's endpoint-reachability check can dial a bare
-/// socket the same way a real carrier dial would (same fwmark handling, same
-/// error attribution) without reaching around this crate into `outline-net`.
-pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    outline_net::connect_tcp_socket(addr, fwmark)
+/// socket the same way a real carrier dial would (same fwmark/dscp handling,
+/// same error attribution) without reaching around this crate into `outline-net`.
+pub async fn connect_tcp_socket(addr: SocketAddr, mark: SocketMark) -> Result<TcpStream> {
+    outline_net::connect_tcp_socket(addr, mark)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })
 }

@@ -105,13 +105,13 @@ impl XhttpH3Key {
     fn new(
         server_name: &str,
         server_port: u16,
-        fwmark: Option<u32>,
+        mark: crate::SocketMark,
         disable_udp_gso: bool,
         slot: u8,
         tls: TlsFingerprint,
     ) -> Self {
         Self {
-            base: ConnectionKey::new(server_name, server_port, fwmark, disable_udp_gso),
+            base: ConnectionKey::new(server_name, server_port, mark, disable_udp_gso),
             slot,
             tls,
         }
@@ -237,13 +237,13 @@ fn registry() -> &'static SharedConnectionRegistry<XhttpH3Key, SharedXhttpH3Conn
 async fn pick_slot(
     server_name: &str,
     server_port: u16,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     tls: TlsFingerprint,
 ) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(XHTTP_H3_CARRIER_MAX as usize);
     for slot in 0..XHTTP_H3_CARRIER_MAX {
-        let key = XhttpH3Key::new(server_name, server_port, fwmark, disable_udp_gso, slot, tls);
+        let key = XhttpH3Key::new(server_name, server_port, mark, disable_udp_gso, slot, tls);
         let load = match registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -330,12 +330,12 @@ pub(super) async fn acquire(
     server_addr: SocketAddr,
     host: &str,
     port: u16,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
 ) -> Result<Acquired> {
     let tls = crate::fingerprint_profile::dial_tls_family();
-    let slot = pick_slot(host, port, fwmark, disable_udp_gso, tls).await;
-    let key = XhttpH3Key::new(host, port, fwmark, disable_udp_gso, slot, tls);
+    let slot = pick_slot(host, port, mark, disable_udp_gso, tls).await;
+    let key = XhttpH3Key::new(host, port, mark, disable_udp_gso, slot, tls);
 
     if let Some(carrier) = registry().cached(&key).await {
         return Ok(reused(key, carrier));
@@ -349,7 +349,7 @@ pub(super) async fn acquire(
         return Ok(reused(key, carrier));
     }
 
-    let carrier = dial_into(&key, server_addr, host, fwmark, disable_udp_gso).await?;
+    let carrier = dial_into(&key, server_addr, host, mark, disable_udp_gso).await?;
     Ok(Acquired {
         carrier: session_on(carrier),
         reused: None,
@@ -368,7 +368,7 @@ pub(super) async fn redial(
     stale: ReusedCarrier,
     server_addr: SocketAddr,
     host: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
 ) -> Result<PooledCarrier> {
     let ReusedCarrier { key, carrier } = stale;
@@ -381,7 +381,7 @@ pub(super) async fn redial(
     if let Some(carrier) = registry().cached(&key).await {
         return Ok(session_on(carrier));
     }
-    let carrier = dial_into(&key, server_addr, host, fwmark, disable_udp_gso).await?;
+    let carrier = dial_into(&key, server_addr, host, mark, disable_udp_gso).await?;
     Ok(session_on(carrier))
 }
 
@@ -391,10 +391,10 @@ async fn dial_into(
     key: &XhttpH3Key,
     server_addr: SocketAddr,
     host: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
 ) -> Result<Arc<SharedXhttpH3Connection>> {
-    let carrier = Arc::new(dial(server_addr, host, fwmark, disable_udp_gso, key.clone()).await?);
+    let carrier = Arc::new(dial(server_addr, host, mark, disable_udp_gso, key.clone()).await?);
     metrics::record_h3_carrier_dialed(metrics::H3_ENDPOINT_KIND_XHTTP);
     registry().insert(key.clone(), Arc::clone(&carrier)).await;
     Ok(carrier)
@@ -403,7 +403,7 @@ async fn dial_into(
 async fn dial(
     server_addr: SocketAddr,
     host: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     cache_key: XhttpH3Key,
 ) -> Result<SharedXhttpH3Connection> {
@@ -418,7 +418,7 @@ async fn dial(
         _ => host.to_string(),
     };
 
-    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(host, server_addr, fwmark);
+    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(host, server_addr, mark);
     let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
     // Read inside the dial scope, like the client config of each attempt: the
     // dial's browser profile decides whether this connection can receive
@@ -432,7 +432,7 @@ async fn dial(
                 "xhttp/h3 QUIC",
                 server_addr,
                 &server_name_str,
-                fwmark,
+                mark,
                 disable_udp_gso,
                 first_probe,
                 true,

@@ -90,7 +90,7 @@ impl H3ConnectionKey {
     pub(super) fn with_slot(
         server_name: &str,
         server_port: u16,
-        fwmark: Option<u32>,
+        mark: crate::SocketMark,
         disable_udp_gso: bool,
         slot: u8,
         tls: TlsFingerprint,
@@ -99,7 +99,7 @@ impl H3ConnectionKey {
             base: crate::shared_cache::ConnectionKey::new(
                 server_name,
                 server_port,
-                fwmark,
+                mark,
                 disable_udp_gso,
             ),
             slot,
@@ -207,27 +207,21 @@ pub(crate) fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
     least_overall.map_or(0, |(slot, _)| slot)
 }
 
-/// Inspect every carrier slot for `(server_name, server_port, fwmark,
+/// Inspect every carrier slot for `(server_name, server_port, mark,
 /// disable_udp_gso, tls)` and pick
 /// the one a fresh dial should target, per [`choose_slot`]. Read-only: uses
 /// `peek` so probing the pool never evicts a stale entry.
 async fn pick_h3_carrier_slot(
     server_name: &str,
     server_port: u16,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     tls: TlsFingerprint,
 ) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(H3_CARRIER_MAX as usize);
     for slot in 0..H3_CARRIER_MAX {
-        let key = H3ConnectionKey::with_slot(
-            server_name,
-            server_port,
-            fwmark,
-            disable_udp_gso,
-            slot,
-            tls,
-        );
+        let key =
+            H3ConnectionKey::with_slot(server_name, server_port, mark, disable_udp_gso, slot, tls);
         let load = match h3_registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -578,11 +572,11 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 /// for the egress devices that need it.
 pub(crate) fn client_endpoint(
     bind_addr: std::net::SocketAddr,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     kind: &'static str,
 ) -> Result<TrackedEndpoint> {
-    let socket = bind_udp_socket(bind_addr, fwmark)?;
+    let socket = bind_udp_socket(bind_addr, mark)?;
     let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
     let mut udp: Arc<dyn quinn::AsyncUdpSocket> = runtime
         .wrap_udp_socket(socket)
@@ -698,7 +692,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         H3ConnectionKey::with_slot(
             server_name,
             server_port,
-            network.fwmark,
+            network.socket_mark(),
             network.disable_udp_gso,
             self.slot,
             self.tls,
@@ -716,7 +710,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
             connect_h3_connection(
                 addr,
                 server_name,
-                network.fwmark,
+                network.socket_mark(),
                 network.disable_udp_gso,
                 cache_key,
             )
@@ -765,7 +759,8 @@ pub(crate) async fn connect_websocket_h3(
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
     let tls = crate::fingerprint_profile::dial_tls_family();
-    let slot = pick_h3_carrier_slot(host, port, network.fwmark, network.disable_udp_gso, tls).await;
+    let slot =
+        pick_h3_carrier_slot(host, port, network.socket_mark(), network.disable_udp_gso, tls).await;
     let dialer = H3Dialer { resume, profile, slot, tls };
 
     if crate::shared_cache::should_reuse_connection(source) {
@@ -783,11 +778,11 @@ pub(crate) async fn connect_websocket_h3(
 async fn connect_h3_connection(
     server_addr: SocketAddr,
     server_name: &str,
-    fwmark: Option<u32>,
+    mark: crate::SocketMark,
     disable_udp_gso: bool,
     cache_key: Option<H3ConnectionKey>,
 ) -> Result<SharedH3Connection> {
-    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(server_name, server_addr, fwmark);
+    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(server_name, server_addr, mark);
     let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
 
     // Read inside the dial scope, like the client config of each attempt: the
@@ -804,7 +799,7 @@ async fn connect_h3_connection(
                 "QUIC",
                 server_addr,
                 server_name,
-                fwmark,
+                mark,
                 disable_udp_gso,
                 first_probe,
                 cache_key.is_some(),

@@ -20,7 +20,8 @@
   mesh-кластер между узлами.
 - [`outline-client`](bins/outline-client/) — клиент. Принимает локальный
   SOCKS5 (и, опционально, TUN) трафик и отправляет его через те же носители, с
-  multi-uplink failover, балансировкой нагрузки и health-пробами.
+  multi-uplink failover, балансировкой нагрузки, health-пробами и egress-маркировкой
+  для аплинков и direct-пути (`fwmark` и Unix `dscp` / `direct_dscp`, `0..=63`).
 - [`outline-ui`](bins/outline-ui/) — отдаёт оба дашборда, серверный и
   клиентский, из одного бинаря (`/ss` и `/ws`). Своего data plane нет, он только
   опрашивает control API каждого узла.
@@ -155,7 +156,7 @@ cargo ui-release-musl-aarch64
 
 `rustls` во всём workspace использует провайдер `aws-lc-rs`. HTTP/3
 WebSocket-путь зависит от пропатченных `vendor/h3` и `vendor/sockudo-ws`; патчи
-всех пяти vendored-крейтов описаны в [`PATCHES.ru.md`](PATCHES.ru.md).
+всех шести vendored-крейтов описаны в [`PATCHES.ru.md`](PATCHES.ru.md).
 Монорепо-инварианты и точные команды CI-гейта — в [`AGENTS.md`](AGENTS.md).
 
 Android-клиент живёт в [`android/`](android/) как отдельный Cargo workspace

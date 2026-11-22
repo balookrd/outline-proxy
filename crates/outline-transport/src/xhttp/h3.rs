@@ -294,7 +294,7 @@ pub(super) async fn connect_xhttp_h3(
             server_addr,
             &host,
             port,
-            network.fwmark,
+            network.socket_mark(),
             network.disable_udp_gso,
         )
         .await?;
@@ -336,7 +336,7 @@ pub(super) async fn connect_xhttp_h3(
             stale,
             server_addr,
             &host,
-            network.fwmark,
+            network.socket_mark(),
             network.disable_udp_gso,
         )
         .await?;

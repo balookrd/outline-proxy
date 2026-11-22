@@ -36,6 +36,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         password: Some("secret".to_string()),
         weight: Some(1.0),
         fwmark: None,
+        dscp: None,
         disable_udp_gso: None,
         ipv6_first: None,
         ipv4_only: None,
@@ -75,6 +76,7 @@ fn vless_uplink_section(
         password: Some("secret".to_string()),
         weight: Some(1.0),
         fwmark: Some(99),
+        dscp: None,
         disable_udp_gso: None,
         ipv6_first: Some(true),
         ipv4_only: None,
@@ -108,6 +110,7 @@ fn empty_fallback() -> FallbackSection {
         method: None,
         password: None,
         fwmark: None,
+        dscp: None,
         disable_udp_gso: None,
         ipv6_first: None,
         ipv4_only: None,
@@ -185,6 +188,7 @@ fn fallback_can_override_inherited_password_and_fwmark() {
         tcp_xhttp_url: None,
         password: Some("override-secret".to_string()),
         fwmark: Some(7),
+        dscp: None,
         disable_udp_gso: None,
         ipv6_first: Some(false),
         ipv4_only: None,
@@ -726,6 +730,7 @@ fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> 
         password: Some("secret".to_string()),
         weight: Some(1.0),
         fwmark: None,
+        dscp: None,
         disable_udp_gso: None,
         ipv6_first: None,
         ipv4_only: None,
@@ -1157,6 +1162,7 @@ fn uplink_section_inherits_ipv4_only_from_outline() {
         method: None,
         password: None,
         fwmark: Some(42),
+        dscp: Some(10),
         ipv6_first: Some(true),
         ipv4_only: Some(true),
         uplinks: None,
@@ -1183,6 +1189,71 @@ fn uplink_section_inherits_ipv4_only_from_outline() {
         .unwrap();
 
     assert_eq!(cfg2.fwmark, Some(77));
+    assert_eq!(cfg2.dscp, Some(10));
     assert!(!cfg2.ipv6_first);
     assert!(!cfg2.ipv4_only);
+}
+
+#[test]
+fn uplink_and_fallback_dscp_inheritance_boundaries_and_validation() {
+    use super::super::super::schema::OutlineSection;
+
+    let outline = OutlineSection {
+        transport: None,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: None,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: None,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: None,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        link: None,
+        method: None,
+        password: None,
+        fwmark: None,
+        dscp: Some(10),
+        ipv6_first: None,
+        ipv4_only: None,
+        uplinks: None,
+        probe: None,
+        load_balancing: None,
+    };
+
+    let mut fb_inherited = empty_fallback();
+    fb_inherited.transport = Some(UplinkTransport::Ss);
+    fb_inherited.tcp_ws_url = Some(Url::parse("wss://fb1.example.com/tcp").unwrap());
+
+    let mut fb_zero = empty_fallback();
+    fb_zero.transport = Some(UplinkTransport::Ss);
+    fb_zero.tcp_ws_url = Some(Url::parse("wss://fb2.example.com/tcp").unwrap());
+    fb_zero.dscp = Some(0);
+
+    let mut section =
+        ws_uplink_section("primary", "wss://example.com/ss", vec![fb_inherited, fb_zero]);
+    section.dscp = Some(63);
+
+    let cfg: UplinkConfig = ResolvedUplinkInput::from_section(0, &section, Some(&outline))
+        .try_into()
+        .unwrap();
+    assert_eq!(cfg.dscp, Some(63));
+    assert_eq!(cfg.fallbacks[0].dscp, Some(63));
+    assert_eq!(cfg.fallbacks[1].dscp, Some(0));
+
+    let mut bad_uplink = section.clone();
+    bad_uplink.dscp = Some(64);
+    let err =
+        UplinkConfig::try_from(ResolvedUplinkInput::from_section(0, &bad_uplink, Some(&outline)))
+            .unwrap_err();
+    assert!(format!("{err:#}").contains("0..=63"), "unexpected uplink err: {err:#}");
+
+    let mut bad_fb = section;
+    bad_fb.fallbacks.as_mut().unwrap()[0].dscp = Some(64);
+    let err = UplinkConfig::try_from(ResolvedUplinkInput::from_section(0, &bad_fb, Some(&outline)))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("0..=63"), "unexpected fallback err: {err:#}");
 }

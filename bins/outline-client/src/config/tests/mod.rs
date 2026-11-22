@@ -2226,3 +2226,307 @@ async fn load_config_parses_and_propagates_ipv4_only() {
     // up-dual explicitly overrode ipv4_only to false
     assert!(!uplinks[1].ipv4_only);
 }
+
+#[tokio::test]
+async fn load_config_parses_dscp_inheritance_boundaries_direct_dscp_and_cli() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        direct_dscp = 46
+        direct_fwmark = 18
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [outline]
+        dscp = 0
+
+        [[outline.uplinks]]
+        name = "up-explicit"
+        transport = "vless"
+        vless_ws_url = "wss://example.com/vless"
+        vless_id = "00000000-0000-0000-0000-000000000000"
+        fwmark = 11
+        dscp = 59
+
+        [[outline.uplinks.fallbacks]]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/fb1"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        fwmark = 22
+        dscp = 63
+
+        [[outline.uplinks.fallbacks]]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/fb2"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+
+        [[outline.uplinks]]
+        name = "up-inherited-zero"
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/ss"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.direct_dscp, Some(46));
+    assert_eq!(config.direct_fwmark, Some(18));
+
+    let uplinks = &config.groups[0].uplinks;
+    assert_eq!(uplinks.len(), 2);
+
+    assert_eq!(uplinks[0].fwmark, Some(11));
+    assert_eq!(uplinks[0].dscp, Some(59));
+    assert_eq!(uplinks[0].dial_network().dscp, Some(59));
+    assert_eq!(uplinks[0].fallbacks[0].fwmark, Some(22));
+    assert_eq!(uplinks[0].fallbacks[0].dscp, Some(63));
+    assert_eq!(uplinks[0].fallbacks[1].fwmark, Some(11));
+    assert_eq!(uplinks[0].fallbacks[1].dscp, Some(59));
+
+    // `[outline].dscp = 0` is explicit (`Some(0)`), inherited cleanly by up-inherited-zero.
+    assert_eq!(uplinks[1].dscp, Some(0));
+
+    // CLI `--dscp` overrides `[outline].dscp` in single-uplink CLI override mode
+    // (mirroring `--fwmark`).
+    let cli_path = tmp.path().join("cli_override.toml");
+    std::fs::write(
+        &cli_path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [outline]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/ss"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        dscp = 0
+        "#,
+    )
+    .unwrap();
+    let cli_args = super::Args::parse_from(["test", "--dscp", "10"]);
+    let cli_cfg = load_config(&cli_path, &cli_args).await.unwrap();
+    assert_eq!(cli_cfg.groups[0].uplinks[0].dscp, Some(10));
+}
+
+#[tokio::test]
+async fn load_config_dscp_cli_fallback_legacy_and_shuffle_wires() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+
+    // 1. `[outline].dscp` fills in when uplink `dscp` is omitted;
+    //    `shuffle_wires` keeps `(fwmark, dscp)` coupled on every wire.
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [outline]
+        dscp = 26
+
+        [[outline.uplinks]]
+        name = "shuffled"
+        transport = "vless"
+        vless_ws_url = "wss://example.com/v0"
+        vless_id = "00000000-0000-0000-0000-000000000000"
+        fwmark = 1
+        shuffle_wires = true
+
+        [[outline.uplinks.fallbacks]]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/fb1"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        fwmark = 2
+        dscp = 46
+
+        [[outline.uplinks.fallbacks]]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/fb2"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        fwmark = 3
+        dscp = 63
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let up = &config.groups[0].uplinks[0];
+    let mut pairs: Vec<(Option<u32>, Option<u8>)> = vec![(up.fwmark, up.dscp)];
+    pairs.extend(up.fallbacks.iter().map(|fb| (fb.fwmark, fb.dscp)));
+    pairs.sort();
+    assert_eq!(pairs, vec![(Some(1), Some(26)), (Some(2), Some(46)), (Some(3), Some(63))]);
+
+    // 2. CLI `--dscp` without `[outline].dscp` supplies DSCP for single-uplink CLI mode.
+    let cli_only_path = tmp.path().join("cli_only.toml");
+    std::fs::write(
+        &cli_only_path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+    let cli_args = super::Args::parse_from([
+        "test",
+        "--tcp-ws-url",
+        "wss://example.com/ss",
+        "--method",
+        "chacha20-ietf-poly1305",
+        "--password",
+        "secret",
+        "--dscp",
+        "59",
+    ]);
+    let cli_only_cfg = load_config(&cli_only_path, &cli_args).await.unwrap();
+    assert_eq!(cli_only_cfg.groups[0].uplinks[0].dscp, Some(59));
+
+    // 3. Legacy top-level `dscp` and `direct_dscp`.
+    let legacy_path = tmp.path().join("legacy.toml");
+    std::fs::write(
+        &legacy_path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        fwmark = 9
+        dscp = 34
+        direct_dscp = 12
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+    let legacy_cfg = load_config(&legacy_path, &super::Args::parse_from(["test"]))
+        .await
+        .unwrap();
+    assert_eq!(legacy_cfg.direct_dscp, Some(12));
+    assert_eq!(legacy_cfg.groups[0].uplinks[0].fwmark, Some(9));
+    assert_eq!(legacy_cfg.groups[0].uplinks[0].dscp, Some(34));
+}
+
+#[tokio::test]
+async fn load_config_rejects_out_of_range_dscp_values() {
+    let tmp = TempDir::new().unwrap();
+
+    // CLI `--dscp 64`
+    let valid_path = tmp.path().join("valid.toml");
+    std::fs::write(
+        &valid_path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "up"
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/ss"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        "#,
+    )
+    .unwrap();
+    let err = load_config(&valid_path, &super::Args::parse_from(["test", "--dscp", "64"]))
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("0..=63"), "unexpected CLI err: {err:#}");
+
+    let cases = [
+        (
+            "direct_dscp",
+            r#"
+            direct_dscp = 64
+            [socks5]
+            listen = "127.0.0.1:1080"
+            [[outline.uplinks]]
+            name = "up"
+            transport = "ss"
+            tcp_ws_url = "wss://example.com/ss"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            "#,
+        ),
+        (
+            "outline.dscp",
+            r#"
+            [socks5]
+            listen = "127.0.0.1:1080"
+            [outline]
+            dscp = 64
+            [[outline.uplinks]]
+            name = "up"
+            transport = "ss"
+            tcp_ws_url = "wss://example.com/ss"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            "#,
+        ),
+        (
+            "uplink.dscp",
+            r#"
+            [socks5]
+            listen = "127.0.0.1:1080"
+            [[outline.uplinks]]
+            name = "up"
+            transport = "ss"
+            tcp_ws_url = "wss://example.com/ss"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            dscp = 255
+            "#,
+        ),
+        (
+            "fallback.dscp",
+            r#"
+            [socks5]
+            listen = "127.0.0.1:1080"
+            [[outline.uplinks]]
+            name = "up"
+            transport = "ss"
+            tcp_ws_url = "wss://example.com/ss"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            [[outline.uplinks.fallbacks]]
+            transport = "ss"
+            tcp_ws_url = "wss://example.com/fb"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            dscp = 64
+            "#,
+        ),
+        (
+            "legacy top-level dscp",
+            r#"
+            tcp_ws_url = "wss://example.com/ss"
+            method = "chacha20-ietf-poly1305"
+            password = "secret"
+            dscp = 64
+            [socks5]
+            listen = "127.0.0.1:1080"
+            "#,
+        ),
+    ];
+
+    let default_args = super::Args::parse_from(["test"]);
+    for (label, body) in cases {
+        let p = tmp.path().join(format!("{}.toml", label.replace([' ', '.'], "_")));
+        std::fs::write(&p, body).unwrap();
+        let err = load_config(&p, &default_args).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("0..=63"),
+            "{label}: expected range error 0..=63, got: {err:#}"
+        );
+    }
+}

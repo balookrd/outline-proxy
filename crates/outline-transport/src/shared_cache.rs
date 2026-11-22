@@ -201,9 +201,10 @@ impl Drop for ConnLifeGuard {
 /// The key is deliberately hostname-based rather than IP-based: if the DNS
 /// answer for a server name changes, the old cached connection keeps serving
 /// existing traffic until it fails naturally, at which point a fresh
-/// connection is made to the (now re-resolved) new address. `fwmark` is part
-/// of the key because connections bound with different fwmarks must not be
-/// shared (they take different egress paths on Linux policy-routed hosts).
+/// connection is made to the (now re-resolved) new address. `fwmark` and `dscp`
+/// are part of the key because connections bound with different marks/DSCP must
+/// not be shared (they take different egress paths on policy-routed hosts or
+/// across container network namespaces).
 ///
 /// H2 additionally distinguishes `wss://` from `ws://`; it composes this
 /// struct with its own `use_tls` flag. H3 is always TLS-over-QUIC so it uses
@@ -213,6 +214,7 @@ pub(crate) struct ConnectionKey {
     pub(crate) server_name: Arc<str>,
     pub(crate) server_port: u16,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) dscp: Option<u8>,
     /// QUIC sockets bound without UDP GSO send differently from the default
     /// ones, so a carrier dialed one way must not serve a dial asking for the
     /// other. TCP-based keys always pass `false`.
@@ -223,13 +225,14 @@ impl ConnectionKey {
     pub(crate) fn new(
         server_name: &str,
         server_port: u16,
-        fwmark: Option<u32>,
+        mark: crate::SocketMark,
         disable_udp_gso: bool,
     ) -> Self {
         Self {
             server_name: Arc::from(server_name),
             server_port,
-            fwmark,
+            fwmark: mark.fwmark,
+            dscp: mark.dscp,
             disable_udp_gso,
         }
     }

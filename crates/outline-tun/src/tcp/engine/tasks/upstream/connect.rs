@@ -311,9 +311,11 @@ impl TunTcpEngine {
 
             if is_direct {
                 // Direct: plain TcpStream, no Shadowsocks framing.
-                let fwmark = match route {
-                    crate::TunRoute::Direct { fwmark } => fwmark,
-                    _ => None,
+                let mark = match route {
+                    crate::TunRoute::Direct { fwmark, dscp } => {
+                        outline_net::SocketMark::new(fwmark, dscp)
+                    },
+                    _ => outline_net::SocketMark::default(),
                 };
                 // Preserve the literal IP the client dialled. The TUN ingress
                 // always carries a literal IP; SNI re-resolve below may replace
@@ -433,7 +435,7 @@ impl TunTcpEngine {
                         last_outcome = "recent_failure";
                         continue;
                     }
-                    match timeout(per_try, outline_net::connect_tcp_socket_direct(*addr, fwmark))
+                    match timeout(per_try, outline_net::connect_tcp_socket_direct(*addr, mark))
                         .await
                     {
                         Ok(Ok(s)) => {

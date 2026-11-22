@@ -99,6 +99,9 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_FWMARK")]
     pub fwmark: Option<u32>,
 
+    #[arg(long, env = "OUTLINE_DSCP")]
+    pub dscp: Option<u8>,
+
     #[arg(long, env = "OUTLINE_IPV6_FIRST")]
     pub ipv6_first: Option<bool>,
 

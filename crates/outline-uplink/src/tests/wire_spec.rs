@@ -14,6 +14,12 @@ fn from_uplink_projects_the_primary_wire() {
     assert_eq!(spec.transport, UplinkTransport::Vless);
     assert_eq!(spec.dial_mode(Plane::Tcp), uplink.tcp_dial_mode());
     assert_eq!(spec.dial_url(Plane::Tcp), uplink.tcp_dial_url());
+
+    let mut marked = uplink.clone();
+    marked.dscp = Some(59);
+    let marked_spec = WireSpec::from_uplink(&marked);
+    assert_eq!(marked_spec.dscp, Some(59));
+    assert_eq!(marked_spec.dial_network().dscp, Some(59));
 }
 
 #[test]
@@ -37,6 +43,7 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
         cipher: uplink.cipher,
         password: "fallback-secret".to_string(),
         fwmark: Some(42),
+        dscp: Some(40),
         disable_udp_gso: true,
         ipv6_first: true,
         ipv4_only: false,
@@ -51,6 +58,7 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
     assert_eq!(spec.transport, UplinkTransport::Ss, "but dials its own family");
     assert_eq!(spec.password, "fallback-secret", "and its own credentials");
     assert_eq!(spec.fwmark, Some(42));
+    assert_eq!(spec.dscp, Some(40));
     assert!(spec.ipv6_first);
     assert!(spec.supports_udp());
     // The dial options come from the wire too: the parent keeps UDP GSO, the
@@ -59,6 +67,7 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
     let network = spec.dial_network();
     assert!(network.disable_udp_gso);
     assert_eq!(network.fwmark, Some(42));
+    assert_eq!(network.dscp, Some(40));
     assert!(!WireSpec::from_uplink(&uplink).dial_network().disable_udp_gso);
 }
 
@@ -86,6 +95,7 @@ fn combined_ss_discriminator_comes_from_the_wire_not_the_parent() {
         cipher: uplink.cipher,
         password: "split".to_string(),
         fwmark: None,
+        dscp: None,
         disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,

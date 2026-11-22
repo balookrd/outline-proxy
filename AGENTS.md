@@ -45,7 +45,7 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
   `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
-- `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls`, `vendor/hyper` — пропатченные крейты, подключены через
+- `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/quinn-udp`, `vendor/rustls`, `vendor/hyper` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 - `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
   Отдельный workspace (`[workspace]` в его манифесте) — корневой
@@ -179,6 +179,11 @@ lock-файлов вместе с vendored-крейтами, которые об
   `ext::HeaderCaseMap` с `default()`/`append()` — `pub`, поведение hyper не
   меняется; им `xhttp_h1` пишет имена заголовков в регистре браузера), описано в
   `PATCHES*.md`.
+  `vendor/quinn-udp` = upstream 0.5.16 + один поведенческий патч (`preserve-socket-dscp`:
+  сохранение сокетного `IP_TOS` / `IPV6_TCLASS` DSCP в `cmsg` рядом с ECN во всех
+  четырёх ветках `send()`) и `vendoring-trim`; публичный API не меняется. Никогда не
+  прогоняй `cargo fmt` на `vendor/*` (в том числе `vendor/quinn-udp`). Описано в
+  `PATCHES*.md`.
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
@@ -308,7 +313,7 @@ lock-файлов вместе с vendored-крейтами, которые об
 ## Vendored patches
 
 Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
-patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`, `hyper-1.12.0.patch`) — единый источник
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `quinn-udp-0.5.16.patch`, `rustls-0.23.46.patch`, `hyper-1.12.0.patch`) — единый источник
 истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит

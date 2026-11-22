@@ -27,6 +27,7 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) password: Option<String>,
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
+    pub(super) dscp: Option<u8>,
     pub(super) disable_udp_gso: Option<bool>,
     pub(super) ipv6_first: Option<bool>,
     pub(super) ipv4_only: Option<bool>,
@@ -112,6 +113,7 @@ impl ResolvedUplinkInput {
                 .or_else(|| outline.and_then(|section| section.password.clone())),
             weight: Some(1.0),
             fwmark: args.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            dscp: args.dscp.or_else(|| outline.and_then(|section| section.dscp)),
             // Per-uplink knob only: the legacy single-uplink form has no key.
             disable_udp_gso: None,
             ipv6_first: args
@@ -169,6 +171,7 @@ impl ResolvedUplinkInput {
             password: uplink.password.clone(),
             weight: uplink.weight,
             fwmark: uplink.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            dscp: uplink.dscp.or_else(|| outline.and_then(|section| section.dscp)),
             disable_udp_gso: uplink.disable_udp_gso,
             ipv6_first: uplink
                 .ipv6_first
@@ -203,6 +206,7 @@ pub(in crate::config::load) fn cli_uplink_override_requested(args: &Args) -> boo
         || args.method.is_some()
         || args.password.is_some()
         || args.fwmark.is_some()
+        || args.dscp.is_some()
         || args.ipv6_first.is_some()
         || args.ipv4_only.is_some()
 }

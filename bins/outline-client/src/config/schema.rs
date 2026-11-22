@@ -46,6 +46,7 @@ pub(crate) struct ConfigFile {
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
+    pub(super) dscp: Option<u8>,
     pub(super) ipv6_first: Option<bool>,
     pub(super) ipv4_only: Option<bool>,
     pub(super) uplinks: Option<Vec<UplinkSection>>,
@@ -77,6 +78,11 @@ pub(crate) struct ConfigFile {
     /// with `PrivateUsers=true` the capability applies only inside the private
     /// userns and every direct dial fails `EPERM`.
     pub(super) direct_fwmark: Option<u32>,
+    /// Optional 6-bit DSCP value (`0..=63`, RFC 2474) applied to direct
+    /// (`via = "direct"`, `bypass_when_down`, `ipsec_bypass`) outbound TCP/UDP
+    /// sockets via `IP_TOS` / `IPV6_TCLASS` (`dscp << 2`). Works on all Unix
+    /// targets without `CAP_NET_ADMIN` (for policy routing via nftables/tc).
+    pub(super) direct_dscp: Option<u8>,
     /// Interface whose current global /64 seeds random source addresses for
     /// direct-route IPv6 dials (rotates the source across the prefix; follows
     /// a dynamic prefix). Requires the /64 routed back via NDP proxy / ndppd.
@@ -211,6 +217,7 @@ pub(crate) struct OutlineSection {
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
+    pub(super) dscp: Option<u8>,
     pub(super) ipv6_first: Option<bool>,
     pub(super) ipv4_only: Option<bool>,
     pub(super) uplinks: Option<Vec<UplinkSection>>,
@@ -448,6 +455,10 @@ pub(crate) struct UplinkSection {
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
+    /// Optional 6-bit DSCP value (`0..=63`, RFC 2474) applied to outbound
+    /// sockets for this uplink via `IP_TOS` / `IPV6_TCLASS` (`dscp << 2`).
+    /// Inherited from `[outline].dscp` and inherited by fallbacks that omit it.
+    pub(crate) dscp: Option<u8>,
     /// Keep this uplink's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO.
     /// For an egress device that rejects segmented sends with `EIO` (no TX
     /// checksum offload — e.g. a VLAN on a NIC whose driver exposes no
@@ -546,7 +557,7 @@ pub(crate) struct UplinkSection {
 /// subset of [`UplinkSection`] — no `name` / `weight` / `group` (those are
 /// parent-level) and `transport` is required unless a `link` supplies it
 /// (no implicit default; the whole point of a fallback is to switch the
-/// wire family). `cipher` / `password` / `fwmark` / `disable_udp_gso` /
+/// wire family). `cipher` / `password` / `fwmark` / `dscp` / `disable_udp_gso` /
 /// `ipv6_first` / `fingerprint_profile` are optional and inherited from the
 /// parent uplink at validation time.
 #[derive(Debug, Deserialize, Clone)]
@@ -584,6 +595,7 @@ pub(crate) struct FallbackSection {
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) dscp: Option<u8>,
     pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
