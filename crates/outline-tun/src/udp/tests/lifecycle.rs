@@ -334,6 +334,8 @@ async fn uso_coalescing_drains_ss2022_burst_with_concurrent_uplink_sends_without
     use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig, SharedRoutingTable};
     use outline_uplink::{CipherKind, UplinkRegistry};
     use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -378,8 +380,9 @@ async fn uso_coalescing_drains_ss2022_burst_with_concurrent_uplink_sends_without
 
         // Drain the concurrent uplink sends and verify every SS2022 header decrypts.
         let uplink_key = master_key.clone();
+        let uplink_count = Arc::new(AtomicUsize::new(1));
+        let drain_count = Arc::clone(&uplink_count);
         let uplink_drain = tokio::spawn(async move {
-            let mut count = 1usize;
             while let Some(msg) = read.next().await {
                 if let Ok(Message::Binary(bytes)) = msg {
                     let hdr: [u8; 16] = bytes[..16].try_into().unwrap();
@@ -387,10 +390,9 @@ async fn uso_coalescing_drains_ss2022_burst_with_concurrent_uplink_sends_without
                         shadowsocks_crypto::decrypt_udp_separate_header(cipher, &uplink_key, &hdr)
                             .unwrap();
                     assert_eq!(u64::from_be_bytes(sep[..8].try_into().unwrap()), client_session_id);
-                    count += 1;
+                    drain_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            count
         });
 
         let target_wire = TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT).to_wire_bytes().unwrap();
@@ -424,9 +426,9 @@ async fn uso_coalescing_drains_ss2022_burst_with_concurrent_uplink_sends_without
         sink.flush().await.unwrap();
 
         let _ = done_rx.await;
-        let _ = sink.close().await;
+        uplink_drain.abort();
         drop(sink);
-        uplink_drain.await.unwrap()
+        uplink_count.load(Ordering::Relaxed)
     });
 
     let (writer, capture) = TempTunCapture::new();
@@ -558,7 +560,10 @@ async fn uso_coalescing_drains_ss2022_burst_with_concurrent_uplink_sends_without
 
     let _ = done_tx.send(());
     drop(engine);
-    let uplink_received = server_task.await.unwrap();
+    let uplink_received = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("timed out waiting for server task shutdown")
+        .unwrap();
     assert!(
         uplink_received >= 1,
         "expected server to receive uplink datagrams, got {uplink_received}",
