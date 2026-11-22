@@ -386,3 +386,115 @@ async fn a_draining_reconcile_keeps_the_old_carrier_until_the_redial_lands() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_migrating_reconcile_with_warm_standby_udp_bypasses_pool_and_presents_session_id() {
+    use tokio_tungstenite::accept_hdr_async;
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
+    };
+
+    #[derive(Clone, Debug)]
+    struct DialRecord {
+        path: String,
+        presented: Option<String>,
+        issued: String,
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let records: StdArc<std::sync::Mutex<Vec<DialRecord>>> =
+        StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let records_task = StdArc::clone(&records);
+    let server = tokio::spawn(async move {
+        let next = AtomicUsize::new(0);
+        let mut live = Vec::new();
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { break };
+            let records = StdArc::clone(&records_task);
+            let id = next.fetch_add(1, Ordering::SeqCst) + 1;
+            let issued = format!("{:032x}", id);
+            #[allow(clippy::result_large_err)]
+            let callback = move |req: &HandshakeRequest,
+                                 mut resp: HandshakeResponse|
+                  -> Result<HandshakeResponse, ErrorResponse> {
+                let path = req.uri().path().to_owned();
+                let presented = req
+                    .headers()
+                    .get("x-outline-resume")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                records.lock().unwrap().push(DialRecord {
+                    path,
+                    presented,
+                    issued: issued.clone(),
+                });
+                resp.headers_mut()
+                    .insert("x-outline-session", issued.parse().unwrap());
+                Ok(resp)
+            };
+            if let Ok(ws) = accept_hdr_async(stream, callback).await {
+                live.push(ws);
+            }
+        }
+    });
+
+    let url_a = Url::parse(&format!("ws://{addr}/udp-a")).unwrap();
+    let url_b = Url::parse(&format!("ws://{addr}/udp-b")).unwrap();
+    let manager = outline_uplink::UplinkManager::new_for_test(
+        "socks-standby-main",
+        vec![strict_uplink("up-a", &url_a), strict_uplink("up-b", &url_b)],
+        probe_disabled(),
+        LoadBalancingConfig {
+            shared_resume: true,
+            warm_standby_udp: 1,
+            ..strict_global_lb()
+        },
+    )
+    .unwrap();
+    manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
+    manager.run_standby_maintenance().await;
+
+    let initial_a_id = records
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.path == "/udp-a")
+        .expect("pool refill for up-a")
+        .issued
+        .clone();
+
+    let store = UdpResumeStore::private();
+    let initial = select_udp_transport(&manager, None, None, &store).await.unwrap();
+    let active = ArcSwap::from_pointee(initial);
+
+    let (_index, applied_soft) =
+        manager.set_active_uplink_by_name("up-b", None, true).await.unwrap();
+    assert!(applied_soft);
+
+    reconcile_global_udp_transport(&manager, &active, None, &store)
+        .await
+        .expect("reconcile must move the association to up-b");
+    assert_eq!(active.load().index, 1);
+
+    let b_records: Vec<_> = records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.path == "/udp-b")
+        .cloned()
+        .collect();
+    assert!(
+        b_records
+            .iter()
+            .any(|r| r.presented.as_deref() == Some(initial_a_id.as_str())),
+        "SOCKS5 UDP soft-switch reconcile with warm_standby_udp > 0 must present the flow's SessionId on up-b: {b_records:?}",
+    );
+    assert_eq!(
+        manager.snapshot().await.uplinks[1].standby_udp_ready,
+        1,
+        "up-b's pooled UDP socket must remain untouched during soft switch",
+    );
+
+    server.abort();
+}

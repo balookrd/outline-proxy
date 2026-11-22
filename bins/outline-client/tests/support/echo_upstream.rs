@@ -27,6 +27,7 @@ pub struct EchoUpstream {
     tcp_addr: SocketAddr,
     udp_addr: SocketAddr,
     tcp_connections: Arc<AtomicUsize>,
+    udp_sources: Arc<std::sync::Mutex<Vec<SocketAddr>>>,
     // Held to keep the accept loops alive; dropped last.
     _rt: Runtime,
 }
@@ -36,6 +37,7 @@ impl EchoUpstream {
     pub fn start() -> io::Result<Self> {
         let rt = Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
         let tcp_connections = Arc::new(AtomicUsize::new(0));
+        let udp_sources = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let (tcp_listener, tcp_addr) = rt.block_on(async {
             let l = TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -73,9 +75,11 @@ impl EchoUpstream {
         });
 
         // UDP: bounce every datagram straight back to its sender.
+        let udp_sources_task = Arc::clone(&udp_sources);
         rt.spawn(async move {
             let mut buf = [0u8; 64 * 1024];
             while let Ok((n, from)) = udp_socket.recv_from(&mut buf).await {
+                udp_sources_task.lock().expect("udp_sources poisoned").push(from);
                 let _ = udp_socket.send_to(&buf[..n], from).await;
             }
         });
@@ -84,6 +88,7 @@ impl EchoUpstream {
             tcp_addr,
             udp_addr,
             tcp_connections,
+            udp_sources,
             _rt: rt,
         })
     }
@@ -102,5 +107,10 @@ impl EchoUpstream {
     /// that traffic actually reached the upstream through the tunnel.
     pub fn tcp_connections(&self) -> usize {
         self.tcp_connections.load(Ordering::Relaxed)
+    }
+
+    /// Source addresses observed on inbound UDP datagrams in arrival order.
+    pub fn udp_sources(&self) -> Vec<SocketAddr> {
+        self.udp_sources.lock().expect("udp_sources poisoned").clone()
     }
 }

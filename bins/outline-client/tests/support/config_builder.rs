@@ -44,6 +44,13 @@ struct EndpointEntry {
     padded: bool,
 }
 
+struct ServerClusterSpec {
+    shard_id: u8,
+    psk_b64: String,
+    mesh_listen: SocketAddr,
+    peers: Vec<(u8, SocketAddr)>,
+}
+
 pub struct ServerConfig {
     listen: SocketAddr,
     method: String,
@@ -58,6 +65,8 @@ pub struct ServerConfig {
     padding_cover: Option<bool>,
     tls: Option<(String, String)>,
     h3: Option<(SocketAddr, Vec<String>)>,
+    metrics: Option<SocketAddr>,
+    cluster: Option<ServerClusterSpec>,
 }
 
 impl ServerConfig {
@@ -73,6 +82,8 @@ impl ServerConfig {
             padding_cover: None,
             tls: None,
             h3: None,
+            metrics: None,
+            cluster: None,
         }
     }
 
@@ -112,6 +123,27 @@ impl ServerConfig {
     pub fn with_session_resumption(mut self, downlink_buffer_bytes: usize) -> Self {
         self.session_resumption = true;
         self.downlink_buffer_bytes = Some(downlink_buffer_bytes);
+        self
+    }
+
+    pub fn with_metrics(mut self, listen: SocketAddr) -> Self {
+        self.metrics = Some(listen);
+        self
+    }
+
+    pub fn with_cluster(
+        mut self,
+        shard_id: u8,
+        psk_b64: &str,
+        mesh_listen: SocketAddr,
+        peers: Vec<(u8, SocketAddr)>,
+    ) -> Self {
+        self.cluster = Some(ServerClusterSpec {
+            shard_id,
+            psk_b64: psk_b64.to_string(),
+            mesh_listen,
+            peers,
+        });
         self
     }
 
@@ -213,6 +245,22 @@ impl ServerConfig {
         }
         if let Some(id) = &self.user_vless_id {
             let _ = writeln!(s, "vless_id = \"{id}\"");
+        }
+        if let Some(m) = &self.metrics {
+            let _ = writeln!(s, "\n[metrics]");
+            let _ = writeln!(s, "listen = \"{m}\"");
+        }
+        if let Some(cluster) = &self.cluster {
+            let _ = writeln!(s, "\n[cluster]");
+            let _ = writeln!(s, "enabled = true");
+            let _ = writeln!(s, "shard_id = {}", cluster.shard_id);
+            let _ = writeln!(s, "cluster_psk = \"{}\"", cluster.psk_b64);
+            let _ = writeln!(s, "mesh_listen = \"{}\"", cluster.mesh_listen);
+            let _ = writeln!(s, "peers = [");
+            for (shard, addr) in &cluster.peers {
+                let _ = writeln!(s, "  {{ shard = {shard}, addr = \"{addr}\" }},");
+            }
+            let _ = writeln!(s, "]");
         }
         s
     }
@@ -406,6 +454,8 @@ pub struct GroupSpec {
     pub name: String,
     pub mode: String,
     pub routing_scope: String,
+    pub shared_resume: bool,
+    pub warm_standby_udp: Option<usize>,
     pub failure_cooldown_secs: u64,
     pub tcp_chunk0_failover_timeout_secs: u64,
     pub mode_downgrade_secs: u64,
@@ -425,6 +475,8 @@ impl GroupSpec {
             name: "default".to_string(),
             mode: mode.to_string(),
             routing_scope: routing_scope.to_string(),
+            shared_resume: false,
+            warm_standby_udp: None,
             failure_cooldown_secs: 1,
             tcp_chunk0_failover_timeout_secs: 1,
             mode_downgrade_secs: 1,
@@ -434,6 +486,16 @@ impl GroupSpec {
             mid_session_retry_budget: None,
             uplinks: Vec::new(),
         }
+    }
+
+    pub fn with_shared_resume(mut self, enabled: bool) -> Self {
+        self.shared_resume = enabled;
+        self
+    }
+
+    pub fn with_warm_standby_udp(mut self, count: usize) -> Self {
+        self.warm_standby_udp = Some(count);
+        self
     }
 
     pub fn uplink(mut self, u: UplinkSpec) -> Self {
@@ -452,6 +514,12 @@ impl GroupSpec {
         let _ = writeln!(out, "name = \"{}\"", self.name);
         let _ = writeln!(out, "mode = \"{}\"", self.mode);
         let _ = writeln!(out, "routing_scope = \"{}\"", self.routing_scope);
+        if self.shared_resume {
+            let _ = writeln!(out, "shared_resume = true");
+        }
+        if let Some(n) = self.warm_standby_udp {
+            let _ = writeln!(out, "warm_standby_udp = {n}");
+        }
         let _ = writeln!(out, "failure_cooldown_secs = {}", self.failure_cooldown_secs);
         let _ = writeln!(
             out,

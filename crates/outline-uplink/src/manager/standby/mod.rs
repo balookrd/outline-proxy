@@ -32,6 +32,10 @@ mod refill_wire_tests;
 #[path = "tests/acquire_metric.rs"]
 mod acquire_metric_tests;
 
+#[cfg(test)]
+#[path = "tests/udp_resume_standby.rs"]
+mod udp_resume_standby_tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -614,6 +618,13 @@ impl UplinkManager {
     /// [`Self::acquire_udp_standby_or_connect_with_store`] against the
     /// process-wide resume caches — the shape every caller had before per-carrier
     /// resume slots existed.
+    ///
+    /// Note that when the process-wide cache already holds a `SessionId` for
+    /// this scope, [`Self::acquire_udp_on_wire`] intentionally bypasses the
+    /// warm-standby pool so `X-Outline-Resume` can be presented during the
+    /// upgrade handshake; callers with independent flows must pass a fresh
+    /// [`UdpResumeStore::Private`](outline_transport::UdpResumeStore::Private)
+    /// so new flows still get 0-RTT pooled carriers.
     pub async fn acquire_udp_standby_or_connect(
         &self,
         candidate: &UplinkCandidate,
@@ -650,6 +661,14 @@ impl UplinkManager {
     /// Acquire a UDP carrier on `wire`, keeping its Session IDs in
     /// `resume_store`. `wire = 0` is the primary carrier and reproduces the
     /// behaviour every existing caller has.
+    ///
+    /// For SS-UDP wires, `resume_store` is checked *before* consulting the
+    /// warm-standby pool: when a `SessionId` is already stored (e.g. a soft
+    /// switch, carrier redial, or failover), the pool is bypassed without
+    /// consuming a pre-warmed socket or recording a pool miss so the on-demand
+    /// dial can send `X-Outline-Resume` in its upgrade handshake. Fresh flows
+    /// with no stored ID still reuse a pooled carrier and record its server-
+    /// issued `X-Outline-Session` into `resume_store`.
     ///
     /// Built from [`WireSpec`](crate::WireSpec) rather than `candidate.uplink`
     /// directly, so a VLESS fallback wire is just as dialable as an SS one —
@@ -756,61 +775,87 @@ impl UplinkManager {
             return Ok(UdpSessionTransport::Vless(mux));
         }
 
-        // WS-pooled UDP: try to reuse a pooled stream first. `try_take_alive`
-        // loops past zombie entries (e.g. underlying H2/H3 torn down after
-        // pooling) so we never hand a dead transport to the caller.
+        // Cross-transport session resumption for SS-UDP-over-WS.
+        // Mirrors the TCP path's ResumeCache wiring; the cache key
+        // distinguishes TCP and UDP slots so a TCP-side reconnect
+        // doesn't steal the UDP-side Session ID and vice versa.
         //
-        // The pool follows the active wire (Task 8): `try_take_alive` answers
-        // `None` on its own for any wire it is not currently prewarming, so a
-        // fallback-wire acquire can never be handed a stream dialed for
-        // another wire — no `wire == 0` gate needed here any more.
-        let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
-        if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name, spec.wire).await {
-            // Same reason as the TCP take above: a carrier reused out of the
-            // pool is never dialled, so without this it is never measured.
-            // Filed under `ctx.wire`, which is guaranteed to equal `spec.wire`
-            // here — the take only returns `Some` when they match.
-            self.register_carrier_loss_probe(
-                candidate.index,
-                ctx.wire,
-                TransportKind::Udp,
-                ws.loss_probe(),
-            );
-            // A pooled stream was dialled as a fresh session by the refill loop,
-            // so the server minted it an id and it is riding on the stream. Move
-            // it into this carrier's store or the flow would have no id of its
-            // own and could never migrate — the reused-standby path was the one
-            // place a TUN UDP flow silently lost its resume identity.
-            let pooled_resume_key =
-                resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
-            resume_store
-                .ss()
-                .store_if_issued(pooled_resume_key, ws.issued_session_id());
-            // `from_websocket` reads the carrier padding at build time, which on
-            // the hot path runs after the dial returns — outside any dial scope.
-            // Wrap the build in the per-uplink padding scope so a padded uplink's
-            // reused standby stream frames its datagrams (mirrors VLESS-UDP).
-            let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
-                UdpWsTransport::from_websocket(
-                    ws,
-                    spec.cipher,
-                    spec.password,
-                    source,
-                    self.inner.load_balancing.udp_ws_keepalive_interval,
-                )
-            })
-            .await?;
-            return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
+        // Look up the stored Session ID *before* consulting the warm-standby
+        // pool: a pre-warmed socket already completed its HTTP/H3 upgrade with
+        // an empty `X-Outline-Resume` and received a fresh `SessionId` on the
+        // target server, so handing it to a migrating/redialing flow would
+        // overwrite the flow's `SessionId` and silently drop resume continuity.
+        // When an ID is present we skip the pool (no `warm_standby_acquire`
+        // miss is recorded, matching the TCP migration path) and dial on-demand
+        // with `X-Outline-Resume`.
+        let udp_resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
+        let udp_resume_request = resume_store.ss().get(&udp_resume_key);
+
+        if udp_resume_request.is_none() {
+            // WS-pooled UDP: try to reuse a pooled stream first. `try_take_alive`
+            // loops past zombie entries (e.g. underlying H2/H3 torn down after
+            // pooling) so we never hand a dead transport to the caller.
+            //
+            // The pool follows the active wire (Task 8): `try_take_alive` answers
+            // `None` on its own for any wire it is not currently prewarming, so a
+            // fallback-wire acquire can never be handed a stream dialed for
+            // another wire — no `wire == 0` gate needed here any more.
+            let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
+            if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name, spec.wire).await {
+                // Same reason as the TCP take above: a carrier reused out of the
+                // pool is never dialled, so without this it is never measured.
+                // Filed under `ctx.wire`, which is guaranteed to equal `spec.wire`
+                // here — the take only returns `Some` when they match.
+                self.register_carrier_loss_probe(
+                    candidate.index,
+                    ctx.wire,
+                    TransportKind::Udp,
+                    ws.loss_probe(),
+                );
+                // A pooled stream was dialled as a fresh session by the refill loop,
+                // so the server minted it an id and it is riding on the stream. Move
+                // it into this carrier's store or the flow would have no id of its
+                // own and could never migrate — the reused-standby path was the one
+                // place a TUN UDP flow silently lost its resume identity.
+                resume_store
+                    .ss()
+                    .store_if_issued(udp_resume_key, ws.issued_session_id());
+                // `from_websocket` reads the carrier padding at build time, which on
+                // the hot path runs after the dial returns — outside any dial scope.
+                // Wrap the build in the per-uplink padding scope so a padded uplink's
+                // reused standby stream frames its datagrams (mirrors VLESS-UDP).
+                let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
+                    UdpWsTransport::from_websocket(
+                        ws,
+                        spec.cipher,
+                        spec.password,
+                        source,
+                        self.inner.load_balancing.udp_ws_keepalive_interval,
+                    )
+                })
+                .await?;
+                return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
+            }
         }
 
-        // The `miss` for this take was recorded by `try_take_alive` above —
-        // recording it again here would double-count every SS-UDP acquisition
-        // that fell through to a dial.
-        debug!(
-            uplink = %spec.name,
-            wire = spec.wire,
-            "no warm-standby UDP websocket available, dialing on-demand"
-        );
+        // For fresh acquisitions (`udp_resume_request.is_none()`), the `miss`
+        // for this take was already recorded by `try_take_alive` above —
+        // recording it again here would double-count. When bypassing the pool
+        // to resume, we never offered the acquisition to the pool so no miss
+        // is recorded either.
+        if udp_resume_request.is_some() {
+            debug!(
+                uplink = %spec.name,
+                wire = spec.wire,
+                "bypassing warm-standby UDP pool to present resume SessionId"
+            );
+        } else {
+            debug!(
+                uplink = %spec.name,
+                wire = spec.wire,
+                "no warm-standby UDP websocket available, dialing on-demand"
+            );
+        }
         // Combined-SS-aware: `dial_url()` resolves to `ss_xhttp_url`/
         // `ss_ws_url` on a combined wire (split `udp_url` is None there).
         let udp_ws_url = spec.dial_url(crate::Plane::Udp).ok_or_else(|| {
@@ -818,12 +863,6 @@ impl UplinkManager {
         })?;
         let mode = self.effective_udp_mode_for_wire(candidate.index, spec.wire).await;
         let started = Instant::now();
-        // Cross-transport session resumption for SS-UDP-over-WS.
-        // Mirrors the TCP path's ResumeCache wiring; the cache key
-        // distinguishes TCP and UDP slots so a TCP-side reconnect
-        // doesn't steal the UDP-side Session ID and vice versa.
-        let udp_resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
-        let udp_resume_request = resume_store.ss().get(&udp_resume_key);
         // Scope the per-uplink padding override over the dial + build: padding
         // is read when `from_websocket` builds the transport (after the dial
         // returns), so the scope must wrap the whole future. The global default

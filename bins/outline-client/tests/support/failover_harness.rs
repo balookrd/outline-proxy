@@ -31,12 +31,14 @@ pub use config_builder::{
     PATH_SS_XHTTP_COMBINED, PATH_VLESS_WS, PATH_VLESS_XHTTP, ProbeSpec, ServerConfig, TEST_METHOD,
     TEST_PASSWORD, TEST_VLESS_ID, UplinkSpec, Wire,
 };
-pub use control_client::{Metrics, Topology, get_topology, metrics_scrape};
+pub use control_client::{Metrics, Topology, get_topology, metrics_scrape, post_activate};
 pub use echo_upstream::EchoUpstream;
 pub use fault_injection::{BlackholeListener, MidSessionBreaker, RejectingListener};
 pub use proxy_test_utils::{ProxyProcess, TestDir, reserve_tcp_port};
 pub use server_process::ServerProcess;
-pub use traffic::{ContinuousEcho, socks5_echo_attempt, socks5_echo_roundtrip, socks5_udp_echo};
+pub use traffic::{
+    ContinuousEcho, ContinuousUdpEcho, socks5_echo_attempt, socks5_echo_roundtrip, socks5_udp_echo,
+};
 
 use std::fs;
 use std::net::{SocketAddr, UdpSocket};

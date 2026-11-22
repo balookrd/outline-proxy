@@ -770,6 +770,18 @@ out first would look the id up against a still-live session, be told
 `miss-unknown`, and be handed a fresh upstream on a fresh source port — the
 whole point of the migration, lost to ordering alone.
 
+When `warm_standby_udp > 0`, SS-UDP checks the flow/association `SessionId` in
+its `UdpResumeStore` *before* consulting the warm-standby pool. A pre-warmed
+socket has already completed its HTTP/H3 upgrade with an empty
+`X-Outline-Resume` and holds a fresh server-issued ID, so handing it to a
+migrating or redialing session would overwrite the session's home-shard ID and
+silently drop resume continuity. When a stored ID is present, SS-UDP
+intentionally bypasses the pool (without consuming a pooled carrier or recording
+`outline_ws_warm_standby_acquire_total{outcome="miss"}`) and dials on-demand
+with `X-Outline-Resume`. Brand-new flows with no stored ID still take a 0-RTT
+carrier from the pool and save its `X-Outline-Session` into their private
+`UdpResumeStore` for any future migration.
+
 Off a cluster (`shared_resume = false`) UDP stays per-uplink and every wire
 resolves locally, exactly as before — sharing a UDP id across unrelated homes
 would only ever miss.
@@ -1825,6 +1837,10 @@ only where one carrier exists per scope. TUN dials one carrier per
 *flow*, so under a shared slot a fresh flow presented the id the
 previously-closed flow had parked, and a hit on that re-attaches
 that flow's upstream — a cross-session splice, not a missed resume.
+When `warm_standby_udp > 0`, SS-UDP bypasses the warm-standby pool whenever
+the slot already holds a `SessionId` so `X-Outline-Resume` is sent during the
+upgrade handshake; fresh flows with an empty slot still reuse a pooled carrier
+and record its `X-Outline-Session`.
 Configurations where UDP rides the TCP carrier (VLESS/WS, VLESS/XHTTP)
 keep no UDP slot — UDP follows TCP's lifetime.
 

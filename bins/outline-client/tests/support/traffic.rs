@@ -95,3 +95,41 @@ pub fn socks5_udp_echo(
     let parsed = parse_udp_packet(&buf[..n])?;
     Ok(parsed.payload)
 }
+
+/// A held-open SOCKS5 UDP ASSOCIATE session for multi-datagram / soft-switch
+/// tests: keeps the control TCP stream and client UDP socket alive across
+/// datagrams so the server's NAT entry and `SessionId` persist.
+pub struct ContinuousUdpEcho {
+    _control: TcpStream,
+    socket: std::net::UdpSocket,
+    relay_addr: SocketAddr,
+    target: SocketAddr,
+}
+
+impl ContinuousUdpEcho {
+    pub fn connect(proxy_port: u16, udp_target: SocketAddr) -> Result<Self, BoxError> {
+        let (control, relay_addr) = socks5_udp_associate(proxy_port)?;
+        let socket = std::net::UdpSocket::bind(("127.0.0.1", 0))?;
+        socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(10)))?;
+        Ok(Self {
+            _control: control,
+            socket,
+            relay_addr,
+            target: udp_target,
+        })
+    }
+
+    pub fn echo_datagram(&self, payload: &[u8]) -> Result<Vec<u8>, BoxError> {
+        use super::proxy_test_utils::{build_udp_packet, parse_udp_packet};
+
+        let host = self.target.ip().to_string();
+        let packet = build_udp_packet(&host, self.target.port(), payload)?;
+        self.socket.send_to(&packet, self.relay_addr)?;
+
+        let mut buf = [0u8; 4096];
+        let (n, _) = self.socket.recv_from(&mut buf)?;
+        let parsed = parse_udp_packet(&buf[..n])?;
+        Ok(parsed.payload)
+    }
+}

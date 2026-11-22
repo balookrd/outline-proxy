@@ -12,15 +12,28 @@ use std::time::Duration;
 
 type BoxError = Box<dyn std::error::Error>;
 
-fn http_get(addr: SocketAddr, path: &str, bearer: Option<&str>) -> Result<String, BoxError> {
+fn http_request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<&str>,
+) -> Result<String, BoxError> {
     let mut stream = TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
     if let Some(token) = bearer {
         req.push_str(&format!("Authorization: Bearer {token}\r\n"));
     }
+    if let Some(payload) = body {
+        req.push_str("Content-Type: application/json\r\n");
+        req.push_str(&format!("Content-Length: {}\r\n", payload.len()));
+    }
     req.push_str("\r\n");
+    if let Some(payload) = body {
+        req.push_str(payload);
+    }
     stream.write_all(req.as_bytes())?;
 
     let mut raw = Vec::new();
@@ -33,7 +46,7 @@ fn http_get(addr: SocketAddr, path: &str, bearer: Option<&str>) -> Result<String
     let headers = &text[..split];
     let status_ok = headers.lines().next().map(|l| l.contains(" 200 ")).unwrap_or(false);
     if !status_ok {
-        return Err(format!("non-200 response for {path}: {headers}").into());
+        return Err(format!("non-200 response for {method} {path}: {headers}").into());
     }
     let body = &text[split + 4..];
     if headers.to_ascii_lowercase().contains("transfer-encoding: chunked") {
@@ -41,6 +54,27 @@ fn http_get(addr: SocketAddr, path: &str, bearer: Option<&str>) -> Result<String
     } else {
         Ok(body.to_string())
     }
+}
+
+fn http_get(addr: SocketAddr, path: &str, bearer: Option<&str>) -> Result<String, BoxError> {
+    http_request(addr, "GET", path, bearer, None)
+}
+
+pub fn post_activate(
+    addr: SocketAddr,
+    token: &str,
+    group: &str,
+    uplink: &str,
+    soft: bool,
+) -> Result<serde_json::Value, BoxError> {
+    let payload = serde_json::json!({
+        "group": group,
+        "uplink": uplink,
+        "soft": soft,
+    })
+    .to_string();
+    let resp = http_request(addr, "POST", "/control/activate", Some(token), Some(&payload))?;
+    Ok(serde_json::from_str(&resp)?)
 }
 
 /// Decode an HTTP/1.1 chunked body (size-in-hex CRLF, data CRLF, … 0 CRLF).

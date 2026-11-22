@@ -640,14 +640,6 @@ impl TunUdpEngine {
             );
         }
 
-        // Did this flow ever hold an id of its own? A carrier the server issued
-        // nothing for (resumption off server-side) still migrates — the flow
-        // survives the switch, it just comes back on a fresh source port — but
-        // "migrated" and "migrated blind" must not share a counter, or a fleet
-        // with resumption misconfigured would look like a fleet with working
-        // session continuity.
-        let carried_an_id = resume_store.holds_any_id().unwrap_or(false);
-
         // Redial the *target uplink's* current active wire, not always its
         // primary: a soft-switch redial that ignored a repointed-away-from-
         // primary wire would migrate the flow off the carrier that uplink is
@@ -680,6 +672,24 @@ impl TunUdpEngine {
             manager.active_wire(candidate.index, TransportKind::Udp)
         } else {
             0
+        };
+        // Did this flow hold an id usable on the target wire? A carrier the
+        // server issued nothing for (resumption off server-side), or a
+        // cross-protocol VLESS→SS switch where the SS `<scope>#udp` slot is
+        // empty and `acquire_udp_on_wire` falls back to the warm-standby pool,
+        // still migrates — the flow survives the switch, it just comes back on
+        // a fresh source port — so "migrated" and "migrated blind" must not
+        // share a counter. For SS targets, checking the exact SS key aligns
+        // `soft_switch_migrated` with whether `acquire_udp_on_wire` actually
+        // bypassed the pool and presented `X-Outline-Resume`.
+        let carried_an_id = match outline_uplink::WireSpec::of(&candidate.uplink, wire)
+            .map(|spec| spec.transport)
+        {
+            Some(outline_uplink::UplinkTransport::Ss) => {
+                let key = manager.resume_cache_key_for(&candidate.uplink.name, "udp");
+                resume_store.ss().get(&key).is_some()
+            },
+            _ => resume_store.holds_any_id().unwrap_or(false),
         };
         let connected = manager
             .acquire_udp_on_wire(&candidate, wire, "tun_udp", resume_store)
@@ -1134,7 +1144,7 @@ async fn report_udp_runtime_failure(
         .await;
 }
 
-async fn select_candidate_and_connect(
+pub(super) async fn select_candidate_and_connect(
     manager: &UplinkManager,
     remote_target: &TargetAddr,
     client: Option<&str>,
