@@ -217,7 +217,7 @@
         </div>
       {:else if bundle}
         {#if bundle.mode === 'per_node' && bundle.nodes?.length}
-          <div class="fieldrow" style="margin-bottom: var(--sp-3);">
+          <div class="fieldrow">
             <label for="ak-per-node-select">Node subscription view</label>
             <select id="ak-per-node-select" class="field-mono" bind:value={selectedPerNode}>
               {#each bundle.nodes as n (n.instance)}
@@ -361,7 +361,7 @@
               <div class="ak-grid">
                 <QrCode value={shareLinks[selectedShareQr] ?? shareLinks[0]} label="Share link QR code" />
                 <div class="ak-details">
-                  <div class="ak-actions" style="margin-bottom: var(--sp-2);">
+                  <div class="ak-actions">
                     <button type="button" class="btn primary sm" onclick={() => copyText('all-links', shareLinks.join('\n'), 'All share links')}>
                       {copiedKey === 'all-links' ? 'Copied' : 'Copy all'}
                     </button>
@@ -372,7 +372,7 @@
                     {/if}
                   </div>
                   {#if activeNodeBundle?.txt_url}
-                    <div class="fieldrow" style="margin-bottom: var(--sp-2);">
+                    <div class="fieldrow">
                       <label for="ak-txt-url">Text bundle URL</label>
                       <div class="secret-row">
                         <input id="ak-txt-url" class="field-mono" type="text" readonly value={activeNodeBundle.txt_url} />

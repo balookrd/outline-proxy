@@ -230,48 +230,51 @@
         </div>
       </div>
       {#if entries.length}
-        <table>
-          <thead><tr><th>#</th><th>Matchers</th><th>Target</th><th>Actions</th></tr></thead>
-          <tbody>
-            {#each entries as e (e.index)}
-              <tr
-                class:dragging={draggingIndex === e.index}
-                class:drag-over={dragOverIndex === e.index && draggingIndex !== e.index}
-                draggable={!e.is_default && !mutating}
-                ondragstart={(ev) => handleDragStart(ev, e.index)}
-                ondragover={(ev) => handleDragOver(ev, e.index)}
-                ondragleave={() => handleDragLeave(e.index)}
-                ondrop={(ev) => handleDrop(ev, e.index)}
-                ondragend={handleDragEnd}
-              >
-                <td>
-                  <span class="route-idx">
-                    {#if !e.is_default}<span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>{/if}
-                    {e.index}
-                  </span>
-                </td>
-                <td>
-                  <div style="display:flex; flex-wrap:wrap; gap:4px">
-                    {#each chipsFor(e.config) as c}<span class="chip {c.tone ?? ''}">{c.text}</span>{/each}
-                  </div>
-                </td>
-                <td>{targetText(e.config)}</td>
-                <td>
-                  <div class="rowactions">
-                    <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0 || e.is_default} aria-label={`Move rule #${e.index} up`} onclick={() => move(e, -1)}>↑</button>
-                    <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1 || e.index === defaultIndex - 1} aria-label={`Move rule #${e.index} down`} onclick={() => move(e, 1)}>↓</button>
-                    <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label={`Edit rule #${e.index}`} onclick={() => openEdit(e)}>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                    </button>
-                    <button class="iconbtn act-danger" title="Delete" disabled={mutating || e.is_default} aria-label={`Delete rule #${e.index}`} onclick={() => removeRoute(e)}>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div tabindex="0" role="region" aria-label="Policy routing rules" class="table-wrapper">
+          <table>
+            <thead><tr><th>#</th><th>Matchers</th><th>Target</th><th>Actions</th></tr></thead>
+            <tbody>
+              {#each entries as e (e.index)}
+                <tr
+                  class:dragging={draggingIndex === e.index}
+                  class:drag-over={dragOverIndex === e.index && draggingIndex !== e.index}
+                  draggable={!e.is_default && !mutating}
+                  ondragstart={(ev) => handleDragStart(ev, e.index)}
+                  ondragover={(ev) => handleDragOver(ev, e.index)}
+                  ondragleave={() => handleDragLeave(e.index)}
+                  ondrop={(ev) => handleDrop(ev, e.index)}
+                  ondragend={handleDragEnd}
+                >
+                  <td>
+                    <span class="route-idx">
+                      {#if !e.is_default}<span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>{/if}
+                      {e.index}
+                    </span>
+                  </td>
+                  <td>
+                    <div style="display:flex; flex-wrap:wrap; gap:4px">
+                      {#each chipsFor(e.config) as c}<span class="chip {c.tone ?? ''}">{c.text}</span>{/each}
+                    </div>
+                  </td>
+                  <td>{targetText(e.config)}</td>
+                  <td>
+                    <div class="rowactions">
+                      <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0 || e.is_default} aria-label={`Move rule #${e.index} up`} onclick={() => move(e, -1)}>↑</button>
+                      <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1 || e.index === defaultIndex - 1} aria-label={`Move rule #${e.index} down`} onclick={() => move(e, 1)}>↓</button>
+                      <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label={`Edit rule #${e.index}`} onclick={() => openEdit(e)}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                      </button>
+                      <button class="iconbtn act-danger" title="Delete" disabled={mutating || e.is_default} aria-label={`Delete rule #${e.index}`} onclick={() => removeRoute(e)}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {:else if !routesPoll.error}
         <div class="empty">
           No routes configured for this instance.

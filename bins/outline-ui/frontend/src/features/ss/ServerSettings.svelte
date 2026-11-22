@@ -768,7 +768,7 @@
   }
 </script>
 
-<section class="view active">
+<section class="view active" class:view-has-savebar={formDirty}>
   <div class="sr-only" aria-live="polite">{liveAnnouncement}</div>
 
   <div class="page-head">
@@ -876,7 +876,7 @@
         >
           <div class="tabpanel-inner">
             <div class="settings-two-col">
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>[[endpoint]] Endpoints</h3>
                   {#if isCluster}
@@ -900,7 +900,7 @@
                     + Add endpoint
                   </button>
                 </div>
-                <p class="hint" style="margin-bottom: var(--sp-3);">
+                <p class="panel-head-desc">
                   Path-independent carrier routes. Changing endpoint paths or kinds requires restarting the server and regenerating subscriptions.
                 </p>
 
@@ -912,10 +912,9 @@
                       {@const epKey = `ep:${idx}:path`}
                       {@const epErr = fieldError(epKey)}
                       <div class="subcard">
-                        <div class="subcard-row">
-                          <div class="fieldrow" style="flex: 2 1 180px;">
+                        <div class="form-grid-endpoint">
+                          <div class="fieldrow">
                             <label for={`ep-path-${idx}`}>Path</label>
-                            <span id={`ep-path-hint-${idx}`} class="hint">Must start with <code>/</code> without whitespace.</span>
                             <input
                               id={`ep-path-${idx}`}
                               data-val-key={epKey}
@@ -927,6 +926,7 @@
                               aria-describedby={describedBy(`ep-path-hint-${idx}`, epErr ? `ep-path-err-${idx}` : null)}
                               onblur={() => onFieldBlur(epKey, `Endpoint #${idx + 1} path`)}
                             />
+                            <span id={`ep-path-hint-${idx}`} class="hint">Must start with <code>/</code> without whitespace.</span>
                             {#if epErr}
                               <div id={`ep-path-err-${idx}`} class="field-error">
                                 <span class="err-prefix" aria-hidden="true">Error:</span> {epErr}
@@ -934,7 +934,7 @@
                             {/if}
                           </div>
 
-                          <div class="fieldrow" style="flex: 2 1 200px;">
+                          <div class="fieldrow">
                             <label for={`ep-kind-${idx}`}>Carrier &amp; Protocol (kind)</label>
                             <select
                               id={`ep-kind-${idx}`}
@@ -968,7 +968,7 @@
               </div>
 
               <div class="stack-form">
-                <div class="panel panel-pad">
+                <div class="panel panel-form panel-pad">
                   <div class="section-head-row">
                     <h3>[shadowsocks] Cipher Method</h3>
                     {#if isCluster}
@@ -985,9 +985,6 @@
                   </div>
                   <div class="fieldrow">
                     <label for="ss-method-select">Shadowsocks AEAD / 2022 Method</label>
-                    <span id="ss-method-hint" class="hint">
-                      Shared server cipher method for Shadowsocks endpoints. Empty if running VLESS-only.
-                    </span>
                     <select
                       id="ss-method-select"
                       class="field-mono"
@@ -999,10 +996,13 @@
                         <option value={kind}>{kind}</option>
                       {/each}
                     </select>
+                    <span id="ss-method-hint" class="hint">
+                      Shared server cipher method for Shadowsocks endpoints. Empty if running VLESS-only.
+                    </span>
                   </div>
                 </div>
 
-                <div class="panel panel-pad">
+                <div class="panel panel-form panel-pad">
                   <div class="section-head-row">
                     <h3>[http_root] HTTP Root Probe</h3>
                     {#if isCluster}
@@ -1029,9 +1029,6 @@
                     </label>
                     <div class="fieldrow">
                       <label for="http-root-realm">WWW-Authenticate Realm</label>
-                      <span id="http-root-realm-hint" class="hint">
-                        Optional realm string returned when HTTP root auth is enabled.
-                      </span>
                       <input
                         id="http-root-realm"
                         type="text"
@@ -1039,6 +1036,9 @@
                         bind:value={currShared.httpRootRealm}
                         aria-describedby="http-root-realm-hint"
                       />
+                      <span id="http-root-realm-hint" class="hint">
+                        Optional realm string returned when HTTP root auth is enabled.
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1082,7 +1082,7 @@
 
             <div class="settings-two-col">
               <!-- TCP/TLS Listener + Certs (Per-node) + Shared limit -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>TCP / TLS Listener {#if isCluster && activeNode}· <span class="mono">{activeNode}</span>{/if}</h3>
                   {#if isCluster}
@@ -1105,9 +1105,6 @@
                   <div class="stack-form">
                     <div class="fieldrow">
                       <label for="srv-listen">Listen address (per-node)</label>
-                      <span id="srv-listen-hint" class="hint">
-                        Format: <code>0.0.0.0:443</code> or <code>[::]:443</code>.
-                      </span>
                       <input
                         id="srv-listen"
                         data-val-key={listenKey}
@@ -1119,6 +1116,9 @@
                         aria-describedby={describedBy('srv-listen-hint', listenErr ? 'srv-listen-err' : null)}
                         onblur={() => onFieldBlur(listenKey, 'Listen address')}
                       />
+                      <span id="srv-listen-hint" class="hint">
+                        Format: <code>0.0.0.0:443</code> or <code>[::]:443</code>.
+                      </span>
                       {#if listenErr}
                         <div id="srv-listen-err" class="field-error">
                           <span class="err-prefix" aria-hidden="true">Error:</span> {listenErr}
@@ -1128,9 +1128,6 @@
 
                     <div class="fieldrow">
                       <label for="srv-cert-path">Default cert_path (per-node)</label>
-                      <span id="srv-cert-hint" class="hint">
-                        Setting TCP cert_path/key_path is also inherited by HTTP/3 unless <code>[[server.h3.certs]]</code> overrides it as empty.
-                      </span>
                       <input
                         id="srv-cert-path"
                         type="text"
@@ -1139,6 +1136,9 @@
                         bind:value={activePerNode.cert_path}
                         aria-describedby="srv-cert-hint"
                       />
+                      <span id="srv-cert-hint" class="hint">
+                        Setting TCP cert_path/key_path is also inherited by HTTP/3 unless <code>[[server.h3.certs]]</code> overrides it as empty.
+                      </span>
                     </div>
 
                     <div class="fieldrow">
@@ -1154,9 +1154,6 @@
 
                     <div class="fieldrow">
                       <label for="srv-max-conn">max_connections_per_ip (shared)</label>
-                      <span id="srv-max-conn-hint" class="hint">
-                        Leave empty for server default / unlimited. Applies to all nodes in cluster.
-                      </span>
                       <input
                         id="srv-max-conn"
                         type="number"
@@ -1166,6 +1163,9 @@
                         aria-describedby="srv-max-conn-hint"
                         oninput={(e) => (currShared.maxConnectionsPerIp = optInt(e.currentTarget.value))}
                       />
+                      <span id="srv-max-conn-hint" class="hint">
+                        Leave empty for server default / unlimited. Applies to all nodes in cluster.
+                      </span>
                     </div>
 
                     <div class="section-head-row" style="margin-top: var(--sp-2);">
@@ -1237,7 +1237,7 @@
               </div>
 
               <!-- HTTP/3 & QUIC -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>HTTP/3 &amp; QUIC {#if isCluster && activeNode}· <span class="mono">{activeNode}</span>{/if}</h3>
                   {#if isCluster}
@@ -1264,9 +1264,6 @@
                   <div class="stack-form">
                     <div class="fieldrow">
                       <label for="h3-listen">h3_listen (UDP socket, per-node)</label>
-                      <span id="h3-listen-hint" class="hint">
-                        Leave empty to disable HTTP/3 listener (only valid when H3 does not inherit TCP certs).
-                      </span>
                       <input
                         id="h3-listen"
                         data-val-key={h3ListenKey}
@@ -1278,6 +1275,9 @@
                         aria-describedby={describedBy('h3-listen-hint', h3ListenErr ? 'h3-listen-err' : null)}
                         onblur={() => onFieldBlur(h3ListenKey, 'H3 listen address')}
                       />
+                      <span id="h3-listen-hint" class="hint">
+                        Leave empty to disable HTTP/3 listener (only valid when H3 does not inherit TCP certs).
+                      </span>
                       {#if h3ListenErr}
                         <div id="h3-listen-err" class="field-error">
                           <span class="err-prefix" aria-hidden="true">Error:</span> {h3ListenErr}
@@ -1380,7 +1380,6 @@
 
                     <div class="fieldrow">
                       <label for="h3-alpn">h3_alpn protocols (shared)</label>
-                      <span id="h3-alpn-hint" class="hint">Comma-separated ALPN tokens, default: <code>h3</code>.</span>
                       <input
                         id="h3-alpn"
                         type="text"
@@ -1389,6 +1388,7 @@
                         aria-describedby="h3-alpn-hint"
                         oninput={(e) => onH3AlpnInput(e.currentTarget.value)}
                       />
+                      <span id="h3-alpn-hint" class="hint">Comma-separated ALPN tokens, default: <code>h3</code>.</span>
                     </div>
 
                     <div class="section-head-row">
@@ -1407,9 +1407,9 @@
                       {/if}
                     </div>
 
-                    <div class="subcard-row">
-                      <div class="fieldrow" style="flex: 1 1 160px;">
-                        <div class="section-head-row">
+                    <div class="form-grid-2">
+                      <div class="fieldrow">
+                        <div class="field-head">
                           <label for="h3-init-mtu">h3_initial_mtu (shared)</label>
                           {#if isCluster}
                             <DriftBadge
@@ -1421,7 +1421,6 @@
                             />
                           {/if}
                         </div>
-                        <span id="h3-init-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
                         <input
                           id="h3-init-mtu"
                           data-val-key="h3_initial_mtu"
@@ -1435,6 +1434,7 @@
                           oninput={(e) => (currShared.h3InitialMtu = optInt(e.currentTarget.value))}
                           onblur={() => onFieldBlur('h3_initial_mtu', 'H3 initial MTU')}
                         />
+                        <span id="h3-init-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
                         {#if mtuErr}
                           <div id="h3-init-mtu-err" class="field-error">
                             <span class="err-prefix" aria-hidden="true">Error:</span> {mtuErr}
@@ -1442,8 +1442,8 @@
                         {/if}
                       </div>
 
-                      <div class="fieldrow" style="flex: 1 1 160px;">
-                        <div class="section-head-row">
+                      <div class="fieldrow">
+                        <div class="field-head">
                           <label for="h3-probe-mtu">h3_mtu_first_probe (shared)</label>
                           {#if isCluster}
                             <DriftBadge
@@ -1455,7 +1455,6 @@
                             />
                           {/if}
                         </div>
-                        <span id="h3-probe-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
                         <input
                           id="h3-probe-mtu"
                           data-val-key="h3_mtu_first_probe"
@@ -1469,6 +1468,7 @@
                           oninput={(e) => (currShared.h3MtuFirstProbe = optInt(e.currentTarget.value))}
                           onblur={() => onFieldBlur('h3_mtu_first_probe', 'H3 first MTU probe')}
                         />
+                        <span id="h3-probe-mtu-hint" class="hint">1200–1452 bytes (blank resets to default).</span>
                         {#if probeErr}
                           <div id="h3-probe-mtu-err" class="field-error">
                             <span class="err-prefix" aria-hidden="true">Error:</span> {probeErr}
@@ -1481,7 +1481,7 @@
               </div>
 
               <!-- Outbound Routing -->
-              <div class="panel panel-pad" style="grid-column: 1 / -1;">
+              <div class="panel panel-form panel-pad full-span">
                 <div class="section-head-row">
                   <h3>[outbound] Outbound Routing &amp; IPv6</h3>
                   {#if isCluster}
@@ -1526,8 +1526,8 @@
                       <input type="checkbox" bind:checked={currShared.outboundShared.block_private_ips} />
                       <span>Block outbound private/loopback IP ranges (SSRF guard, shared)</span>
                     </label>
-                    <div class="subcard-row">
-                      <div class="fieldrow" style="flex: 1 1 160px;">
+                    <div class="form-grid-2">
+                      <div class="fieldrow">
                         <label for="out-sticky-ttl">ipv6_sticky_ttl_secs</label>
                         <input
                           id="out-sticky-ttl"
@@ -1539,7 +1539,7 @@
                             (currShared.outboundShared.ipv6_sticky_ttl_secs = optInt(e.currentTarget.value))}
                         />
                       </div>
-                      <div class="fieldrow" style="flex: 1 1 160px;">
+                      <div class="fieldrow">
                         <label for="out-refresh">ipv6_refresh_secs</label>
                         <input
                           id="out-refresh"
@@ -1554,9 +1554,6 @@
                     </div>
                     <div class="fieldrow">
                       <label for="out-subnets">allowed_subnets (shared CIDR whitelist override)</label>
-                      <span id="out-subnets-hint" class="hint">
-                        Comma- or newline-separated CIDRs permitted even when <code>block_private_ips</code> is active.
-                      </span>
                       <textarea
                         id="out-subnets"
                         rows="2"
@@ -1565,6 +1562,9 @@
                         bind:value={currShared.outboundShared.allowedSubnetsText}
                         aria-describedby="out-subnets-hint"
                       ></textarea>
+                      <span id="out-subnets-hint" class="hint">
+                        Comma- or newline-separated CIDRs permitted even when <code>block_private_ips</code> is active.
+                      </span>
                     </div>
                   </div>
 
@@ -1619,7 +1619,7 @@
           <div class="tabpanel-inner">
             <div class="settings-two-col">
               <!-- Session Resumption -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>[session_resumption] Session Resumption</h3>
                   {#if isCluster}
@@ -1643,8 +1643,8 @@
                     <input type="checkbox" bind:checked={currShared.sessionResumption.enabled} />
                     <span>Enable cross-carrier session resumption</span>
                   </label>
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 150px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="sr-ttl-tcp">orphan_ttl_tcp_secs</label>
                       <input
                         id="sr-ttl-tcp"
@@ -1656,7 +1656,7 @@
                           (currShared.sessionResumption.orphan_ttl_tcp_secs = optInt(e.currentTarget.value))}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 150px;">
+                    <div class="fieldrow">
                       <label for="sr-ttl-udp">orphan_ttl_udp_secs</label>
                       <input
                         id="sr-ttl-udp"
@@ -1669,8 +1669,8 @@
                       />
                     </div>
                   </div>
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 150px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="sr-user-cap">orphan_per_user_cap</label>
                       <input
                         id="sr-user-cap"
@@ -1682,7 +1682,7 @@
                           (currShared.sessionResumption.orphan_per_user_cap = optInt(e.currentTarget.value))}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 150px;">
+                    <div class="fieldrow">
                       <label for="sr-global-cap">orphan_global_cap</label>
                       <input
                         id="sr-global-cap"
@@ -1697,9 +1697,6 @@
                   </div>
                   <div class="fieldrow">
                     <label for="sr-downlink">downlink_buffer_bytes</label>
-                    <span id="sr-downlink-hint" class="hint">
-                      Per-session orphan buffer in bytes{#if currShared.sessionResumption.downlink_buffer_bytes != null} ({Math.round(currShared.sessionResumption.downlink_buffer_bytes / 1024)} KiB){/if}.
-                    </span>
                     <input
                       id="sr-downlink"
                       type="number"
@@ -1710,12 +1707,15 @@
                       oninput={(e) =>
                         (currShared.sessionResumption.downlink_buffer_bytes = optInt(e.currentTarget.value))}
                     />
+                    <span id="sr-downlink-hint" class="hint">
+                      Per-session orphan buffer in bytes{' '}{#if currShared.sessionResumption.downlink_buffer_bytes != null}({Math.round(currShared.sessionResumption.downlink_buffer_bytes / 1024)} KiB){/if}.
+                    </span>
                   </div>
                 </div>
               </div>
 
               <!-- Padding (all 11 fields) -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>[padding] Traffic Padding &amp; Throttle Guard</h3>
                   {#if isCluster}
@@ -1738,8 +1738,8 @@
                     <input type="checkbox" bind:checked={currShared.padding.cover} />
                     <span>Enable periodic cover traffic (<code>cover</code>)</span>
                   </label>
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="pad-min">min_bytes</label>
                       <input
                         id="pad-min"
@@ -1751,7 +1751,7 @@
                         onblur={() => onFieldBlur('padding.max_bytes', 'Padding min/max bytes')}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                    <div class="fieldrow">
                       <label for="pad-max">max_bytes</label>
                       <input
                         id="pad-max"
@@ -1773,8 +1773,8 @@
                     </div>
                   {/if}
 
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="pad-jmin">cover_jitter_min_ms</label>
                       <input
                         id="pad-jmin"
@@ -1787,7 +1787,7 @@
                         onblur={() => onFieldBlur('padding.jitter_max', 'Padding jitter min/max')}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                    <div class="fieldrow">
                       <label for="pad-jmax">cover_jitter_max_ms</label>
                       <input
                         id="pad-jmax"
@@ -1810,13 +1810,15 @@
                     </div>
                   {/if}
 
+                  <div class="form-divider"></div>
+
                   <label class="switch">
                     <input type="checkbox" bind:checked={currShared.padding.throttle_detect_enabled} />
                     <span>Detect provider throttling (<code>throttle_detect_enabled</code>)</span>
                   </label>
 
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="pad-tratio">throttle_ratio_percent</label>
                       <input
                         id="pad-tratio"
@@ -1829,7 +1831,7 @@
                           (currShared.padding.throttle_ratio_percent = optInt(e.currentTarget.value))}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                    <div class="fieldrow">
                       <label for="pad-twindow">throttle_window_secs</label>
                       <input
                         id="pad-twindow"
@@ -1842,8 +1844,8 @@
                       />
                     </div>
                   </div>
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                  <div class="form-grid-2">
+                    <div class="fieldrow">
                       <label for="pad-tsustain">throttle_sustain_windows</label>
                       <input
                         id="pad-tsustain"
@@ -1855,7 +1857,7 @@
                           (currShared.padding.throttle_sustain_windows = optInt(e.currentTarget.value))}
                       />
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 140px;">
+                    <div class="fieldrow">
                       <label for="pad-tminbps">throttle_min_bytes_per_sec</label>
                       <input
                         id="pad-tminbps"
@@ -1884,7 +1886,7 @@
               </div>
 
               <!-- HTTP Fallback -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>[http_fallback] Reverse Proxy Fallback</h3>
                   {#if isCluster}
@@ -1905,9 +1907,6 @@
                 <div class="stack-form">
                   <div class="fieldrow">
                     <label for="hf-backend">Backend URL</label>
-                    <span id="hf-backend-hint" class="hint">
-                      Plain HTTP upstream (e.g. <code>http://127.0.0.1:8080</code>). Leave blank to disable HTTP fallback.
-                    </span>
                     <input
                       id="hf-backend"
                       data-val-key="http_fallback.backend"
@@ -1919,14 +1918,17 @@
                       aria-describedby={describedBy('hf-backend-hint', hfErr ? 'hf-backend-err' : null)}
                       onblur={() => onFieldBlur('http_fallback.backend', 'HTTP fallback backend')}
                     />
+                    <span id="hf-backend-hint" class="hint">
+                      Plain HTTP upstream (e.g. <code>http://127.0.0.1:8080</code>). Leave blank to disable HTTP fallback.
+                    </span>
                     {#if hfErr}
                       <div id="hf-backend-err" class="field-error">
                         <span class="err-prefix" aria-hidden="true">Error:</span> {hfErr}
                       </div>
                     {/if}
                   </div>
-                  <div class="subcard-row">
-                    <div class="fieldrow" style="flex: 1 1 130px;">
+                  <div class="form-grid-3">
+                    <div class="fieldrow">
                       <label for="hf-proto">backend_proto</label>
                       <select id="hf-proto" bind:value={currShared.httpFallback.backend_proto}>
                         <option value="">auto</option>
@@ -1934,7 +1936,7 @@
                         <option value="h2">h2</option>
                       </select>
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 130px;">
+                    <div class="fieldrow">
                       <label for="hf-proxy">proxy_protocol</label>
                       <select id="hf-proxy" bind:value={currShared.httpFallback.proxy_protocol}>
                         <option value="">none</option>
@@ -1942,7 +1944,7 @@
                         <option value="v2">v2</option>
                       </select>
                     </div>
-                    <div class="fieldrow" style="flex: 1 1 130px;">
+                    <div class="fieldrow">
                       <label for="hf-timeout">request_timeout_secs</label>
                       <input
                         id="hf-timeout"
@@ -1955,6 +1957,7 @@
                       />
                     </div>
                   </div>
+                  <div class="form-divider"></div>
                   <label class="switch">
                     <input type="checkbox" bind:checked={currShared.httpFallback.apply_to_h1} />
                     <span>Apply to HTTP/1.1 &amp; HTTP/2 (<code>apply_to_h1</code>)</span>
@@ -1979,7 +1982,7 @@
               </div>
 
               <!-- SNI Fallback -->
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>[sni_fallback] TLS Passthrough</h3>
                   {#if isCluster}
@@ -2004,9 +2007,6 @@
                 <div class="stack-form">
                   <div class="fieldrow">
                     <label for="sni-match">match_sni patterns (comma/newline-separated)</label>
-                    <span id="sni-match-hint" class="hint">
-                      SNI hostnames or patterns intercepted before local TLS termination. Clear both lists to disable SNI fallback.
-                    </span>
                     <textarea
                       id="sni-match"
                       data-val-key="sni_fallback.match_sni"
@@ -2018,38 +2018,39 @@
                       aria-describedby={describedBy('sni-match-hint', sniMatchErr ? 'sni-match-err' : null)}
                       onblur={() => onFieldBlur('sni_fallback.match_sni', 'SNI fallback match_sni')}
                     ></textarea>
+                    <span id="sni-match-hint" class="hint">
+                      SNI hostnames or patterns intercepted before local TLS termination. Clear both lists to disable SNI fallback.
+                    </span>
                     {#if sniMatchErr}
                       <div id="sni-match-err" class="field-error">
                         <span class="err-prefix" aria-hidden="true">Error:</span> {sniMatchErr}
                       </div>
                     {/if}
                   </div>
-                  <div class="subcard-row">
-                    <label class="switch" style="flex: 1 1 200px;">
-                      <input type="checkbox" bind:checked={currShared.sniFallback.allow_no_sni} />
-                      <span>allow_no_sni</span>
-                    </label>
-                    <div class="fieldrow" style="flex: 1 1 180px;">
-                      <label for="sni-hello-bytes">max_client_hello_bytes (&gt;= 256)</label>
-                      <input
-                        id="sni-hello-bytes"
-                        data-val-key="sni_fallback.max_hello"
-                        type="number"
-                        min="256"
-                        class="field-mono"
-                        value={currShared.sniFallback.max_client_hello_bytes ?? ''}
-                        aria-invalid={sniHelloErr ? 'true' : 'false'}
-                        aria-describedby={describedBy(sniHelloErr ? 'sni-hello-err' : null)}
-                        oninput={(e) =>
-                          (currShared.sniFallback.max_client_hello_bytes = optInt(e.currentTarget.value))}
-                        onblur={() => onFieldBlur('sni_fallback.max_hello', 'max_client_hello_bytes')}
-                      />
-                      {#if sniHelloErr}
-                        <div id="sni-hello-err" class="field-error">
-                          <span class="err-prefix" aria-hidden="true">Error:</span> {sniHelloErr}
-                        </div>
-                      {/if}
-                    </div>
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={currShared.sniFallback.allow_no_sni} />
+                    <span>Allow TLS connections without SNI (<code>allow_no_sni</code>)</span>
+                  </label>
+                  <div class="fieldrow">
+                    <label for="sni-hello-bytes">max_client_hello_bytes (&gt;= 256)</label>
+                    <input
+                      id="sni-hello-bytes"
+                      data-val-key="sni_fallback.max_hello"
+                      type="number"
+                      min="256"
+                      class="field-mono"
+                      value={currShared.sniFallback.max_client_hello_bytes ?? ''}
+                      aria-invalid={sniHelloErr ? 'true' : 'false'}
+                      aria-describedby={describedBy(sniHelloErr ? 'sni-hello-err' : null)}
+                      oninput={(e) =>
+                        (currShared.sniFallback.max_client_hello_bytes = optInt(e.currentTarget.value))}
+                      onblur={() => onFieldBlur('sni_fallback.max_hello', 'max_client_hello_bytes')}
+                    />
+                    {#if sniHelloErr}
+                      <div id="sni-hello-err" class="field-error">
+                        <span class="err-prefix" aria-hidden="true">Error:</span> {sniHelloErr}
+                      </div>
+                    {/if}
                   </div>
 
                   {#each currShared.sniFallback.backends as b, idx (idx)}
@@ -2057,8 +2058,8 @@
                     {@const sbErr = fieldError(sbKey)}
                     <div class="subcard">
                       <div class="stack-form">
-                        <div class="subcard-row">
-                          <div class="fieldrow" style="flex: 2 1 170px;">
+                        <div class="form-grid-2-1">
+                          <div class="fieldrow">
                             <label for={`sni-b-addr-${idx}`}>Backend host:port</label>
                             <input
                               id={`sni-b-addr-${idx}`}
@@ -2072,7 +2073,7 @@
                               onblur={() => onFieldBlur(sbKey, `SNI backend #${idx + 1}`)}
                             />
                           </div>
-                          <div class="fieldrow" style="flex: 1 1 110px;">
+                          <div class="fieldrow">
                             <label for={`sni-b-pp-${idx}`}>proxy_protocol</label>
                             <select id={`sni-b-pp-${idx}`} bind:value={b.proxy_protocol}>
                               <option value="">none</option>
@@ -2125,7 +2126,7 @@
           onbeforematch={() => (activeTab = 'subscriptions')}
         >
           <div class="tabpanel-inner">
-            <div class="panel panel-pad">
+            <div class="panel panel-form panel-pad">
               <div class="section-head-row">
                 <h3>[access_keys] Subscription Generation &amp; Links</h3>
                 {#if isCluster}
@@ -2155,14 +2156,14 @@
                   </button>
                 {/if}
               </div>
-              <p class="hint" style="margin-bottom: var(--sp-3);">
+              <p class="panel-head-desc">
                 Changes inside <code>[access_keys]</code> apply immediately without restarting <code>outline-server</code>. Always regenerate subscriptions afterward to publish updated links and prune removed users.
               </p>
 
               <div class="settings-two-col">
                 <div class="stack-form">
                   <div class="fieldrow">
-                    <div class="section-head-row">
+                    <div class="field-head">
                       <label for="ak-public-host">public_host</label>
                       {#if isCluster}
                         <DriftBadge
@@ -2174,9 +2175,6 @@
                         />
                       {/if}
                     </div>
-                    <span id="ak-public-host-hint" class="hint">
-                      Public domain or address clients connect to for single-node links.
-                    </span>
                     <input
                       id="ak-public-host"
                       type="text"
@@ -2185,10 +2183,13 @@
                       bind:value={currShared.accessKeys.public_host}
                       aria-describedby="ak-public-host-hint"
                     />
+                    <span id="ak-public-host-hint" class="hint">
+                      Public domain or address clients connect to for single-node links.
+                    </span>
                   </div>
 
                   <div class="fieldrow">
-                    <div class="section-head-row">
+                    <div class="field-head">
                       <label for="ak-public-scheme">public_scheme</label>
                       {#if isCluster}
                         <DriftBadge
@@ -2224,7 +2225,7 @@
                   </div>
 
                   <div class="fieldrow">
-                    <div class="section-head-row">
+                    <div class="field-head">
                       <label for="ak-url-base">url_base</label>
                       {#if isCluster}
                         <DriftBadge
@@ -2236,9 +2237,6 @@
                         />
                       {/if}
                     </div>
-                    <span id="ak-url-base-hint" class="hint">
-                      Base HTTP URL serving generated subscription artifacts (for <code>ssconf://</code> / <code>wsconf://</code> / <code>happ://</code> links).
-                    </span>
                     <input
                       id="ak-url-base"
                       type="text"
@@ -2247,10 +2245,13 @@
                       bind:value={currShared.accessKeys.url_base}
                       aria-describedby="ak-url-base-hint"
                     />
+                    <span id="ak-url-base-hint" class="hint">
+                      Base HTTP URL serving generated subscription artifacts (for <code>ssconf://</code> / <code>wsconf://</code> / <code>happ://</code> links).
+                    </span>
                   </div>
 
                   <div class="fieldrow">
-                    <div class="section-head-row">
+                    <div class="field-head">
                       <label for="ak-file-ext">file_extension</label>
                       {#if isCluster}
                         <DriftBadge
@@ -2275,9 +2276,6 @@
                 <div class="stack-form">
                   <div class="fieldrow">
                     <label for="ak-write-dir">write_dir (filesystem output directory)</label>
-                    <span id="ak-write-dir-hint" class="hint">
-                      Server-side directory where subscription artifacts are written. Hidden by default.
-                    </span>
                     <div class="secret-row">
                       <input
                         id="ak-write-dir"
@@ -2295,10 +2293,13 @@
                         {showWriteDir ? 'Hide' : 'Show'}
                       </button>
                     </div>
+                    <span id="ak-write-dir-hint" class="hint">
+                      Server-side directory where subscription artifacts are written. Hidden by default.
+                    </span>
                   </div>
 
                   <div class="fieldrow">
-                    <div class="section-head-row">
+                    <div class="field-head">
                       <label for="ak-nodes">nodes (subscription uplink/balancer hosts)</label>
                       {#if isCluster && clusterSummary?.subscription_nodes.length}
                         <button
@@ -2310,9 +2311,6 @@
                         </button>
                       {/if}
                     </div>
-                    <span id="ak-nodes-hint" class="hint">
-                      One host per line (or comma-separated). Empty = single-server subscription without balancer group; &gt;=1 host = multi-node subscription with active/fallback balancer.
-                    </span>
                     <textarea
                       id="ak-nodes"
                       data-val-key="access_keys.nodes"
@@ -2324,6 +2322,9 @@
                       aria-describedby={describedBy('ak-nodes-hint', nodesErr ? 'ak-nodes-err' : null)}
                       onblur={() => onFieldBlur('access_keys.nodes', 'Subscription nodes')}
                     ></textarea>
+                    <span id="ak-nodes-hint" class="hint">
+                      One host per line (or comma-separated). Empty = single-server subscription without balancer group; &gt;=1 host = multi-node subscription with active/fallback balancer.
+                    </span>
                     {#if nodesErr}
                       <div id="ak-nodes-err" class="field-error">
                         <span class="err-prefix" aria-hidden="true">Error:</span> {nodesErr}
@@ -2346,7 +2347,7 @@
         >
           <div class="tabpanel-inner">
             <div class="stack-form">
-              <div class="panel panel-pad">
+              <div class="panel panel-form panel-pad">
                 <div class="section-head-row">
                   <h3>tuning_profile &amp; [tuning] Overrides</h3>
                   {#if isCluster}
@@ -2378,11 +2379,8 @@
                   {/if}
                 </div>
 
-                <div class="fieldrow" style="max-width: 420px; margin-bottom: var(--sp-3);">
+                <div class="fieldrow tuning-preset-row">
                   <label for="tuning-profile-select">tuning_profile (VPS sizing preset)</label>
-                  <span id="tuning-profile-hint" class="hint">
-                    Selects baseline buffer sizes and connection table caps (<code>small</code>, <code>medium</code>, or <code>large</code>). Empty override fields below inherit this preset.
-                  </span>
                   <select
                     id="tuning-profile-select"
                     class="field-mono"
@@ -2393,6 +2391,9 @@
                     <option value="medium">medium (2 vCPU / 2–4 GB RAM)</option>
                     <option value="large">large (4+ vCPU / 8+ GB RAM)</option>
                   </select>
+                  <span id="tuning-profile-hint" class="hint">
+                    Selects baseline buffer sizes and connection table caps (<code>small</code>, <code>medium</code>, or <code>large</code>). Empty override fields below inherit this preset.
+                  </span>
                 </div>
 
                 <!-- Do not put headings inside <summary> per accordion accessibility guidance -->
@@ -2419,11 +2420,6 @@
                         {@const presetDefault = TUNING_PRESETS[currShared.tuningProfile as TuningPresetName][spec.key]}
                         <div class="fieldrow">
                           <label for={`tuning-${spec.key}`}>{spec.label}</label>
-                          {#if spec.zeroOptOut}
-                            <span id={`tuning-hint-${spec.key}`} class="hint"><code>0</code> disables limit; blank = preset ({presetDefault}).</span>
-                          {:else}
-                            <span id={`tuning-hint-${spec.key}`} class="hint">Preset default: <code>{presetDefault}</code>.</span>
-                          {/if}
                           <input
                             id={`tuning-${spec.key}`}
                             type="number"
@@ -2435,6 +2431,11 @@
                             oninput={(e) =>
                               (currShared.tuningOverrides[spec.key] = optInt(e.currentTarget.value))}
                           />
+                          {#if spec.zeroOptOut}
+                            <span id={`tuning-hint-${spec.key}`} class="hint"><code>0</code> disables limit; blank = preset ({presetDefault}).</span>
+                          {:else}
+                            <span id={`tuning-hint-${spec.key}`} class="hint">Preset default: <code>{presetDefault}</code>.</span>
+                          {/if}
                         </div>
                       {/each}
                     </div>
@@ -2444,10 +2445,8 @@
 
               <!-- Read-only System Status -->
               <div class="panel">
-                <div class="panel-pad" style="border-bottom: 1px solid var(--border-soft);">
-                  <h3 style="margin: 0; font-size: 15px; font-weight: 600;">
-                    System, Control &amp; Metrics (Read-Only)
-                  </h3>
+                <div class="panel-pad panel-table-head">
+                  <h3>System, Control &amp; Metrics (Read-Only)</h3>
                 </div>
                 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
                 <div

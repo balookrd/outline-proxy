@@ -788,24 +788,22 @@
       {/if}
 
       {#if restartNotice}
-        <div class="applybar" style="border-color: color-mix(in srgb, var(--info) 40%, var(--border)); background: color-mix(in srgb, var(--info) 10%, var(--surface));">
-          <span class="pill" style="color: var(--info);">RESTART REQUIRED</span>
+        <div class="info-banner" role="status">
+          <span class="chip info mono">RESTART REQUIRED</span>
           <span>Changes to SOCKS5 listen socket, TUN interface parameters, or dial/transport windows require restarting <code>outline-client</code>.</span>
         </div>
       {/if}
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--sp-4);">
+      <div class="settings-two-col">
         <!-- 1. Quality & Liveness Probes -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-2);">
-            Health & Quality Probes
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px; color: var(--fg-muted);">
+        <div class="panel panel-form panel-pad">
+          <h3>Health & Quality Probes</h3>
+          <p class="panel-head-desc">
             Latency measurement (EWMA RTT), liveness checks, and degradation detection across uplinks.
           </p>
 
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+          <div class="stack-form">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="probe-interval">Probe Interval (s)</label>
                 <input
@@ -832,7 +830,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-3">
               <div class="fieldrow">
                 <label for="probe-timeout">Timeout (s)</label>
                 <input
@@ -869,7 +867,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="probe-max-concurrent">Max Concurrent</label>
                 <input
@@ -942,7 +940,7 @@
               <span class="hint">Host/SNI endpoints tested via pure TLS handshake (one per line, port 443 default).</span>
             </div>
 
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2-1">
               <div class="fieldrow">
                 <label for="probe-dns-server">DNS Probe Server</label>
                 <input
@@ -983,15 +981,13 @@
         </div>
 
         <!-- 2. Local Ingress & Interface (SOCKS5 / TUN) -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-2);">
-            Ingress & Network Interfaces
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px; color: var(--fg-muted);">
+        <div class="panel panel-form panel-pad">
+          <h3>Ingress & Network Interfaces</h3>
+          <p class="panel-head-desc">
             SOCKS5 listening proxy socket and virtual TUN network adapter on this device.
           </p>
 
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
+          <div class="stack-form">
             <div class="fieldrow">
               <label for="socks5-listen">SOCKS5 Listen Address</label>
               <input
@@ -1006,57 +1002,52 @@
             </div>
 
             <div class="fieldrow">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-1);">
-                <span style="font-weight: 500; font-size: 13px;">SOCKS5 Users ([[socks5.users]])</span>
+              <div class="field-head">
+                <span class="form-subhead">SOCKS5 Users ([[socks5.users]])</span>
                 <button
                   type="button"
-                  class="btn btn-secondary btn-sm"
+                  class="btn ghost sm"
                   onclick={addSocks5User}
-                  style="padding: 2px 8px; font-size: 11px;"
                 >
                   + Add User
                 </button>
               </div>
-              <span class="hint" style="margin-bottom: var(--sp-2); display: block;">
+              <span class="hint">
                 Authenticated proxy users (RFC 1929). If empty, SOCKS5 accepts unauthenticated connections.
               </span>
 
               {#if socks5Users.length === 0}
-                <div style="padding: var(--sp-2); font-size: 12px; color: var(--fg-muted); background: var(--bg-soft); border-radius: var(--rad-sm); border: 1px dashed var(--border-soft);">
+                <div class="empty-dashed">
                   No users configured (anonymous access allowed).
                 </div>
               {:else}
-                <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
+                <div class="stack-form" style="gap: var(--sp-2);">
                   {#each socks5Users as user (user.id)}
-                    <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--sp-2); align-items: center;">
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Username"
-                          bind:value={user.username}
-                          oninput={markDirty}
-                          class="field-mono"
-                          style="font-size: 12px;"
-                        />
-                      </div>
-                      <div>
-                        <input
-                          type="password"
-                          placeholder={user.has_password ? '•••••••• (configured)' : 'Password'}
-                          bind:value={user.password}
-                          oninput={markDirty}
-                          class="field-mono"
-                          style="font-size: 12px;"
-                        />
-                      </div>
+                    <div class="form-grid-kv-action">
+                      <input
+                        type="text"
+                        aria-label="SOCKS5 username"
+                        placeholder="Username"
+                        bind:value={user.username}
+                        oninput={markDirty}
+                        class="field-mono"
+                      />
+                      <input
+                        type="password"
+                        aria-label="SOCKS5 password"
+                        placeholder={user.has_password ? '•••••••• (configured)' : 'Password'}
+                        bind:value={user.password}
+                        oninput={markDirty}
+                        class="field-mono"
+                      />
                       <button
                         type="button"
-                        class="btn btn-ghost btn-sm"
-                        style="color: var(--danger, #f43f5e); padding: 4px 8px;"
+                        class="iconbtn act-danger"
                         onclick={() => removeSocks5User(user.id)}
                         title="Remove user"
+                        aria-label="Remove user"
                       >
-                        ✕
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
                       </button>
                     </div>
                   {/each}
@@ -1064,9 +1055,9 @@
               {/if}
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-1) 0;"></div>
+            <div class="form-divider"></div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="tun-name">TUN Device Name</label>
                 <input
@@ -1092,7 +1083,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-4">
               <div class="fieldrow">
                 <label for="tun-max-flows">Max Flows</label>
                 <input
@@ -1160,25 +1151,19 @@
               </label>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-2);">
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={tunGso} onchange={markDirty} />
-                  <span>GSO</span>
-                </label>
-              </div>
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={tunGro} onchange={markDirty} />
-                  <span>GRO</span>
-                </label>
-              </div>
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={tunUso} onchange={markDirty} />
-                  <span>USO</span>
-                </label>
-              </div>
+            <div class="switch-row">
+              <label class="switch">
+                <input type="checkbox" bind:checked={tunGso} onchange={markDirty} />
+                <span>GSO</span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" bind:checked={tunGro} onchange={markDirty} />
+                <span>GRO</span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" bind:checked={tunUso} onchange={markDirty} />
+                <span>USO</span>
+              </label>
             </div>
 
             <div class="fieldrow">
@@ -1189,10 +1174,10 @@
               <span class="hint">Emits Path-MTU Packet Too Big notifications even below QUIC minimum initial MTU.</span>
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-2) 0;"></div>
-            <h4 style="font-size: 13px; font-weight: 600; margin: 0 0 var(--sp-2) 0;">TUN TCP Engine Settings</h4>
-            <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-divider"></div>
+            <h4 class="form-subhead">TUN TCP Engine Settings</h4>
+            <div class="stack-form">
+              <div class="form-grid-2">
                 <div class="fieldrow">
                   <label class="switch">
                     <input type="checkbox" bind:checked={tunTcpSniffing} onchange={markDirty} />
@@ -1209,14 +1194,15 @@
                 </div>
               </div>
 
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
-                <div class="fieldrow">
-                  <label class="switch">
-                    <input type="checkbox" bind:checked={tunTcpCarrierMigration} onchange={markDirty} />
-                    <span>Carrier migration</span>
-                  </label>
-                  <span class="hint">Permit active TCP sessions to migrate carrier transparently.</span>
-                </div>
+              <div class="fieldrow">
+                <label class="switch">
+                  <input type="checkbox" bind:checked={tunTcpCarrierMigration} onchange={markDirty} />
+                  <span>Carrier migration</span>
+                </label>
+                <span class="hint">Permit active TCP sessions to migrate carrier transparently.</span>
+              </div>
+
+              <div class="form-grid-3">
                 <div class="fieldrow">
                   <label for="tun-tcp-sniff-timeout">Sniff Timeout (ms)</label>
                   <input
@@ -1229,9 +1215,6 @@
                     class="field-mono"
                   />
                 </div>
-              </div>
-
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
                 <div class="fieldrow">
                   <label for="tun-tcp-connect-timeout">Connect Timeout (s)</label>
                   <input
@@ -1258,7 +1241,7 @@
                 </div>
               </div>
 
-              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-2);">
+              <div class="form-grid-3">
                 <div class="fieldrow">
                   <label for="tun-tcp-downlink-max">Downlink Max (Mbit)</label>
                   <input
@@ -1301,16 +1284,14 @@
         </div>
 
         <!-- 3. Carrier & Obfuscation Policies -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-2);">
-            Dial & Obfuscation Policies
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px; color: var(--fg-muted);">
+        <div class="panel panel-form panel-pad">
+          <h3>Dial & Obfuscation Policies</h3>
+          <p class="panel-head-desc">
             Dial timeouts, TLS client fingerprint diversification, and padding against DPI traffic analysis.
           </p>
 
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+          <div class="stack-form">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="dial-timeout">Dial Timeout (s)</label>
                 <input
@@ -1332,7 +1313,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="direct-fwmark">Direct Fwmark</label>
                 <input
@@ -1368,10 +1349,10 @@
               </label>
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-2) 0;"></div>
-            <h4 style="font-size: 13px; font-weight: 600; margin: 0 0 var(--sp-2) 0;">Network & IP Resolution Policy</h4>
-            <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-divider"></div>
+            <h4 class="form-subhead">Network & IP Resolution Policy</h4>
+            <div class="stack-form">
+              <div class="form-grid-2">
                 <div class="fieldrow">
                   <label class="switch">
                     <input type="checkbox" bind:checked={ipv4Only} onchange={markDirty} />
@@ -1401,7 +1382,7 @@
                 <span class="hint">Network interface for dynamic IPv6 prefix rotation pool on direct bypass.</span>
               </div>
 
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+              <div class="form-grid-2">
                 <div class="fieldrow">
                   <label for="udp-recv-buf-bytes">UDP Recv Buffer (bytes)</label>
                   <input
@@ -1431,7 +1412,7 @@
               </div>
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-1) 0;"></div>
+            <div class="form-divider"></div>
 
             <div class="fieldrow">
               <label class="switch">
@@ -1441,7 +1422,7 @@
               <span class="hint">Pads transport chunks with variable sizes to disguise flow fingerprints.</span>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="padding-min">Min Padding (bytes)</label>
                 <input
@@ -1491,7 +1472,7 @@
             </div>
 
             {#if paddingCover}
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+              <div class="form-grid-2">
                 <div class="fieldrow">
                   <label for="cover-min">Cover Jitter Min (ms)</label>
                   <input
@@ -1520,16 +1501,14 @@
         </div>
 
         <!-- 4. Advanced Transport & Timeouts -->
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3 style="font-size: 14px; font-weight: 600; margin-top: 0; margin-bottom: var(--sp-2);">
-            Transport Windows & Timeouts
-          </h3>
-          <p class="desc" style="margin-top: 0; margin-bottom: var(--sp-3); font-size: 12px; color: var(--fg-muted);">
+        <div class="panel panel-form panel-pad">
+          <h3>Transport Windows & Timeouts</h3>
+          <p class="panel-head-desc">
             Stream receive windows and keepalive timeouts for HTTP/3 (QUIC), HTTP/2, and native TCP carrier streams.
           </p>
 
-          <div style="display: flex; flex-direction: column; gap: var(--sp-3);">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+          <div class="stack-form">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="quic-stream-win">QUIC Stream Window (B)</label>
                 <input
@@ -1556,7 +1535,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="quic-keepalive">QUIC Keepalive (s)</label>
                 <input
@@ -1581,17 +1560,18 @@
                   class="field-mono"
                 />
               </div>
-              <div class="fieldrow">
-                <label class="switch">
-                  <input type="checkbox" bind:checked={quicUdpDatagrams} onchange={markDirty} />
-                  <span>UDP over HTTP/3 datagrams (ws_h3 / xhttp_h3)</span>
-                </label>
-              </div>
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-1) 0;"></div>
+            <div class="fieldrow">
+              <label class="switch">
+                <input type="checkbox" bind:checked={quicUdpDatagrams} onchange={markDirty} />
+                <span>UDP over HTTP/3 datagrams (ws_h3 / xhttp_h3)</span>
+              </label>
+            </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-divider"></div>
+
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="h2-stream-win">H2 Stream Window (B)</label>
                 <input
@@ -1618,7 +1598,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="h2-keepalive">H2 Keepalive (s)</label>
                 <input
@@ -1645,9 +1625,9 @@
               </div>
             </div>
 
-            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-1) 0;"></div>
+            <div class="form-divider"></div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="tcp-socks-idle">SOCKS Idle (s)</label>
                 <input
@@ -1672,7 +1652,7 @@
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+            <div class="form-grid-2">
               <div class="fieldrow">
                 <label for="tcp-upstream-resp">Upstream Resp (s)</label>
                 <input

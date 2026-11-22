@@ -367,15 +367,16 @@
         onDismiss={() => (actionResults = [])}
       />
 
-      <div class="panel" style="padding: var(--sp-4);">
-        <div class="section-head-row">
-          <div>
+      <div class="panel panel-pad">
+        <div class="section-head-row" style="margin-bottom: var(--sp-3);">
+          <div style="flex: 1 1 280px; min-width: 0;">
             <h2>Cluster Members</h2>
             <p class="desc">
               Each node automatically receives peer entries for all other shards using their configured mesh addresses.
             </p>
           </div>
-          <div class="fieldrow" style="width: 170px;">
+          <span class="spacer"></span>
+          <div class="fieldrow" style="flex: 0 1 180px;">
             <label for="cluster-relay-budget">Relay budget (ms)</label>
             <input
               id="cluster-relay-budget"
@@ -391,7 +392,7 @@
 
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div tabindex="0" role="region" aria-label="Cluster members table" class="table-wrapper">
-          <table>
+          <table class="cluster-members-table">
             <thead>
               <tr>
                 <th>Node</th>
@@ -425,7 +426,6 @@
                       max="15"
                       class="field-mono"
                       aria-label={`Shard ID on ${member.name}`}
-                      style="width: 72px;"
                       bind:value={member.shard_id}
                       oninput={() => (formDirty = true)}
                     />
@@ -491,6 +491,7 @@
               <span class="chip warn">Restart pending to apply saved config</span>
             {/if}
           </div>
+          <span class="spacer"></span>
           {#if singleRes.cluster.psk_fingerprint}
             <span class="chip info mono">PSK fp: {singleRes.cluster.psk_fingerprint}</span>
           {/if}
@@ -503,8 +504,8 @@
       </div>
 
       <div class="settings-two-col">
-        <div class="panel" style="padding: var(--sp-4);">
-          <h3>Local Mesh Configuration</h3>
+        <div class="panel panel-form panel-pad">
+          <h3 style="margin-bottom: var(--sp-3);">Local Mesh Configuration</h3>
           <div class="stack-form">
             <div class="fieldrow">
               <label class="switch">
@@ -535,32 +536,36 @@
           </div>
         </div>
 
-        <div class="panel" style="padding: var(--sp-4);">
+        <div class="panel panel-form panel-pad">
           <div class="section-head-row" style="margin-bottom: var(--sp-3);">
             <h3>Remote Shards (Peers)</h3>
+            <span class="spacer"></span>
             <button type="button" class="btn sm" disabled={!enabled} onclick={addPeer}>Add peer</button>
           </div>
           {#if peers.length === 0}
             <div class="empty">No remote peers configured.</div>
           {:else}
-            <table>
-              <thead>
-                <tr><th>Shard</th><th>Address</th><th>Action</th></tr>
-              </thead>
-              <tbody>
-                {#each peers as peer, idx (idx)}
-                  <tr>
-                    <td><input type="number" min="0" max="15" class="field-mono" style="width: 72px;" bind:value={peer.shard} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
-                    <td><input type="text" class="field-mono" style="width: 100%;" bind:value={peer.addr} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
-                    <td style="text-align: right;">
-                      <button type="button" class="iconbtn act-danger" aria-label={`Remove peer ${peer.shard}`} disabled={!enabled} onclick={() => removePeer(idx)}>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
-                      </button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <div tabindex="0" role="region" aria-label="Remote shard peers table" class="table-wrapper">
+              <table class="peers-table">
+                <thead>
+                  <tr><th>Shard</th><th>Address</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                  {#each peers as peer, idx (idx)}
+                    <tr>
+                      <td><input type="number" min="0" max="15" class="field-mono" aria-label={`Peer ${idx + 1} shard`} bind:value={peer.shard} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
+                      <td><input type="text" class="field-mono" aria-label={`Peer ${idx + 1} address`} bind:value={peer.addr} oninput={() => (formDirty = true)} disabled={!enabled} /></td>
+                      <td style="text-align: right;">
+                        <button type="button" class="iconbtn act-danger" aria-label={`Remove peer ${peer.shard}`} disabled={!enabled} onclick={() => removePeer(idx)}>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                        </button>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
           {/if}
         </div>
       </div>

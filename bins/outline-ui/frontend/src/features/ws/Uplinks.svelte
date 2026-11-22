@@ -336,63 +336,66 @@
               </button>
             </div>
           </div>
-          <table>
-            <thead>
-              <tr><th>Uplink</th><th>Config</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-              {#each g.uplinks as u, i (u.name)}
-                <tr
-                  class:dragging={draggingName === u.name}
-                  class:drag-over={dragOverName === u.name && draggingName !== u.name}
-                  draggable={!mutating}
-                  ondragstart={(ev) => handleDragStart(ev, u.name)}
-                  ondragover={(ev) => handleDragOver(ev, u.name)}
-                  ondragleave={() => handleDragLeave(u.name)}
-                  ondrop={(ev) => handleDrop(ev, g.name, g.uplinks, i)}
-                  ondragend={handleDragEnd}
-                >
-                  <td>
-                    <span class="route-idx">
-                      <span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
-                      {u.name}
-                    </span>
-                  </td>
-                  <td>
-                    <div style="display:flex; flex-wrap:wrap; gap:4px">
-                      {#each chipsFor(u.config) as c}
-                        <span class="chip {c.tone ?? ''}">{c.text}</span>
-                      {/each}
-                    </div>
-                  </td>
-                  <td>
-                    <div class="rowactions">
-                      <button class="iconbtn" title="Move up" disabled={mutating || i === 0} aria-label={`Move ${u.name} up`} onclick={() => move(g.name, g.uplinks, i, -1)}>↑</button>
-                      <button class="iconbtn" title="Move down" disabled={mutating || i === g.uplinks.length - 1} aria-label={`Move ${u.name} down`} onclick={() => move(g.name, g.uplinks, i, 1)}>↓</button>
-                      <button
-                        class="iconbtn act-soft"
-                        title="Edit"
-                        disabled={mutating}
-                        aria-label={`Edit ${u.name}`}
-                        onclick={() => openEdit(g.name, u)}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                      </button>
-                      <button
-                        class="iconbtn act-danger"
-                        title="Delete"
-                        disabled={mutating}
-                        aria-label={`Delete ${u.name}`}
-                        onclick={() => removeUplink(g.name, u.name)}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div tabindex="0" role="region" aria-label={`Uplinks in ${g.name}`} class="table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Uplink</th><th>Config</th><th>Actions</th></tr>
+              </thead>
+              <tbody>
+                {#each g.uplinks as u, i (u.name)}
+                  <tr
+                    class:dragging={draggingName === u.name}
+                    class:drag-over={dragOverName === u.name && draggingName !== u.name}
+                    draggable={!mutating}
+                    ondragstart={(ev) => handleDragStart(ev, u.name)}
+                    ondragover={(ev) => handleDragOver(ev, u.name)}
+                    ondragleave={() => handleDragLeave(u.name)}
+                    ondrop={(ev) => handleDrop(ev, g.name, g.uplinks, i)}
+                    ondragend={handleDragEnd}
+                  >
+                    <td>
+                      <span class="route-idx">
+                        <span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
+                        {u.name}
+                      </span>
+                    </td>
+                    <td>
+                      <div style="display:flex; flex-wrap:wrap; gap:4px">
+                        {#each chipsFor(u.config) as c}
+                          <span class="chip {c.tone ?? ''}">{c.text}</span>
+                        {/each}
+                      </div>
+                    </td>
+                    <td>
+                      <div class="rowactions">
+                        <button class="iconbtn" title="Move up" disabled={mutating || i === 0} aria-label={`Move ${u.name} up`} onclick={() => move(g.name, g.uplinks, i, -1)}>↑</button>
+                        <button class="iconbtn" title="Move down" disabled={mutating || i === g.uplinks.length - 1} aria-label={`Move ${u.name} down`} onclick={() => move(g.name, g.uplinks, i, 1)}>↓</button>
+                        <button
+                          class="iconbtn act-soft"
+                          title="Edit"
+                          disabled={mutating}
+                          aria-label={`Edit ${u.name}`}
+                          onclick={() => openEdit(g.name, u)}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                        </button>
+                        <button
+                          class="iconbtn act-danger"
+                          title="Delete"
+                          disabled={mutating}
+                          aria-label={`Delete ${u.name}`}
+                          onclick={() => removeUplink(g.name, u.name)}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         </div>
       {/each}
     {:else if !uplinksPoll.error}
