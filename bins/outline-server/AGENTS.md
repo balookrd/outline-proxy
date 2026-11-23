@@ -26,7 +26,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - `src/main.rs`: глобальный allocator бинарника. Не включай allocator features у
   зависимостей, если это не является осознанным изменением.
 - `src/config/`: загрузка CLI/env/TOML-конфига, миграции, валидация и tuning
-  profiles. Access-key generation вынесена в `infra-repo/access-keys` (вне бинаря).
+  profiles. Access-key generation вынесена во внешние утилиты (вне бинаря).
 - `src/server/`: listeners, runtime services, routing, shutdown, fallbacks,
   session resumption, control server и transport handlers.
 - `src/server/transport/`: WebSocket, XHTTP, VLESS transport, fallback,
@@ -71,8 +71,8 @@ Prometheus metrics и локально пропатченные копии `h3` 
   Не деплоить, не менять файлы конфигурации и не перезапускать сервисы на удалённых
   хостах автоматически, пока владелец явно об этом не попросит.
 - **Парк раскатывать строго по одному узлу за раз.** Деплой выполнять через
-  скрипт проекта `infra-repo`:
-  `infra-repo/deploy/bin/deploy-binary.sh <host> <unit> <local-binary> [keep]`.
+  внешний скрипт деплоя парка:
+  `deploy-binary.sh <host> <unit> <local-binary> [keep]`.
 - **Linux-специфику проверять в Docker до коммита.** macOS компилятор молча
   пропускает `#[cfg(target_os = "linux")]`.
 - **Аллокатор — только `jemalloc`.** Сервер работает на `jemalloc` (`heap_mode = "exact"`,
@@ -123,7 +123,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
   обновлены все поверхности: config parsing, validation, runtime route maps, H3
   path registry, control API, metrics и документация, где применимо. (Browser UI
   и access-key generation вынесены из бинаря — см. `bins/outline-ui` и
-  `infra-repo/access-keys`.)
+  внешние генераторы ключей.)
 - Эндпоинты (`[[endpoint]]`) — startup-only реестр, той же природы, что и H3
   path registry ниже: список `{path, kind, padded}` резолвится один раз при
   старте в `Config::endpoints`, и control-plane не может добавить, удалить
@@ -283,7 +283,7 @@ HTTP/3 WebSocket path зависит от этих патчей.
 - `target/` является generated и ignored.
 - `systemd/outline-server.service`, `config.toml` и корневой `install-server.sh`
   являются user-facing deployment artifacts; держи их согласованными с
-  runtime behavior (дашборд `outline-server-dashboard.json` ведётся в
-  проекте `infra-repo` в `infra-repo/ops/grafana/dashboards/`).
+  runtime behavior (дашборд `outline-server-dashboard.json` ведётся во
+  внешнем репозитории мониторинга парка).
 - Не добавляй в репозиторий local secrets, generated access-key YAML files,
   certificates или private keys.

@@ -36,8 +36,8 @@ feature gates частью публичного поведения.
   Не деплоить, не менять файлы конфигурации и не перезапускать сервисы на удалённых
   хостах автоматически, пока владелец явно об этом не попросит.
 - **Парк раскатывать строго по одному узлу за раз.** Деплой выполнять через
-  скрипт проекта `infra-repo`:
-  `infra-repo/deploy/bin/deploy-binary.sh <host> <unit> <local-binary> [keep]`.
+  внешний скрипт деплоя парка:
+  `deploy-binary.sh <host> <unit> <local-binary> [keep]`.
 - **Linux-специфику проверять в Docker до коммита.** macOS компилятор молча
   пропускает `#[cfg(target_os = "linux")]`.
 - **Аллокатор — только `jemalloc`.** Весь боевой парк работает на `jemalloc`
@@ -409,7 +409,7 @@ cargo client-release-musl-aarch64
   transport}` (публикуется ТОЛЬКО для opted-in групп — отсутствие серии =
   опция выключена), в `/control/topology` (групповые поля скрываются при
   `false` через `skip_serializing_if`) и в чип `groupBypassChip` в
-  `dashboard.html`; в `outline-client-dashboard.json` (проект `infra-repo`, `infra-repo/ops/grafana/dashboards/`) — панели
+  `dashboard.html`; в `outline-client-dashboard.json` (внешний репозиторий мониторинга парка) — панели
   Direct Bypass (id 230/231) в секции Routing Policy.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для

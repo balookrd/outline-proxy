@@ -26,12 +26,12 @@
 
 ## 2. Цели изменений
 
-1. В [`crates/outline-transport/src/quic/tp_profile.rs`](file://./crates/outline-transport/src/quic/tp_profile.rs):
+1. В [`crates/outline-transport/src/quic/tp_profile.rs`](../../crates/outline-transport/src/quic/tp_profile.rs):
    - Переключить `initial_dcid_len` профиля `SAFARI` с `Fixed(MAX_CID_LEN)` на `Fixed(8)`.
    - Обновить комментарии к `SAFARI`, зафиксировав результаты замеров на macOS 27.
-2. В [`crates/outline-transport/src/quic/tests/tls_config.rs`](file://./crates/outline-transport/src/quic/tests/tls_config.rs):
+2. В [`crates/outline-transport/src/quic/tests/tls_config.rs`](../../crates/outline-transport/src/quic/tests/tls_config.rs):
    - Расширить тест `h3_initial_dcid_length_follows_the_browser`, добавив проверку Safari: `(8, 0)`.
-3. В [`crates/outline-transport/src/quic/tests/tp_profile.rs`](file://./crates/outline-transport/src/quic/tests/tp_profile.rs):
+3. В [`crates/outline-transport/src/quic/tests/tp_profile.rs`](../../crates/outline-transport/src/quic/tests/tp_profile.rs):
    - Добавить тест `safari_profile_spins_the_spin_bit`, проверяющий переворот spin bit на последовательных RTT.
 4. Актуализация документации и памяти проекта:
    - Обновить заметки памяти: `~/.claude/projects/<project-slug>/memory/quic-transport-params-vs-browsers.md` и `audit-2026-11-10-masking-backlog.md`.

@@ -9,7 +9,7 @@
 
 `outline-server` is a Shadowsocks and VLESS relay written in Rust, modelled on `outline-ss-server`. It accepts Shadowsocks AEAD or VLESS traffic carried over WebSocket or XHTTP and relays it to arbitrary TCP and UDP destinations. It has multiple users, per-user cipher and `fwmark`, Prometheus metrics and a runtime user-management API; it does not include the Outline management plane.
 
-Real fleet node names, domains and addresses in this document are replaced with stand-ins: `fleet.example` is the fleet domain. The mapping lives in `infra-repo/fleet/FLEET.md`.
+Configuration examples use demonstrative stand-in hostnames and domains (RFC 2606 / RFC 5737, such as `fleet.example`). Replace them with your actual deployment endpoints.
 
 This document describes the server binary: transports, the configuration file, the control API, deployment and metrics. The client is `bins/outline-client`.
 

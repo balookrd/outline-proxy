@@ -2,7 +2,7 @@
 
 Russian version: [README.ru.md](README.ru.md).
 
-Real fleet node names, domains and addresses in this document are replaced with stand-ins: `fleet.example` is the fleet domain; `relay-a`…`relay-d` are the cloud relay nodes; `198.51.100.0/24` is the home network (`.102`, `.104` etc. are the last octet). The mapping lives in `infra-repo/fleet/FLEET.md`.
+Configuration examples use demonstrative stand-in hostnames and addresses (RFC 2606 / RFC 5737): `fleet.example` is the demonstrative domain; `relay-a`…`relay-d` are relay nodes; `198.51.100.0/24` is a test subnet. Replace them with your actual deployment endpoints.
 
 Web UI for the fleet. Serves the client and server dashboards and nothing
 else: no uplinks, no listeners for proxied traffic, no traffic.
