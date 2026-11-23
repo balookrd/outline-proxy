@@ -29,7 +29,7 @@ pub(super) struct ProbeCycle {
     /// On its own this means very little: an uplink can be delivering traffic
     /// over an already-established H3/QUIC carrier while new TCP connections
     /// to the same `host:port` are being refused or blackholed. Field
-    /// evidence — cloud4 counted 463 such failures against `senko` while the
+    /// evidence — relay-d counted 463 such failures against `exit-c` while the
     /// TLS probe through it logged 4879 successes and zero errors — so
     /// condemning on this signal alone flapped a perfectly live uplink every
     /// cycle.

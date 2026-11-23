@@ -34,7 +34,7 @@
 3. В [`crates/outline-transport/src/quic/tests/tp_profile.rs`](../../crates/outline-transport/src/quic/tests/tp_profile.rs):
    - Добавить тест `safari_profile_spins_the_spin_bit`, проверяющий переворот spin bit на последовательных RTT.
 4. Актуализация документации и памяти проекта:
-   - Обновить заметки памяти: `~/.claude/projects/<project-slug>/memory/quic-transport-params-vs-browsers.md` и `audit-2026-11-10-masking-backlog.md`.
+   - Обновить заметки памяти: `<project-memory>/quic-transport-params-vs-browsers.md` и `audit-2026-11-10-masking-backlog.md`.
    - Обновить сопутствующие проектные документы (EN/RU).
 
 ---

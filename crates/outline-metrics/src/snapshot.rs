@@ -214,7 +214,7 @@ impl Metrics {
             // publishes nothing: the snapshot keeps its last reading forever
             // (nothing recomputes it once the uplink leaves the probe loop and
             // stops carrying traffic), and publishing that frozen number reads
-            // as a live measurement. On 2026-08-10 nuxt2 was switched off on
+            // as a live measurement. On 2026-08-10 exit-b was switched off on
             // three nodes while losing ~55%, and the gauges stayed at 0.5x —
             // so the alert fired over uplinks carrying no packets at all, and
             // turning a bad uplink off, the correct response, made its alert

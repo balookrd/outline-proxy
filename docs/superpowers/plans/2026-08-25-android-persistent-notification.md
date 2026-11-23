@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **JDK для сборки/тестов Android:** `JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20` (openjdk 25 ломает Gradle). Все gradle-команды — из каталога `android/`.
+- **JDK для сборки/тестов Android:** `JAVA_HOME=<JDK_17_HOME>` (openjdk 25 ломает Gradle). Все gradle-команды — из каталога `android/`.
 - **Юнит-тесты идут на JVM** через `:app:testDebugUnitTest` и не требуют нативной `.so`; компиляция Kotlin — `:app:compileDebugKotlin` (тоже без `.so`).
 - **UI-строки — на английском** (весь UI приложения английский: «Split Tunneling», «Disconnect» и т.п.). Диалог/рассуждения — по-русски.
 - **Тумблер режима — opt-in, дефолт `false`.** Поведение при выключенном режиме обязано остаться **побайтово прежним**.
@@ -61,7 +61,7 @@ class NotificationPolicyTest {
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:testDebugUnitTest --tests "com.outline.proxy.NotificationPolicyTest"
 ```
 Expected: FAIL — `unresolved reference: NotifToggle` / `NotificationPolicy` (символов ещё нет).
@@ -97,7 +97,7 @@ object NotificationPolicy {
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:testDebugUnitTest --tests "com.outline.proxy.NotificationPolicyTest"
 ```
 Expected: PASS (2 теста).
@@ -148,7 +148,7 @@ git commit -m "feat(android): pure toggle policy for the ongoing notification"
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:compileDebugKotlin
 ```
 Expected: BUILD SUCCESSFUL.
@@ -291,7 +291,7 @@ class QuickConnectActivity : ComponentActivity() {
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:compileDebugKotlin
 ```
 Expected: BUILD SUCCESSFUL.
@@ -567,7 +567,7 @@ git commit -m "feat(android): invisible QuickConnectActivity for the notificatio
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:compileDebugKotlin
 ```
 Expected: BUILD SUCCESSFUL.
@@ -576,7 +576,7 @@ Expected: BUILD SUCCESSFUL.
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:testDebugUnitTest
 ```
 Expected: PASS (включая `NotificationPolicyTest` и прежние).
@@ -664,7 +664,7 @@ import androidx.compose.runtime.mutableStateOf
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:compileDebugKotlin
 ```
 Expected: BUILD SUCCESSFUL.
@@ -688,7 +688,7 @@ Lifecycle/UI за пределами JVM-тестов. Собрать APK и п�
 
 Run:
 ```bash
-cd android && JAVA_HOME=/home/user/Library/Java/JavaVirtualMachines/liberica-17.0.20 \
+cd android && JAVA_HOME=<JDK_17_HOME> \
   ./gradlew :app:assembleDebug
 ```
 Expected: BUILD SUCCESSFUL; APK в `app/build/outputs/apk/debug/`.

@@ -39,8 +39,8 @@ pub fn record_tun_flow_created(group: &str, uplink: &str) {
 /// change uplinks in between (soft switch, runtime failover), and without this
 /// the `+1` stays stranded on the uplink it started on while the `-1` lands on
 /// the one it ended on: both series drift by one per migration, and the
-/// destination goes negative. Production showed `nuxt2 = +177` against
-/// `sebek = -177` on one node and a 14-day minimum of -491 on another.
+/// destination goes negative. Production showed `exit-b = +177` against
+/// `exit-e = -177` on one node and a 14-day minimum of -491 on another.
 ///
 /// Deliberately does not touch `tun_flows_total` or the duration histogram: the
 /// flow did not close, it moved, and counting a close here would inflate the

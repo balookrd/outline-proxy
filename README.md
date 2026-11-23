@@ -92,7 +92,7 @@ Automatic fallback works per uplink, including mid-session: WebSocket descends
 ### Outline compatibility
 
 Shadowsocks over WebSocket is the path the Outline apps speak. The access-key
-generator [`ops/access-keys`](ops/access-keys/) emits an Outline access key
+generator [`access-keys`](access-keys/) emits an Outline access key
 (`$type: websocket`, TCP + UDP) for a user when the server has a split
 `ws_ss_tcp` / `ws_ss_udp` endpoint pair. Shadowsocks over XHTTP works only with
 the bundled `outline-client` client and has no Outline key; for each combined

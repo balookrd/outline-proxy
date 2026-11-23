@@ -23,7 +23,7 @@ use super::{
 };
 
 /// Only one mode remains: the binary serves. Access-key generation moved to
-/// `ops/access-keys` (2026-08-11), and with it the `[access_keys]` keys that
+/// `access-keys` (2026-08-11), and with it the `[access_keys]` keys that
 /// used to switch the process into a one-shot generator.
 pub enum AppMode {
     Serve(Config),
@@ -65,7 +65,7 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
     let outbound = file.outbound.unwrap_or_default();
     let http_root = file.http_root.unwrap_or_default();
     // `[access_keys]` is parsed and ignored. The section still lives in
-    // every deployed config and feeds ops/access-keys, and the config
+    // every deployed config and feeds access-keys, and the config
     // structs are `deny_unknown_fields`, so refusing it here would fail
     // those configs at startup.
     let _ = file.access_keys;

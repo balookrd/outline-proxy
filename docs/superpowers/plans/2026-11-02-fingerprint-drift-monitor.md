@@ -47,10 +47,10 @@
 Исходные октябрьские pcap лежат в scratchpad прошлой сессии (каталог не в репозитории, путь абсолютный):
 
 ```
-OLD=/private/tmp/claude-501/<project-slug>/9485f03f-e16e-46f6-8398-2e54ca9d2af0/scratchpad
+OLD=<scratchpad>
 ```
 
-Проверенная копия всех файлов этого плана (прототип, прогнанный на этих pcap и в docker) лежит в `/private/tmp/claude-501/<project-slug>/795008ac-4bdd-4eb1-8e25-6e0976338572/scratchpad/fpd/tree/`. Её содержимое совпадает с блоками кода ниже.
+Проверенная копия всех файлов этого плана (прототип, прогнанный на этих pcap и в docker) лежит в `<scratchpad>/fpd/tree/`. Её содержимое совпадает с блоками кода ниже.
 
 ---
 
@@ -391,7 +391,7 @@ git commit -m "test(fingerprint-drift): parse TLS ClientHello fields for drift s
 Соответствие выверено по датам и портам: TCP hello — стенд `tcpch` (30.10, Chrome 156 и Firefox 159), h2 и h1 открытым текстом — стенд `h2fp` (30.10), QUIC — `chello.bcEH/s*` (29.10, с SNI).
 
 ```bash
-OLD=/private/tmp/claude-501/<project-slug>/9485f03f-e16e-46f6-8398-2e54ca9d2af0/scratchpad
+OLD=<scratchpad>
 D=scripts/fingerprint-drift/tests/data
 mkdir -p $D/chrome $D/firefox
 cp $OLD/tcpch/chrome-page.pcap    $D/chrome/h2-hello.pcap

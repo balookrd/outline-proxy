@@ -1,0 +1,84 @@
+# outline-client client config for the Android app.
+# Generated for user both — do not edit by hand.
+
+[tun]
+path = "vpn"
+mtu = 1500
+
+[tun.tcp]
+sniffing = true
+carrier_migration = true
+
+[padding]
+enabled = true
+
+[[uplink_group]]
+name = "main"
+mode = "active_passive"
+routing_scope = "global"
+shared_resume = false
+reselect_interval = "6h"
+tun_wire_dial = true
+health_weighted_selection = true
+
+[outline.probe]
+interval_secs = 300
+timeout_secs = 10
+min_failures = 2
+attempts = 1
+endpoint_check = true
+endpoint_check_timeout_ms = 2000
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port = 53
+name = "google.com"
+
+[outline.probe.tls]
+targets = [
+  "www.instagram.com",
+  "www.youtube.com",
+  "www.googletagmanager.com",
+  "www.googlevideo.com",
+  "api.telegram.org",
+]
+
+[[outline.uplinks]]
+name = "cloud1"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+shuffle_timer = "47m"
+link = "vless://22222222-2222-4222-8222-222222222222@cloud1.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud1:both-vless-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://22222222-2222-4222-8222-222222222222@cloud1.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#cloud1:both-vless-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@cloud1.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud1:both-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@cloud1.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#cloud1:both-ss-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://22222222-2222-4222-8222-222222222222@cloud1.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud1:both-vless-xhttp-packet-up"
+
+[[outline.uplinks]]
+name = "cloud2"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+shuffle_timer = "33m"
+link = "vless://22222222-2222-4222-8222-222222222222@cloud2.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud2:both-vless-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://22222222-2222-4222-8222-222222222222@cloud2.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#cloud2:both-vless-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@cloud2.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud2:both-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@cloud2.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#cloud2:both-ss-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://22222222-2222-4222-8222-222222222222@cloud2.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud2:both-vless-xhttp-packet-up"

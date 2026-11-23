@@ -16,7 +16,7 @@
 1. **Дерево монорепозитория:** директории `bins/`, корневой `Cargo.toml`, алиасы `.cargo/config.toml`, манифесты и внутренний код крейтов, интеграционные и e2e-тесты, клиентские платформы (`android/`, `macos/`, `bins/outline-windows/` + `windows/`), веб-дашборд `bins/outline-ui/`.
 2. **CI/CD и релизы:** гейт `.github/workflows/ci.yml`, единые релизные воркфлоу (`release.yml`, `tag-release.yml`), переименованные rolling nightly- и reusable-воркфлоу (`server-nightly-release.yml`, `client-nightly-release.yml`, `_server-release-build.yml`, `_client-release-build.yml`), скрипты `.github/scripts/`.
 3. **Эксплуатационные скрипты:** `install-server.sh`, `install-client.sh`, `ops/deploy/deploy-binary.sh`, `ops/watchdog/`, `ops/access-keys/`, `ops/provision-node/`, `ops/memory-tuning/`, `ops/nanopi104-backup/`, `ops/heartbeat/`, `scripts/package-windows.sh`, `scripts/quic-initial-sink.py`.
-4. **Боевой парк серверов:** автоматизированный скрипт чистой миграции `ops/deploy/migrate-node-rename.sh` и поузловой регламент выкатки на все узлы (`exit-a`, `exit-b`, `relay-a`, `relay-b`, `198.51.100.104`, `198.51.100.102`; маппинг реальных имён см. в локальном `FLEET.local.md`).
+4. **Боевой парк серверов:** автоматизированный скрипт чистой миграции `ops/deploy/migrate-node-rename.sh` и поузловой регламент выкатки на все узлы (`exit-a`, `exit-b`, `relay-a`, `relay-b`, `198.51.100.104`, `198.51.100.102`; маппинг реальных имён см. в локальном `<fleet-inventory>`).
 5. **Смежная инфраструктура и документация:** синхронизация репозитория `<infra-repo>` (деплой дашбордов Grafana, тексты алертов и k3s-скелеты) и двуязычное обновление документации (`AGENTS.md`, `CLAUDE.md`, `README*`, `PATCHES*`, `CHANGELOG*`, `docs/*`).
 
 ---
@@ -181,7 +181,7 @@
 
 [Фаза 6: Пост-миграционные действия]
   ├── Проверка VictoriaMetrics, Grafana (деплой обновлённых JSON) и vmalert (OK)
-  ├── Обновление некоммитируемых FLEET.local.md и MEMORY.md
+  ├── Обновление некоммитируемых <fleet-inventory> и MEMORY.md
   ├── После первого зелёного прогона server-nightly/client-nightly — удаление старых ss-nightly/ws-nightly на GitHub
   └── Очистка артефактов сборки (`cargo clean`) после финального push
 ```

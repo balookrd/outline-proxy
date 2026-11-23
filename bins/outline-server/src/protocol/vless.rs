@@ -27,7 +27,7 @@ pub struct VlessUser {
 impl VlessUser {
     /// Build a VLESS user from its UUID and the human-readable account
     /// label coming from `config.users[].id` (e.g. `alice-mom`,
-    /// `aeza`). The label is what surfaces in `user="..."` Prometheus
+    /// `alice`). The label is what surfaces in `user="..."` Prometheus
     /// labels — using the masked UUID instead pollutes the dashboard's
     /// `User` template variable with two parallel namespaces (raw IDs
     /// for SS, masked UUIDs for VLESS) that can't be cross-referenced.

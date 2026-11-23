@@ -8,7 +8,7 @@
 
 **Почему.** Сейчас `process_stable` берёт `DefaultHasher(hostname) % len(pool)`.
 В Linux-пуле два профиля, решает младший бит хэша, и на всех четырёх клиентах
-(`NanoPi-NEO3-Plus`, `Beelink-T4-Pro`, `cloud1.fleet.example`,
+(`arm64-gateway-a`, `x86-gateway-b`, `cloud1.fleet.example`,
 `cloud2.fleet.example`) он оказался единицей: везде `firefox-159-linux` (шанс
 1/16). Кроме того, `DefaultHasher` не гарантирует одинаковый вывод между
 версиями Rust: после смены тулчейна профиль узла может молча смениться.
@@ -51,8 +51,8 @@
 
 | узел | hostname | u = seed / 2⁶⁴ | профиль |
 |---|---|---|---|
-| .104 | `NanoPi-NEO3-Plus` | 0.951 | firefox-159-linux |
-| .102 | `Beelink-T4-Pro` | 0.734 | firefox-159-linux |
+| .104 | `arm64-gateway-a` | 0.951 | firefox-159-linux |
+| .102 | `x86-gateway-b` | 0.734 | firefox-159-linux |
 | cloud1 | `cloud1.fleet.example` | 0.547 | chrome-157-linux |
 | cloud2 | `cloud2.fleet.example` | 0.537 | chrome-157-linux |
 
@@ -106,7 +106,7 @@ fn fnv1a_matches_the_reference_vector() {
 fn stable_seed_is_pinned_across_toolchains() {
     // Golden values: a change here silently re-rolls the browser identity of
     // every deployed client on upgrade. Update only on a deliberate re-roll.
-    assert_eq!(stable_seed(b"Beelink-T4-Pro"), 0xbbd5_4375_c5c6_d5d6);
+    assert_eq!(stable_seed(b"x86-gateway-b"), 0xbbd5_4375_c5c6_d5d6);
     assert_eq!(stable_seed(b"cloud1.fleet.example"), 0x8c15_c197_ba6e_7107);
 }
 
@@ -261,8 +261,8 @@ fn current_fleet_hostnames_split_between_chrome_and_firefox() {
     // re-rolls the fleet; update together with the plan's table.
     use crate::fingerprint_profile::pick;
     let at = |h: &str| pick(ProfileOs::Linux, stable_seed(h.as_bytes())).name;
-    assert_eq!(at("NanoPi-NEO3-Plus"), "firefox-159-linux");
-    assert_eq!(at("Beelink-T4-Pro"), "firefox-159-linux");
+    assert_eq!(at("arm64-gateway-a"), "firefox-159-linux");
+    assert_eq!(at("x86-gateway-b"), "firefox-159-linux");
     assert_eq!(at("cloud1.fleet.example"), "chrome-157-linux");
     assert_eq!(at("cloud2.fleet.example"), "chrome-157-linux");
 }

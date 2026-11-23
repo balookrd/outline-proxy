@@ -165,9 +165,9 @@ request_timeout_secs = 10   # необязательно, по умолчани�
 refresh_interval_secs = 5   # необязательно, по умолчанию 5
 
 [[ws.instances]]
-name = "beelink102"
+name = "gateway-a"
 control_url = "http://198.51.100.102:9191"
-token_file = "/etc/outline-ui/secrets/ws-beelink102"
+token_file = "/etc/outline-ui/secrets/ws-gateway-a"
 
 [[ss.instances]]
 name = "relay-a"
@@ -304,11 +304,8 @@ cargo-фича `embed-assets`, поэтому обычным `cargo build` и `c
 
 ## Раскатка
 
-Живёт в k3s, namespace `monitoring`, за `ui.k3s.fleet.example`. Манифесты:
-[`ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml`](../../ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml),
-запись ingress — в
-[`apps/ingress/ingress-routes.yaml`](../../ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml).
-Ноды кластера — aarch64 (NanoPi R5C), отсюда таргет и `--platform`.
+Запускается в Kubernetes / k3s (например, namespace `monitoring`, за `ui.k3s.fleet.example`).
+Пример ниже собран под кластерные ноды aarch64 (`--platform linux/arm64`).
 
 Релизный бинарь несёт собранный SPA внутри, поэтому соберите фронтенд первым и
 явно попросите Rust-сборку встроить результат. `<version>` ниже — `[workspace.package].version` из
@@ -328,8 +325,7 @@ docker build --provenance=false --sbom=false --platform linux/arm64 \
   -f bins/outline-ui/Dockerfile \
   -t registry.k3s.fleet.example/outline-ui:<version> .
 docker push registry.k3s.fleet.example/outline-ui:<version>
-export KUBECONFIG=~/.kube/kubeconfig.yaml
-kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
+kubectl apply -f path/to/outline-ui.yaml
 kubectl -n monitoring rollout restart deploy/outline-ui
 ```
 
@@ -353,9 +349,8 @@ Cargo-алиас `cargo ui-release-musl-aarch64` не передаёт
 страница (`LG_PAGE=12`) для `aarch64-unknown-linux-musl` закреплена в корневом
 `.cargo/config.toml`.
 
-`ops/deploy/deploy-binary.sh` этот бинарь не покрывает: скрипт заменяет бинарь
-systemd-юнита на узле парка и рестартует его, а `outline-ui` раскатывается
-образом контейнера в k3s. Команды выше — вся процедура раскатки.
+В отличие от systemd-узлов `outline-server`/`outline-client`, `outline-ui`
+поставляется как контейнерный образ. Команды выше — вся процедура раскатки.
 
 Конфиг читается один раз при старте, поэтому правка ConfigMap применяется только
 после рестарта пода.

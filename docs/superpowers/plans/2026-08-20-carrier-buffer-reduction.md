@@ -220,7 +220,7 @@ GitHub из этой среды недоступен, поэтому upstream п
 дерева. Это попутно доказывает, что vendored = upstream + патч (нет дрейфа).
 
 ```bash
-WORK=/private/tmp/claude-501/<project-slug>/e78fe053-0908-475d-89c8-e080dbf3cdaf/scratchpad/sockudo
+WORK=<scratchpad>/sockudo
 REPO=.
 rm -rf "$WORK" && mkdir -p "$WORK/base"
 cp -R "$REPO/vendor/sockudo-ws/src" "$WORK/base/src"
@@ -233,7 +233,7 @@ cd "$WORK/base" && git apply -R -p1 "$REPO/sockudo-ws-1.7.5.patch" && echo "REVE
 - [ ] **Шаг 2: Зафиксировать upstream как git-baseline**
 
 ```bash
-WORK=/private/tmp/claude-501/<project-slug>/e78fe053-0908-475d-89c8-e080dbf3cdaf/scratchpad/sockudo
+WORK=<scratchpad>/sockudo
 cd "$WORK/base" && git init -q . && git add -A && \
   git -c user.email=b@b -c user.name=b commit -qm upstream && echo "BASELINE OK"
 ```
@@ -280,7 +280,7 @@ cargo check -p outline-ws-rust && cargo check -p outline-ss-rust
 - [ ] **Шаг 5: Регенерировать патч-артефакт**
 
 ```bash
-WORK=/private/tmp/claude-501/<project-slug>/e78fe053-0908-475d-89c8-e080dbf3cdaf/scratchpad/sockudo
+WORK=<scratchpad>/sockudo
 REPO=.
 rm -rf "$WORK/base/src" && cp -R "$REPO/vendor/sockudo-ws/src" "$WORK/base/src"
 cd "$WORK/base" && git add -A && git diff --cached > "$REPO/sockudo-ws-1.7.5.patch"
@@ -293,7 +293,7 @@ grep -c "^diff --git" "$REPO/sockudo-ws-1.7.5.patch"
 - [ ] **Шаг 6: Проверить, что патч воспроизводит vendored побайтово**
 
 ```bash
-WORK=/private/tmp/claude-501/<project-slug>/e78fe053-0908-475d-89c8-e080dbf3cdaf/scratchpad/sockudo
+WORK=<scratchpad>/sockudo
 REPO=.
 rm -rf "$WORK/verify" && mkdir -p "$WORK/verify"
 # вернуть base/src к upstream-состоянию (снимает и индекс, и рабочее дерево)

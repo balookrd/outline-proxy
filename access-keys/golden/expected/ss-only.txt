@@ -1,0 +1,4 @@
+ssconf://keys.example.com/SECRET/ss-only.conf
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:ss-only-ss-ws
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:ss-only-ss-xhttp-packet-up
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:ss-only-ss-xhttp-stream-one

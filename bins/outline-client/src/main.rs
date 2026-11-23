@@ -29,7 +29,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// served from reused dirty pages is zeroed with `memset`, which faults every
 /// page of the buffer in; 5.3.0 purged those pages instead and left the buffer
 /// lazily backed. Per-flow buffers are `vec![0; N]` and mostly idle, so on the
-/// fleet the default doubled RSS (NanoPi .104: RSS/allocated 0.48 -> 1.06,
+/// fleet the default doubled RSS (4 KiB-page aarch64 node: RSS/allocated 0.48 -> 1.06,
 /// back to 0.40 with this set).
 ///
 /// jemalloc applies `MALLOC_CONF` from the environment after this symbol, so a

@@ -1,4 +1,4 @@
-//! Control-plane runner for `ops/access-keys/generate_keys.py`.
+//! Control-plane runner for `access-keys/generate_keys.py`.
 //!
 //! Invokes Python directly via `tokio::process::Command` (never through `/bin/sh`)
 //! with strict argument validation, timeout and bounded output capture.

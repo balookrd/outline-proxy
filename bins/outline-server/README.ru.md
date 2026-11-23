@@ -51,8 +51,8 @@
 | Встроенный QUIC/TLS для h3 | Поддерживается | Опционально, на `[server.h3].listen` (может занимать тот же порт, что и `[server].listen`, по UDP); список ALPN настраивается |
 | IPv6 | Поддерживается | Слушатели и upstream-резолвинг |
 | Метрики Prometheus | Поддерживается | Отдельный слушатель, метки с низкой кардинальностью |
-| Дашборд Grafana | Поддерживается | `outline-server-dashboard.json` в `ambar` (`ops/grafana/dashboards/`) |
-| Outline динамические ключи | Вне бинаря | Клиентские конфиги генерирует `ops/access-keys`, а не сам бинарь; см. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
+| Дашборд Grafana | Поддерживается | Метрики Prometheus на `:9090/metrics` (дашборды ведутся во внешнем репозитории) |
+| Outline динамические ключи | Вне бинаря | Клиентские конфиги генерирует `access-keys/`, а не сам бинарь; см. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing, до 8 одновременных под-соединений на сессию; поверх HTTP/1.1, HTTP/2 и HTTP/3 |
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET плюс POST'ы с порядковым номером на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер принимает POST'ы не по порядку; downlink-кольцо переживает обрыв GET'а в полёте (CDN рвут длинные запросы примерно через 100 с); `X-Padding` и заголовки в стиле SSE (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS поверх XHTTP stream-one | Поддерживается | Один двунаправленный запрос: тело запроса — uplink, тело ответа — downlink. Включается через `?mode=stream-one` на том же base path. Требует h2 или h3 (h1 → 505); на h3 bidi-стрим делится через `RequestStream::split`, каждая половина работает в своём task |
@@ -110,7 +110,7 @@ flowchart LR
 - [src/fwmark.rs](src/fwmark.rs): хелперы Linux `SO_MARK` для исходящих сокетов
 - [config.toml](config.toml): пример конфигурации
 - [systemd/outline-server.service](systemd/outline-server.service): systemd unit
-- *(Дашборд Grafana `outline-server-dashboard.json` ведётся в инфраструктурном репозитории `ambar` в `ops/grafana/dashboards/`.)*
+- *(Дашборд Grafana ведётся вне этого репозитория исходного кода.)*
 - [PATCHES.ru.md](PATCHES.ru.md): указатель на общий для монорепо реестр патчей к vendored-крейтам
 
 ## Транспортная модель
@@ -291,7 +291,7 @@ cargo server-release-musl-armv7
 | `[[endpoint]]` | нет | Эндпоинты носителей: `path` (уникален среди всех эндпоинтов), `kind` (см. [Модель эндпоинтов](#модель-эндпоинтов)), `padded` (bool, по умолчанию `false`, алиас `padding`; см. [Carrier-padding](#carrier-padding)). Добавление, изменение и удаление эндпоинтов можно сохранить в `config.toml` через `PATCH /control/config` (вступит в силу после рестарта); роутеры рантайма регистрируют пути только при старте, см. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `[http_root].auth` | `false` | HTTP Basic auth на `/` (как в OpenConnect); после 3 неверных паролей (cookie + серверный rate limiter по IP) сервер отдаёт `403` на 5 минут. Не совпавшие пути отдают `200 OK` (Caddy emptyHandler) или fallback |
 | `[http_root].realm` | `Authorization required` | Текст запроса пароля для `/` |
-| `[access_keys]` | опциональна | Метаданные генерации подписок (`public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`, `nodes`). Редактируется на лету через `GET`/`PATCH /control/config` без рестарта (`requires_restart = false`) и читается внешним `ops/access-keys` (или при вызове через `[control].access_keys_generator`). См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
+| `[access_keys]` | опциональна | Метаданные генерации подписок (`public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`, `nodes`). Редактируется на лету через `GET`/`PATCH /control/config` без рестарта (`requires_restart = false`) и читается `access-keys/` (или при вызове через `[control].access_keys_generator`). См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | `[shadowsocks].method` | `chacha20-ietf-poly1305` | Шифр Shadowsocks по умолчанию |
 | `[[users]]` `password` | нет | Пароль Shadowsocks |
 | `[[users]]` `vless_id` | нет | VLESS UUID; должен быть уникален среди пользователей |
@@ -301,7 +301,7 @@ cargo server-release-musl-armv7
 | `[control].listen` | нет | Адрес управляющего слушателя, например `127.0.0.1:7001`. Это отдельный сокет; не выставляйте его в интернет |
 | `[control].token` | нет | Bearer-токен, обязательный в каждом запросе. Предпочтительнее `token_file` |
 | `[control].token_file` | нет | Файл с bearer-токеном; взаимоисключим с `token` |
-| `[control].access_keys_generator` | нет | Опциональный путь к `ops/access-keys/generate_keys.py`; включает `POST /control/access-keys/regenerate` и `GET /control/users/{id}/access-keys` |
+| `[control].access_keys_generator` | нет | Опциональный путь к `access-keys/generate_keys.py`; включает `POST /control/access-keys/regenerate` и `GET /control/users/{id}/access-keys` |
 | `[control].access_keys_python` | `"python3"` | Путь к интерпретатору Python (передаётся напрямую в `Command::new` без `/bin/sh`) |
 | `[control].access_keys_timeout_secs` | `15` | Таймаут в секундах (максимум `120`) на один запуск `access_keys_generator` |
 | `[cluster]` | выключен | Членство в mesh-кластере (relay между узлами по шардам). Поля: `enabled`, `shard_id` (`0..16`, уникален в кластере, обязателен при включении), `cluster_psk` (общий секрет в base64), `mesh_listen` (`host:port` mesh QUIC-слушателя), `mesh_relay_budget_ms` (по умолчанию `4000`) и записи `[[cluster.peers]]` (`shard`, `addr`). См. [`docs/CLUSTER.ru.md`](../../docs/CLUSTER.ru.md) и [`docs/CLUSTER-DEPLOY.ru.md`](../../docs/CLUSTER-DEPLOY.ru.md) |
@@ -387,7 +387,7 @@ Cross-transport session resumption по умолчанию выключен; в�
 
 Байт-потоковая сессия возобновляется и между прокси-протоколами: сессия, припаркованная по Shadowsocks, переприцепляется к VLESS-носителю той же записи `[[users]]`, и наоборот. Эта запись держит и `password`, и `vless_id`, а обе ноги паркуются под её `id`. Так сессии остаются живыми у клиента, чей аплинк перевыбирает активный wire в смешанном наборе SS/VLESS. Фрейминг для клиента строится из аутентифицированного пользователя возобновляющего потока, так что от протокола парковки ничего не переносится; переходы считаются в `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`. Датаграммные и mux-парковки остаются внутри своего протокола: они держат состояние фрейминга, которое другой протокол выразить не может. Полные правила и то, что гарантирует owner check, когда он остаётся единственным сигналом идентичности на этом пути: [`docs/SESSION-RESUMPTION.ru.md`](docs/SESSION-RESUMPTION.ru.md).
 
-Когда настроен эндпоинт `xhttp_vless`, внешний генератор `ops/access-keys` пишет для каждого VLESS-пользователя два URI `vless://...?type=xhttp&path=...`, с `mode=packet-up` и с `mode=stream-one`, в подписку `<user>.json` и в `<user>.txt`. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI, и пользователь выбирает тот режим, который проходит в его сети. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов).
+Когда настроен эндпоинт `xhttp_vless`, генератор `access-keys/` пишет для каждого VLESS-пользователя два URI `vless://...?type=xhttp&path=...`, с `mode=packet-up` и с `mode=stream-one`, в подписку `<user>.json` и в `<user>.txt`. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI, и пользователь выбирает тот режим, который проходит в его сети. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов).
 
 ### VLESS поверх WebSocket/TLS
 
@@ -780,19 +780,19 @@ listen = "0.0.0.0:443"
 ## Генерация клиентских конфигов
 
 Встроенного генератора ссылок в этом бинаре нет. Генерация вынесена в
-`ops/access-keys` (Python-пакет на stdlib): он читает тот же `config.toml` и
+`access-keys/` (Python-пакет на stdlib): он читает тот же `config.toml` и
 пишет до четырёх файлов на пользователя в каталог раздачи узла: `<user>.conf`
 (Outline YAML), `<user>.json` (подписка Xray-JSON), `<user>.toml` (конфиг
 Android `outline-client`) и `<user>.txt` (все ссылки пользователя, по одной в
 строке).
 
-См. [`ops/access-keys/README.md`](../../ops/access-keys/README.md).
+См. [`access-keys/README.md`](../../access-keys/README.md).
 
 Секция `[access_keys]` остаётся в `config.toml` (`public_host`,
 `public_scheme`, `url_base`, `file_extension`, `write_dir` и `nodes`). Её
 можно обновлять на лету через `PATCH /control/config` без рестарта сервера. Если
 в конфиге задан `[control].access_keys_generator`, `outline-server` безопасно
-вызывает внешний `ops/access-keys/generate_keys.py` напрямую через
+вызывает `access-keys/generate_keys.py` напрямую через
 `tokio::process::Command` (никогда через `/bin/sh`) при обращениях к
 `POST /control/access-keys/regenerate` и `GET /control/users/{id}/access-keys`.
 Прежние CLI-флаги (`--print-access-keys`, `--write-access-keys-dir`,
@@ -855,7 +855,7 @@ scrape_configs:
 
 ### Grafana
 
-Импортируйте `outline-server-dashboard.json` из инфраструктурного репозитория `ambar` (`ops/grafana/dashboards/`) в Grafana. Панели:
+Импортируйте дашборд Grafana для `:9090/metrics`. Рекомендуемые панели:
 
 - активные сессии и активные TCP upstream
 - доля ошибок TCP connect

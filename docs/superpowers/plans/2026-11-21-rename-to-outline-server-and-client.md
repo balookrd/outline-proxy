@@ -1521,8 +1521,8 @@ gh release delete ws-nightly --yes --cleanup-tag || true
 ### Task 14: Сборка релизных musl-бинарей и поузловая выкатка на боевой парк
 
 **Files (локальные некоммитируемые):**
-- Modify: `FLEET.local.md`
-- Modify: `~/.claude/projects/<project-slug>/memory/MEMORY.md`
+- Modify: `<fleet-inventory>`
+- Modify: `<project-memory>/MEMORY.md`
 
 **Interfaces:**
 - Consumes: Скрипт `ops/deploy/migrate-node-rename.sh` (Task 11) и обновлённый `ambar` (Task 13).
@@ -1541,7 +1541,7 @@ Expected: 4 статических ELF-бинарника в `target/{x86_64,aar
 
 - [ ] **Step 2: Поузловая миграция парка (СТРОГО по одному узлу и СТРОГО после явного разрешения владельца на каждый узел)**
 
-Порядок узлов (конкретные SSH-цели брать из `FLEET.local.md`):
+Порядок узлов (конкретные SSH-цели брать из `<fleet-inventory>`):
 1. `exit-a` (x86_64, роль `server`): `--audit` $\to$ `--dry-run` $\to$ боевой запуск `migrate-node-rename.sh <exit-a-ssh> server`. Проверить `outline-server`, `:9090/metrics`, выдачу ключей.
 2. `exit-b` (x86_64, роль `server`): `--audit` $\to$ `--dry-run` $\to$ боевой запуск `migrate-node-rename.sh <exit-b-ssh> server`. Проверить cluster mesh и `:9090/metrics`.
 3. `relay-a` (x86_64, роль `all`): `--audit` $\to$ `--dry-run` $\to$ боевой запуск `migrate-node-rename.sh <relay-a-ssh> all`. Проверить mesh cluster `9443/udp`, `reselect_sync`, `save-keys.sh` и `heartbeat-watch`.
@@ -1564,8 +1564,8 @@ Expected: 4 статических ELF-бинарника в `target/{x86_64,aar
 
 - [ ] **Step 4: Обновить локальные некоммитируемые заметки и полностью очистить артефакты сборки**
 
-1. Обновить `FLEET.local.md` (заменить упоминания `outline-ss-rust` / `outline-ws-rust` / `/etc/outline-ss-rust` на актуальные).
-2. Обновить `~/.claude/projects/<project-slug>/memory/MEMORY.md` (добавить краткую 1-строчную отметку о завершённом переименовании).
+1. Обновить `<fleet-inventory>` (заменить упоминания `outline-ss-rust` / `outline-ws-rust` / `/etc/outline-ss-rust` на актуальные).
+2. Обновить `<project-memory>/MEMORY.md` (добавить краткую 1-строчную отметку о завершённом переименовании).
 3. После финального `git push` (с предварительной проверкой `git log origin/main..main` и явной командой владельца) выполнить полную очистку каталогов сборки:
 
 ```bash

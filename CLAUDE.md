@@ -9,6 +9,3 @@
 - [`bins/outline-server/AGENTS.md`](bins/outline-server/AGENTS.md) — server data plane.
 - [`bins/outline-client/AGENTS.md`](bins/outline-client/AGENTS.md) — client (SOCKS5/TUN ingress).
 
-Память проекта:
-- `~/.claude/projects/<project-slug>/memory/` (индекс в `MEMORY.md`).
-

@@ -239,21 +239,21 @@ UniFFI bindings.
 ## Where the config comes from
 
 The node generates a client config per user: `<user>.toml`, next to `.conf`
-and `.json` (`ops/access-keys/generate_keys.py`; the report calls its link
+and `.json` (`access-keys/generate_keys.py`; the report calls its link
 `ws_url`). It carries the full carrier chain for every entry node, failover
 between nodes and live-flow migration. The structured profile form cannot
 express that: a single `vless://` / `ss://` link describes one carrier of one
 node. Paste the file whole into the **Raw TOML override** field.
 
 The generated `[tun] mtu` must match `ServerProfile.TUN_MTU`: 1500 on both sides
-(`TUN_MTU` in `ops/access-keys/ws_toml.py`). Change one and you must change the
+(`TUN_MTU` in `access-keys/ws_toml.py`). Change one and you must change the
 other, or the VPN comes up with an MTU the proxy core does not know about.
 
 What lands in the config depends on the node: the h3 carrier mode, the set of
 paths, padding, carrier migration and soft node switching are turned on only
 when the node has the matching sections. The generator reports the ones that
 are off as `warning:` lines; see
-[`ops/access-keys/README.md`](../ops/access-keys/README.md).
+[`access-keys/README.md`](../access-keys/README.md).
 
 The generated profile also carries `[outline.probe]`: a DNS probe plus TLS
 handshakes through the tunnel, mirroring the fleet's `main` group. Without it
@@ -261,7 +261,7 @@ the client has no health signal independent of traffic: an uplink marked down
 is cleared only by data flowing over it, so losing every uplink at once (a SIM
 switch, a dead cell) read as "no link" until the tunnel was reconnected by hand.
 The probe interval is 300 s (`PROBE_INTERVAL_SECS` in
-`ops/access-keys/ws_toml.py`) instead of the fleet's 10 s: on a phone each probe
+`access-keys/ws_toml.py`) instead of the fleet's 10 s: on a phone each probe
 cycle costs battery and, on an edge-class cell, bandwidth the tunnel needs.
 
 ### Subscription URL

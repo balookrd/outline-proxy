@@ -362,7 +362,7 @@ max_dials = 2
 #
 # A probe that got through overrules the pre-check: a bare connect cannot
 # tell "the server is gone" from "new TCP is refused while traffic rides an
-# already-established QUIC carrier" — cloud4 saw 463 of the latter against a
+# already-established QUIC carrier" — a relay node saw 463 of the latter against a
 # live uplink whose TLS probe logged 4879 successes in the same window.
 # endpoint_check = false
 # endpoint_check_timeout_ms = 2000

@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Write the access-key artifacts for every user in a node's config.toml.
+
+Four files per user: <user>.conf (Outline), <user>.json (Xray subscription
+balanced across the cloud entry nodes), <user>.toml (outline-client config for
+the Android client) and <user>.txt (every URL, one per line). The report goes to
+stdout; save-keys.sh redirects it into users.txt.
+"""
+
+from __future__ import annotations
+
+import argparse
+import grp
+import json
+import os
+import sys
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import artifacts  # noqa: E402
+import config_model  # noqa: E402
+import ws_toml  # noqa: E402
+import xray_json  # noqa: E402
+
+DEFAULT_CONFIG = "/etc/outline-server/config.toml"
+
+# There is deliberately no default output directory. The served directory's
+# name is a secret — it is the only thing guarding the artifacts, which carry
+# every user's password and vless_id — so it lives in the node's config.toml
+# (`[access_keys] write_dir`, the same key the binary reads) and never in this
+# repository. A hard-coded fallback here would publish it to anyone who can
+# read the source.
+
+# `config_url` is deliberately not reported: it was the same file as
+# `outline_url` with a different scheme, and the very same link is already the
+# first line of <user>.txt.
+_REPORT_FIELDS = (
+    ("conf", "written_conf"),
+    ("json", "written_json"),
+    ("toml", "written_toml"),
+    ("txt", "written_txt"),
+    ("outline_url", "outline_url"),
+    ("happ_url", "happ_url"),
+    ("ws_url", "ws_url"),
+)
+
+
+SERVING_GROUP = "www-data"
+
+# Files whose group could not be set this run. Collected rather than raised:
+# one warning at the end beats an unreadable artifact nobody notices until a
+# client gets a 403.
+_GROUP_FAILURES: set[str] = set()
+
+
+def serving_gid() -> int | None:
+    """GID of the group nginx runs its workers as, or None if absent."""
+    try:
+        return grp.getgrnam(SERVING_GROUP).gr_gid
+    except KeyError:
+        return None
+
+
+def write_atomic(path: Path, content: str) -> None:
+    """Write via a temp file so a client never reads a half-written artifact.
+
+    The artifacts carry every user's password and vless_id, so they must never
+    be world-readable — not even during the brief temp-file window. We create
+    the temp file directly at 0640 instead of writing under the umask and
+    relaxing to 0644 afterwards. os.open with the mode plus fchmod pins it to
+    exactly 0640, independent of the caller's umask.
+
+    0640 only serves if the group is the one nginx reads as, so the group is
+    set explicitly: a file left root:root at 0640 is unreadable to the worker
+    and every artifact 404s— sorry, 403s — the moment it is regenerated. That
+    is a silent failure, discovered by users rather than by the run, so the
+    group is set here rather than assumed from the directory.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o640)
+        gid = serving_gid()
+        if gid is not None:
+            try:
+                os.fchown(handle.fileno(), -1, gid)
+            except (PermissionError, OSError):
+                # Not the owner (a non-root dry run on a dev box). The mode
+                # still protects the file; `main` reports the consequence once.
+                _GROUP_FAILURES.add(path.name)
+        else:
+            _GROUP_FAILURES.add(path.name)
+        handle.write(content)
+    os.replace(tmp, path)
+
+
+def render_report(written: Sequence[dict]) -> str:
+    blocks = []
+    for record in written:
+        lines = [f"user: {record['user']}"]
+        lines.extend(
+            f"{label}: {record[key]}" for key, label in _REPORT_FIELDS if record.get(key)
+        )
+        # Never a credential: these name server-side switches and carrier paths.
+        lines.extend(f"warning: {text}" for text in record.get("warnings", ()))
+        blocks.append("".join(f"{line}\n" for line in lines))
+    return "\n".join(blocks)
+
+
+def resolve_nodes(
+    cli_nodes: Sequence[str] | None, server: config_model.ServerConfig
+) -> tuple[str, ...]:
+    """Select balancer / subscription nodes: CLI --node -> [access_keys].nodes -> default."""
+    if cli_nodes:
+        return tuple(cli_nodes)
+    if server.access_keys.nodes:
+        return server.access_keys.nodes
+    return xray_json.DEFAULT_NODES
+
+
+def prune_stale_files(
+    out_dir: Path,
+    expected_names: set[str],
+    managed_extensions: set[str],
+    dry_run: bool,
+) -> list[str]:
+    """Remove stale artifact files from the top level of out_dir.
+
+    Skips dotfiles, symlinks, subdirectories, and files outside managed_extensions.
+    """
+    if not out_dir.exists() or not out_dir.is_dir():
+        return []
+    exts = tuple(ext for ext in managed_extensions if ext)
+    pruned: list[str] = []
+    for entry in sorted(out_dir.iterdir(), key=lambda p: p.name):
+        name = entry.name
+        if name.startswith("."):
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        if not name.endswith(exts):
+            continue
+        if name not in expected_names:
+            if not dry_run:
+                entry.unlink()
+            pruned.append(name)
+    return pruned
+
+
+def build_user_links_payload(
+    user: config_model.User,
+    nodes: Sequence[str],
+    server: config_model.ServerConfig,
+) -> dict:
+    """Build URLs, share links and full artifact texts for one user in memory."""
+    ak = server.access_keys
+    user_artifacts: dict[str, str] = {}
+
+    outline = artifacts.outline_artifact(user, server)
+    if outline is not None:
+        user_artifacts["conf"] = outline
+
+    has_sub = artifacts.has_subscription(user, server)
+    if has_sub:
+        document = xray_json.build_config(user, nodes, server)
+        user_artifacts["json"] = json.dumps([document], indent=2, ensure_ascii=False) + "\n"
+
+    toml_doc = ws_toml.build_config(user, nodes, server)
+    warnings: list[str] = []
+    if toml_doc is not None:
+        user_artifacts["toml"] = toml_doc
+        warnings = ws_toml.config_warnings(user, server)
+
+    urls = artifacts.user_urls(user, server)
+    if urls:
+        user_artifacts["txt"] = "\n".join(urls) + "\n"
+
+    share_links = [link for link in urls if link.startswith(("ss://", "vless://"))]
+
+    return {
+        "user": user.name,
+        "enabled": True,
+        "outline_url": artifacts.outline_url(user, ak)
+        if artifacts.has_outline(user, server)
+        else None,
+        "happ_url": artifacts.happ_url(user, server),
+        "ws_url": artifacts.ws_url(user, server),
+        "txt_url": artifacts.txt_url(user, server),
+        "share_links": share_links,
+        "artifacts": user_artifacts,
+        "warnings": warnings,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    _GROUP_FAILURES.clear()
+    parser = argparse.ArgumentParser(description="Generate access-key artifacts.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help="outline-server config.toml")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="where artifacts are written; overrides [access_keys] write_dir. "
+        "One of the two is required — there is no built-in default.",
+    )
+    parser.add_argument(
+        "--node",
+        action="append",
+        dest="nodes",
+        help="entry node for the Xray balancer; repeat for each. Default: %s"
+        % ", ".join(xray_json.DEFAULT_NODES),
+    )
+    parser.add_argument(
+        "--file-extension",
+        default=None,
+        help="extension for the Outline artifact; overrides [access_keys] "
+        "file_extension. The nodes rely on this: their config.toml has no "
+        "file_extension, and save-keys.sh passes --file-extension .conf",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="render everything but write nothing"
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="delete stale artifact files from out_dir (including when 0 users are enabled)",
+    )
+    parser.add_argument(
+        "--json-report",
+        action="store_true",
+        help="print machine-readable JSON report to stdout instead of plain text",
+    )
+    parser.add_argument(
+        "--user",
+        default=None,
+        help="target user id for --links-json",
+    )
+    parser.add_argument(
+        "--links-json",
+        action="store_true",
+        help="print URLs and artifact contents for --user as JSON without writing files",
+    )
+    args = parser.parse_args(argv)
+
+    if args.links_json and not args.user:
+        raise SystemExit("--links-json requires --user")
+
+    server = config_model.load(args.config)
+    if args.file_extension is not None:
+        server = replace(
+            server,
+            access_keys=replace(server.access_keys, file_extension=args.file_extension),
+        )
+    nodes = resolve_nodes(args.nodes, server)
+
+    if args.links_json:
+        target_user = next((u for u in server.users if u.name == args.user), None)
+        if target_user is None:
+            if args.user in server.disabled_users:
+                print(f"user {args.user!r} is disabled", file=sys.stderr)
+                return 2
+            print(f"user {args.user!r} not found", file=sys.stderr)
+            return 3
+        payload = build_user_links_payload(target_user, nodes, server)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if not server.users and not args.prune:
+        raise SystemExit(f"{args.config}: no enabled users")
+
+    out_dir_raw = args.out_dir or server.access_keys.write_dir
+    if not out_dir_raw:
+        raise SystemExit(
+            f"{args.config}: no output directory — set [access_keys] write_dir "
+            "in the config or pass --out-dir"
+        )
+
+    out_dir = Path(out_dir_raw)
+    if not args.dry_run:
+        # 0750, not 0755: only root and the serving group (www-data) may list
+        # or traverse the directory of credential-bearing artifacts. A
+        # pre-existing directory (the usual case on a node) keeps its own mode.
+        out_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+
+    ak = server.access_keys
+    written: list[dict] = []
+    expected_names: set[str] = set()
+    for user in server.users:
+        record: dict = {"user": user.name}
+        written_names: list[str] = []
+
+        outline = artifacts.outline_artifact(user, server)
+        if outline is not None:
+            target = out_dir / f"{user.filename}{ak.file_extension}"
+            if not args.dry_run:
+                write_atomic(target, outline)
+            record["conf"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
+
+        if artifacts.has_subscription(user, server):
+            document = xray_json.build_config(user, nodes, server)
+            target = out_dir / f"{user.filename}.json"
+            if not args.dry_run:
+                write_atomic(
+                    target, json.dumps([document], indent=2, ensure_ascii=False) + "\n"
+                )
+            record["json"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
+
+        document = ws_toml.build_config(user, nodes, server)
+        if document is not None:
+            target = out_dir / f"{user.filename}.toml"
+            if not args.dry_run:
+                write_atomic(target, document)
+            record["toml"] = str(target)
+            record["warnings"] = ws_toml.config_warnings(user, server)
+            expected_names.add(target.name)
+            written_names.append(target.name)
+
+        urls = artifacts.user_urls(user, server)
+        if urls:
+            target = out_dir / f"{user.filename}.txt"
+            if not args.dry_run:
+                write_atomic(target, "\n".join(urls) + "\n")
+            record["txt"] = str(target)
+            expected_names.add(target.name)
+            written_names.append(target.name)
+
+        record["written"] = written_names
+        record["outline_url"] = (
+            artifacts.outline_url(user, ak) if artifacts.has_outline(user, server) else None
+        )
+        record["happ_url"] = artifacts.happ_url(user, server)
+        record["ws_url"] = artifacts.ws_url(user, server)
+        record["txt_url"] = artifacts.txt_url(user, server)
+        written.append(record)
+
+    pruned: list[str] = []
+    if args.prune:
+        managed_exts = {ak.file_extension, ".conf", ".yaml", ".json", ".toml", ".txt"}
+        pruned = prune_stale_files(out_dir, expected_names, managed_exts, args.dry_run)
+
+    group_warnings: list[str] = []
+    if _GROUP_FAILURES:
+        group_warnings.append(
+            f"could not set group {SERVING_GROUP!r} on {len(_GROUP_FAILURES)} artifact(s); "
+            f"at mode 0640 nginx cannot read them and every subscription will answer 403. "
+            f"Run as root on a node where the {SERVING_GROUP} group exists."
+        )
+
+    if args.json_report:
+        json_payload = {
+            "nodes": list(nodes),
+            "users": [
+                {
+                    "user": rec["user"],
+                    "outline_url": rec.get("outline_url"),
+                    "happ_url": rec.get("happ_url"),
+                    "ws_url": rec.get("ws_url"),
+                    "txt_url": rec.get("txt_url"),
+                    "written": rec.get("written", []),
+                    "warnings": rec.get("warnings", []),
+                }
+                for rec in written
+            ],
+            "pruned": pruned,
+            "group_warnings": group_warnings,
+        }
+        print(json.dumps(json_payload, indent=2, ensure_ascii=False))
+    else:
+        # Never a credential: paths and counts only.
+        print(render_report(written), end="")
+
+    print(f"\n{len(written)} user(s), {len(nodes)} balancer node(s)", file=sys.stderr)
+    for warning_text in group_warnings:
+        print(f"WARNING: {warning_text}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

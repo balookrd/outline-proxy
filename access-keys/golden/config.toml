@@ -1,0 +1,94 @@
+# Synthetic config for the golden corpus. Every credential here is fake.
+# Covers: SS-only user, VLESS-only user, both, per-user method, a disabled user,
+# and an id that needs sanitising. Users are pure credentials; carriers come
+# from the global [[endpoint]] list, and padding is a per-endpoint flag.
+
+[server]
+listen = "[::]:443"
+cert_path = "/etc/ssl/fake.crt"
+key_path = "/etc/ssl/fake.key"
+
+[server.h3]
+listen = "[::]:443"
+
+# Split SS-over-WS legs — the pair the plain Outline client rides. Kept plain:
+# Outline cannot do padding.
+[[endpoint]]
+path = "/GLOBAL/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/GLOBAL/udp"
+kind = "ws_ss_udp"
+
+# Combined SS carriers (one path, both legs) for the outline-client chain and the
+# ss:// share links. Padded, so a generated <user>.toml turns [padding] on.
+[[endpoint]]
+path = "/GLOBAL/ss"
+kind = "ws_ss"
+padded = true
+
+[[endpoint]]
+path = "/GLOBAL/ssx"
+kind = "xhttp_ss"
+padded = true
+
+# VLESS carriers for the vless:// share links: padded first (as on node .104),
+# so the outline-client chain stays one padding class; the plain ones below them are the
+# only ones the xray subscription may use (xray cannot speak the padding).
+[[endpoint]]
+path = "/GLOBAL/vless"
+kind = "ws_vless"
+padded = true
+
+[[endpoint]]
+path = "/GLOBAL/xhttp"
+kind = "xhttp_vless"
+padded = true
+
+[[endpoint]]
+path = "/GLOBAL/vless-plain"
+kind = "ws_vless"
+
+[[endpoint]]
+path = "/GLOBAL/xhttp-plain"
+kind = "xhttp_vless"
+
+[access_keys]
+public_host = "keys.example.com"
+public_scheme = "wss"
+url_base = "https://keys.example.com/SECRET"
+file_extension = ".conf"
+print = false
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+
+[[users]]
+id = "ss-only"
+password = "pw-ss-only"
+
+[[users]]
+id = "vless-only"
+vless_id = "11111111-1111-4111-8111-111111111111"
+
+[[users]]
+id = "both"
+password = "pw-both"
+vless_id = "22222222-2222-4222-8222-222222222222"
+
+[[users]]
+id = "own-method"
+password = "cGFzc3dvcmQtMzItYnl0ZXMtZm9yLTIwMjIta2V5cw=="
+method = "2022-blake3-chacha20-poly1305"
+
+[[users]]
+id = "disabled"
+password = "pw-disabled"
+vless_id = "44444444-4444-4444-8444-444444444444"
+enabled = false
+
+[[users]]
+id = "needs sanitising/1"
+password = "pw-sanitise"
+vless_id = "55555555-5555-4555-8555-555555555555"

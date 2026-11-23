@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # name is unguessable-by-design. nginx puts no auth in front of it and the
 # filenames are plain user ids, so that one path segment is the whole access
 # control. It belongs in the node's config.toml (`[access_keys] write_dir`) and
-# in nothing that gets committed; ops/access-keys/README.md spells out the rule.
+# in nothing that gets committed; access-keys/README.md spells out the rule.
 #
 # This gate is what keeps the rule from decaying back:
 #
@@ -20,7 +20,7 @@ set -Eeuo pipefail
 #     /var/www/html, in an nginx `location ^/...`, or as the first segment of a
 #     URL. "Random-looking" is deliberately narrow — 12+ chars of [A-Za-z0-9_-]
 #     mixing upper, lower and digits — so ordinary paths (`access-keys`,
-#     `nanopi-r5c-k3s`, `refs/heads/main`) never trip it while a 21-char
+#     `k3s-cluster`, `refs/heads/main`) never trip it while a 21-char
 #     generated prefix always does.
 #  3. No hard-coded output directory back in the generator: the default is the
 #     config, and a fallback constant would publish the path in source again.
@@ -102,7 +102,7 @@ EOF
 
 # ── 3. the generator keeps taking the directory from the config ─────────────
 
-generator=ops/access-keys/generate_keys.py
+generator=access-keys/generate_keys.py
 if [ -f "$generator" ]; then
   hardcoded=$(grep -nE '^DEFAULT_OUT_DIR|--out-dir.*default *= *"' "$generator" || true)
   if [ -n "$hardcoded" ]; then

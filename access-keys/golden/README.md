@@ -1,0 +1,109 @@
+# Golden corpus
+
+Побайтовый снимок артефактов, которые генератор на Python (`generate_keys.py`)
+выдаёт на синтетическом `config.toml` из этого каталога. Все креды фейковые.
+
+Генерация access-key раньше жила в бинаре `outline-server`; теперь она удалена,
+и эталон снят с Python-генератора. Он больше не доказательство
+эквивалентности Rust↔Python, а regression-anchor самого Python-генератора:
+тесты собирают артефакты питоном и сверяют с этим каталогом побайтово. Эталон —
+источник истины, код — нет. Если golden-тест упал, неправ Python (либо это
+осознанная смена формата — тогда diff эталона обязан быть в том же коммите, что
+и правка генератора).
+
+## Что покрывает конфиг
+
+Пользователи — чистые креды (`id`, `password`, `vless_id`, `method`), без
+собственных путей. Носители задаёт глобальный список `[[endpoint]]` со строками
+`{path, kind, padded}`: юзер с `password` работает на каждом SS-эндпоинте, юзер
+с `vless_id` — на каждом VLESS-эндпоинте. Паддинг стал атрибутом эндпоинта
+(`padded = true`), а не отдельным списком `[padding] paths`.
+
+Набор эндпоинтов в синтетическом конфиге:
+
+| Path | Kind | Зачем |
+|---|---|---|
+| `/GLOBAL/tcp` | `ws_ss_tcp` | сплит-нога SS/TCP — на ней едет Outline `.conf` |
+| `/GLOBAL/udp` | `ws_ss_udp` | сплит-нога SS/UDP — вторая нога того же `.conf` |
+| `/GLOBAL/ss` | `ws_ss` | комбинированный SS-носитель, `padded` |
+| `/GLOBAL/ssx` | `xhttp_ss` | комбинированный SS-носитель, `padded` |
+| `/GLOBAL/vless` | `ws_vless` | VLESS-носитель, `padded` |
+| `/GLOBAL/xhttp` | `xhttp_vless` | VLESS-носитель, `padded` |
+| `/GLOBAL/vless-plain` | `ws_vless` | плоский VLESS-носитель — по нему строится Xray-подписка `.json` |
+| `/GLOBAL/xhttp-plain` | `xhttp_vless` | плоский VLESS-носитель — по нему строится Xray-подписка `.json` |
+
+Комбинированные SS-эндпоинты и первые VLESS-эндпоинты помечены
+`padded = true`, поэтому в каждом `<user>.toml` клиентский
+`[padding] enabled = true`, а цепочка носителей держится одного класса паддинга:
+плоские `/GLOBAL/vless-plain` и `/GLOBAL/xhttp-plain` из неё отбрасываются, и
+генератор пишет об этом строку `warning:` в отчёт. Xray паддинг не умеет,
+поэтому `.json` строится только по плоским VLESS-эндпоинтам. Сплит-ноги
+остаются plain: Outline паддинг не умеет и ездит именно по ним.
+
+`[server.h3] listen` задан, поэтому ссылки получают ALPN с `h3`.
+`[access_keys] url_base` задан явно (`https://keys.example.com/SECRET`).
+
+5 включённых юзеров (`disabled` не попадает никуда, `needs sanitising/1`
+превращается в `needs_sanitising_1`):
+
+| Юзер | Зачем |
+|---|---|
+| `ss-only` | только `password` — VLESS-артефактов (`.json`) быть не должно |
+| `vless-only` | только `vless_id` — нет ни Outline-конфига (`.conf`), ни `ss://` |
+| `both` | обе половины — все четыре файла |
+| `own-method` | per-user `method` бьёт `[shadowsocks].method` |
+| `disabled` | `enabled = false` исключает юзера целиком |
+| `needs sanitising/1` | санитизация имени файла |
+
+Юзер `own-paths` из прежнего конфига убран: per-user путей больше нет — носители
+заданы глобально в `[[endpoint]]`, — и покрывать такой кейс нечем.
+
+## Раскладка
+
+- `expected/` — полный вывод генератора (то, что он пишет в `--out-dir`): до
+  четырёх файлов на юзера — `<user>.conf` (Outline), `<user>.json`
+  (Xray-подписка, балансируется по cloud-узлам), `<user>.toml` (конфиг
+  outline-client для Android) и `<user>.txt` (все ссылки, по одной на строку).
+  Файл не пишется, если у юзера нет соответствующей половины: у `ss-only` нет
+  `.json`, у `vless-only` нет `.conf`. Весь набор сверяется побайтово в
+  `test_generate_keys.py::GoldenCorpusTest`, а по типам файлов — в
+  `test_outline_yaml.py` (`.conf`), `test_xray_json.py` (`.json`),
+  `test_ws_toml.py` (`.toml`) и `test_artifacts.py` (`.conf` + `.txt`).
+- `expected-ws/` — `both.toml` и `ss-only.toml`, побайтовые копии тех же файлов
+  из `expected/`. Служат фикстурой для `test_ws_toml.py::FixtureTest`, а
+  `both.toml` вдобавок грузится настоящим загрузчиком конфига `outline-client` в
+  `generated_android_config_fixture_loads`
+  (`bins/outline-client/src/config/tests/mod.rs`): его схема
+  `deny_unknown_fields` ловит дрейф формата, из-за которого один лишний ключ
+  ронял бы бинарь на старте.
+- `expected-users.txt` — отчёт генератора со stdout (блок на юзера). Никакой
+  тест его не читает — это справка; пути в нём относительны корня репозитория и
+  зависят от каталога, из которого снимали. Раз тест его не сверяет, после
+  изменения отчёта генератора пересоберите его командой из раздела ниже.
+
+Per-carrier `.conf` (`*-ss-ws.conf`, `*-vless-xhttp-stream-one.conf` и т. п.),
+которые писал старый бинарь, генератор больше не выдаёт — вместо файла на носитель
+теперь одна строка на носитель в `<user>.txt`. Эти URI по-прежнему покрыты
+побайтово через `<user>.txt`.
+
+## Пересъёмка эталона
+
+Из корня репозитория:
+
+```bash
+rm -rf access-keys/golden/expected
+python3 -B access-keys/generate_keys.py \
+  --config access-keys/golden/config.toml \
+  --out-dir access-keys/golden/expected \
+  > access-keys/golden/expected-users.txt
+
+mkdir -p access-keys/golden/expected-ws
+cp access-keys/golden/expected/both.toml \
+   access-keys/golden/expected/ss-only.toml \
+   access-keys/golden/expected-ws/
+```
+
+Вне узла генератор пишет в stderr предупреждение, что не смог выставить группу
+`www-data` (на macOS её нет); в stdout-отчёт, то есть в `expected-users.txt`,
+оно не попадает и на результат не влияет. После перегенерации прогоните
+`python3 -B -m unittest discover -p 'test_*.py'` из `access-keys`.

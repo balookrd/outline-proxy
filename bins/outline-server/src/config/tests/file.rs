@@ -106,7 +106,7 @@ password = "secret"
 /// the key — accepted and inert, never accepted and half-applied.
 /// Every deployed config carries `[access_keys]`, and the sections are
 /// `deny_unknown_fields`, so the section must keep parsing even though
-/// ops/access-keys owns it now. `write_dir` matters most: while the binary
+/// access-keys owns it now. `write_dir` matters most: while the binary
 /// read it, its presence turned the process into a one-shot key generator
 /// that never served, so a node picking up a new binary with that key in its
 /// config would have died at the next restart.

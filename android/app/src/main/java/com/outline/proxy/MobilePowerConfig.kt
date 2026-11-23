@@ -12,7 +12,7 @@ package com.outline.proxy
  * 6. HTTP/2 and QUIC carrier keepalive intervals stretched (`[h2]` 60s/20s, `[quic]` keepalive 25s).
  *
  * This is the only place the profile is set: neither the generated subscription config
- * (`ops/access-keys/ws_toml.py`) nor [ServerProfile] write these keys, so a sanitized
+ * (`access-keys/ws_toml.py`) nor [ServerProfile] write these keys, so a sanitized
  * section is added whole when the config lacks it.
  *
  * The QUIC idle timeout is left to the dial's browser profile (30s), so the Initial's

@@ -2015,7 +2015,7 @@ kubectl -n monitoring create secret generic outline-ui-tokens \
 - [ ] **Шаг 4: раскатать и проверить**
 
 ```bash
-export KUBECONFIG=~/.kube/kubeconfig.yaml
+export KUBECONFIG=~/.kube/config
 kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
 kubectl apply -f ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml
 kubectl -n monitoring rollout status deploy/outline-ui --timeout=120s

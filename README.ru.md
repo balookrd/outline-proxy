@@ -91,7 +91,7 @@ WebSocket спускается `h3 → h2 → h1`, XHTTP — `xhttp_h3 → xhttp
 ### Совместимость с Outline
 
 Shadowsocks поверх WebSocket — путь, на котором говорят приложения Outline.
-Генератор ключей [`ops/access-keys`](ops/access-keys/) выдаёт пользователю
+Генератор ключей [`access-keys`](access-keys/) выдаёт пользователю
 Outline-ключ доступа (`$type: websocket`, TCP + UDP), если на сервере есть пара
 раздельных эндпоинтов `ws_ss_tcp` / `ws_ss_udp`. Shadowsocks поверх XHTTP
 работает только со встроенным клиентом `outline-client`, Outline-ключа для

@@ -408,7 +408,7 @@ impl UplinkManager {
         // the fallback-bootstrap path while the first probe cycle is still in
         // flight, so without this a freshly restarted daemon is indistinguish-
         // able from a wedged one and goes silent for its first window —
-        // observed on cloud3, which withheld two echo replies right after a
+        // observed on relay-c, which withheld two echo replies right after a
         // restart.
         if now.saturating_duration_since(self.inner.created_at) < window {
             return true;

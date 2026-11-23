@@ -168,9 +168,9 @@ request_timeout_secs = 10   # optional, default 10
 refresh_interval_secs = 5   # optional, default 5
 
 [[ws.instances]]
-name = "beelink102"
+name = "gateway-a"
 control_url = "http://198.51.100.102:9191"
-token_file = "/etc/outline-ui/secrets/ws-beelink102"
+token_file = "/etc/outline-ui/secrets/ws-gateway-a"
 
 [[ss.instances]]
 name = "relay-a"
@@ -308,11 +308,8 @@ server-side templating: the same `index.html` is served for every route.
 
 ## Deployment
 
-Runs in k3s, namespace `monitoring`, behind `ui.k3s.fleet.example`. Manifests:
-[`ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml`](../../ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml),
-ingress entry in
-[`apps/ingress/ingress-routes.yaml`](../../ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml).
-Cluster nodes are aarch64 (NanoPi R5C), hence the target and `--platform`.
+Runs in Kubernetes / k3s (e.g. namespace `monitoring`, behind `ui.k3s.fleet.example`).
+Example below targets aarch64 Linux cluster nodes (`--platform linux/arm64`).
 
 The release binary embeds the built SPA, so build the frontend first and ask the
 Rust build for the result explicitly. `<version>` below is `[workspace.package].version`
@@ -332,8 +329,7 @@ docker build --provenance=false --sbom=false --platform linux/arm64 \
   -f bins/outline-ui/Dockerfile \
   -t registry.k3s.fleet.example/outline-ui:<version> .
 docker push registry.k3s.fleet.example/outline-ui:<version>
-export KUBECONFIG=~/.kube/kubeconfig.yaml
-kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
+kubectl apply -f path/to/outline-ui.yaml
 kubectl -n monitoring rollout restart deploy/outline-ui
 ```
 
@@ -356,9 +352,8 @@ feature (`tikv-jemallocator` with `background_thread:true` and
 `SmpAllocator` when cross-compiling with `cargo zigbuild`; `LG_PAGE=12` for
 `aarch64-unknown-linux-musl` is pinned in the root `.cargo/config.toml`.
 
-`ops/deploy/deploy-binary.sh` does not cover this binary: it replaces the binary
-of a systemd unit on a fleet node and restarts it, while `outline-ui` ships as a
-container image to k3s. The commands above are the whole release procedure.
+Unlike systemd-managed `outline-server`/`outline-client` nodes, `outline-ui`
+ships as a container image. The commands above are the whole release procedure.
 
 The config is read once at startup, so a ConfigMap edit takes effect only after
 a pod restart.

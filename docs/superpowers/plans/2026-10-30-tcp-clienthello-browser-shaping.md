@@ -140,7 +140,7 @@
 ### Task 2: Общий модуль `tls_hello`, TCP-профили, браузерный `build_client_config`
 
 **Files:**
-- Create: `crates/outline-transport/src/tls_hello.rs`, `crates/outline-transport/src/tcp_tls_profile.rs`, `crates/outline-transport/src/tests/client_hello.rs`, `crates/outline-transport/src/tests/tcp_tls_profile.rs`, `crates/outline-transport/src/tests/fixtures/tcp_client_hello/{chrome156_h2,chrome156_h1,apple_h2,apple_h1,firefox159_h2}.bin` (скопировать из `/private/tmp/claude-501/<project-slug>/9485f03f-e16e-46f6-8398-2e54ca9d2af0/scratchpad/tcpch/fixtures/`)
+- Create: `crates/outline-transport/src/tls_hello.rs`, `crates/outline-transport/src/tcp_tls_profile.rs`, `crates/outline-transport/src/tests/client_hello.rs`, `crates/outline-transport/src/tests/tcp_tls_profile.rs`, `crates/outline-transport/src/tests/fixtures/tcp_client_hello/{chrome156_h2,chrome156_h1,apple_h2,apple_h1,firefox159_h2}.bin` (скопировать из `<scratchpad>/tcpch/fixtures/`)
 - Modify: `crates/outline-transport/src/quic/tls_profile.rs`, `crates/outline-transport/src/quic/tests/tls_config.rs` (+ `quic/tests/tls_profile.rs`), `crates/outline-transport/src/tls.rs`, `crates/outline-transport/src/tls_vendored.rs`, `crates/outline-transport/src/lib.rs`, `crates/outline-transport/Cargo.toml`
 - Delete: `crates/outline-transport/src/tls_fingerprint.rs`, `crates/outline-transport/src/tests/tls_fingerprint.rs`
 

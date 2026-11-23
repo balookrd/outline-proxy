@@ -783,8 +783,8 @@ impl TunUdpEngine {
         // is on by then. A migration that only renamed the flow therefore
         // stranded the `+1` on the uplink it left and took the `-1` from the one
         // it arrived at, so both series drifted by one per migration and the
-        // destination went negative — production showed `nuxt2 = +177` against
-        // `sebek = -177`, and a 14-day minimum of -491 on another node. Direct
+        // destination went negative — production showed `exit-b = +177` against
+        // `exit-e = -177`, and a 14-day minimum of -491 on another node. Direct
         // flows were never affected because they never migrate.
         //
         // Skipped for the first bind, which merely replaces the `"connecting"`
