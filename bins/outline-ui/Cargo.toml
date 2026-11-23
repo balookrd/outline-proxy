@@ -4,11 +4,15 @@ version.workspace = true
 edition = "2024"
 
 [features]
-default = []
+default = ["jemalloc"]
 # Embeds the built Svelte bundle (`frontend/dist`) into the binary via
 # rust-embed. Off by default so the plain `cargo build`/`cargo test` gate
 # needs no `pnpm build` step; the release image build turns it on.
 embed-assets = ["dep:rust-embed"]
+# jemalloc: default allocator, matching outline-server and outline-client.
+# Avoids Zig 0.17's SmpAllocator (shipped with cargo-zigbuild musl) retaining
+# cross-thread freed slabs indefinitely.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -20,6 +24,7 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+libc = { workspace = true, default-features = true }
 ring = { workspace = true }
 rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
 # aws-lc-rs only: a second provider in the graph panics the rustls default
@@ -28,6 +33,8 @@ rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 subtle = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }
 toml = { workspace = true }

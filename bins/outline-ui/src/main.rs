@@ -26,6 +26,50 @@ use tracing::info;
 use crate::backend::Backend;
 use crate::config::UiConfig;
 
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc tuning, read once at startup; mirrors `outline-server` and `outline-client`.
+///
+/// `background_thread:true` decays dirty extents even while the UI is idle
+/// between browser refreshes. `calloc_madvise_threshold:0` keeps jemalloc 5.3.1
+/// from faulting unused pages of zeroed buffers into RSS.
+#[cfg(feature = "jemalloc")]
+#[unsafe(export_name = "malloc_conf")]
+pub static MALLOC_CONF: &[u8] =
+    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,calloc_madvise_threshold:0\0";
+
+#[cfg(all(unix, feature = "jemalloc"))]
+pub(crate) fn allocator_page_sizes() -> Option<(usize, usize)> {
+    // SAFETY: `arenas.page` is a read-only `size_t` mallctl, read as `usize`.
+    let jemalloc = unsafe { tikv_jemalloc_ctl::raw::read::<usize>(b"arenas.page\0") }.ok()?;
+    // SAFETY: `sysconf` has no preconditions; it returns -1 on failure.
+    let kernel = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some((jemalloc, usize::try_from(kernel).ok()?))
+}
+
+#[cfg(all(unix, feature = "jemalloc"))]
+fn log_allocator_page_size() {
+    match allocator_page_sizes() {
+        Some((jemalloc, kernel)) if jemalloc == kernel => {
+            info!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size matches the kernel"
+            );
+        },
+        Some((jemalloc, kernel)) => {
+            tracing::warn!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size differs from the kernel page size; the binary was built without the JEMALLOC_SYS_WITH_LG_PAGE pin and wastes memory"
+            );
+        },
+        None => tracing::warn!("could not read the jemalloc or kernel page size"),
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "outline-ui", about = "Web UI for the outline fleet")]
 struct Args {
@@ -136,6 +180,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    #[cfg(all(unix, feature = "jemalloc"))]
+    log_allocator_page_size();
+
     let args = Args::parse();
     let config = UiConfig::load(&args.config)?;
     let listener = TcpListener::bind(config.listen)
@@ -167,3 +214,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 #[path = "tests/routing.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/allocator.rs"]
+mod allocator_tests;

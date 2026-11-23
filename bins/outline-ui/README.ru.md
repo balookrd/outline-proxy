@@ -346,7 +346,12 @@ kubectl -n monitoring rollout restart deploy/outline-ui
 соберётся, но на `/` будет заглушка.
 
 Cargo-алиас `cargo ui-release-musl-aarch64` не передаёт
-`--features embed-assets`; используйте полную команду выше.
+`--features embed-assets`; используйте полную команду выше. Включённая по
+умолчанию фича `jemalloc` (`tikv-jemallocator` с `background_thread:true` и
+`calloc_madvise_threshold:0`) предотвращает удержание освобождённых слабов в
+`SmpAllocator` из Zig musl при кросс-сборке через `cargo zigbuild`; 4-КиБ
+страница (`LG_PAGE=12`) для `aarch64-unknown-linux-musl` закреплена в корневом
+`.cargo/config.toml`.
 
 `ops/deploy/deploy-binary.sh` этот бинарь не покрывает: скрипт заменяет бинарь
 systemd-юнита на узле парка и рестартует его, а `outline-ui` раскатывается

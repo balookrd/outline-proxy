@@ -350,7 +350,11 @@ checks at build time that `frontend/dist` is fresh or that
 builds, but serves the stub at `/`.
 
 The cargo alias `cargo ui-release-musl-aarch64` does not pass
-`--features embed-assets`; use the full command above.
+`--features embed-assets`; use the full command above. The default `jemalloc`
+feature (`tikv-jemallocator` with `background_thread:true` and
+`calloc_madvise_threshold:0`) avoids retaining freed slabs in Zig's musl
+`SmpAllocator` when cross-compiling with `cargo zigbuild`; `LG_PAGE=12` for
+`aarch64-unknown-linux-musl` is pinned in the root `.cargo/config.toml`.
 
 `ops/deploy/deploy-binary.sh` does not cover this binary: it replaces the binary
 of a systemd unit on a fleet node and restarts it, while `outline-ui` ships as a

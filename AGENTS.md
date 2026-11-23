@@ -205,7 +205,7 @@ lock-файлов вместе с vendored-крейтами, которые об
   4-КиБ страницами. Не убирать закрепление; бинарь пишет `arenas.page` против
   страницы ядра при старте (WARN при расхождении), ws — ещё и в
   `GET /control/alloc`, тест `jemalloc_page_matches_the_kernel_page`.
-  `MALLOC_CONF` обоих бинарей содержит `calloc_madvise_threshold:0`: с 5.3.1
+  `MALLOC_CONF` всех трёх бинарей (`outline-server`, `outline-client`, `outline-ui`) содержит `calloc_madvise_threshold:0`: с 5.3.1
   `calloc` ниже порога (по умолчанию 8 МиБ) из переиспользуемых страниц
   зануляется `memset` и делает резидентным весь буфер `vec![0; N]`, а не только
   записанную часть. На `.104` это удвоило RSS ws. Не убирать. mallctl для этой
