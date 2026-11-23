@@ -433,7 +433,7 @@ fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
 fn patch_toml_config_updates_sni_fallback_and_backends() {
     let patch = ServerConfigPatch {
         sni_fallback: FieldPatch::Set(Some(SniFallbackPatch {
-            match_sni: FieldPatch::Set(Some(vec!["*.fleet.example".to_string()])),
+            match_sni: FieldPatch::Set(Some(vec!["*.example.com".to_string()])),
             allow_no_sni: FieldPatch::Set(Some(false)),
             max_client_hello_bytes: FieldPatch::Set(Some(4096)),
             backends: FieldPatch::Set(Some(vec![SniBackendPatch {
@@ -455,7 +455,7 @@ fn patch_toml_config_updates_sni_fallback_and_backends() {
     let out = patch_toml_config(original, &patch).expect("patch config with sni_fallback");
 
     assert!(out.contains("[sni_fallback]"), "sni_fallback table created:\n{out}");
-    assert!(out.contains(r#"match_sni = ["*.fleet.example"]"#), "match_sni set:\n{out}");
+    assert!(out.contains(r#"match_sni = ["*.example.com"]"#), "match_sni set:\n{out}");
     assert!(out.contains("allow_no_sni = false"), "allow_no_sni set:\n{out}");
     assert!(out.contains("[[sni_fallback.backends]]"), "backends table created:\n{out}");
     assert!(out.contains(r#"backend = "127.0.0.1:11443""#), "backend set:\n{out}");
@@ -468,7 +468,7 @@ fn patch_toml_config_updates_sni_fallback_and_backends() {
     let file: crate::config::FileConfig = toml::from_str(&out).expect("parse generated TOML");
     let sf_sec = file.sni_fallback.expect("sni_fallback section present");
     assert_eq!(sf_sec.allow_no_sni, Some(false));
-    assert_eq!(sf_sec.match_sni.as_deref(), Some(&["*.fleet.example".to_string()][..]));
+    assert_eq!(sf_sec.match_sni.as_deref(), Some(&["*.example.com".to_string()][..]));
     let bes = sf_sec.backends.expect("backends present");
     assert_eq!(bes.len(), 1);
     assert_eq!(bes[0].backend, "127.0.0.1:11443");

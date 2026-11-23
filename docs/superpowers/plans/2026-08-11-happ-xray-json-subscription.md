@@ -869,14 +869,14 @@ Expected: an exit-node address, not the home address. Compare against
 Blackhole one node for the local core only, then repeat the curl:
 
 ```bash
-sudo route -n add -host 203.0.113.4 127.0.0.1   # cloud1 unreachable
+sudo route -n add -host 203.0.113.21 127.0.0.1   # cloud1 unreachable
 curl --max-time 30 --socks5-hostname 127.0.0.1:10808 https://ifconfig.me
-sudo route -n delete -host 203.0.113.4          # ALWAYS undo
+sudo route -n delete -host 203.0.113.21          # ALWAYS undo
 ```
 
 Expected: the request still succeeds — within one observatory interval the
 balancer moves to the cloud2 legs. Restore the route immediately afterwards and
-confirm with `route -n get 203.0.113.4` that it no longer points at
+confirm with `route -n get 203.0.113.21` that it no longer points at
 `127.0.0.1`.
 
 - [ ] **Step 6: Clean up the scratch copies**
@@ -989,7 +989,7 @@ ssh ops@cloud2.fleet.example \
 - [ ] **Step 4: Confirm delivery over HTTPS from cloud2 specifically**
 
 ```bash
-curl -sS --resolve cloud.fleet.example:443:203.0.113.5 \
+curl -sS --resolve cloud.fleet.example:443:203.0.113.22 \
   -o /dev/null -w '%{http_code} %{content_type}\n' \
   https://cloud.fleet.example/<keys-prefix>/beerloga.json
 ```
@@ -1035,13 +1035,13 @@ Expected: `/var/www/html/<keys-dir>/`
 - [ ] **Step 8: Repeat Steps 1–7 for cloud1**
 
 Same commands with `cloud1.fleet.example`, and `--resolve
-cloud.fleet.example:443:203.0.113.4` in Step 4. Only start once cloud2 is fully
+cloud.fleet.example:443:203.0.113.21` in Step 4. Only start once cloud2 is fully
 green.
 
 - [ ] **Step 9: Confirm both nodes serve an identical document**
 
 ```bash
-for ip in 203.0.113.4 203.0.113.5; do
+for ip in 203.0.113.21 203.0.113.22; do
   curl -sS --resolve cloud.fleet.example:443:$ip \
     https://cloud.fleet.example/<keys-prefix>/beerloga.json | shasum -a 256
 done

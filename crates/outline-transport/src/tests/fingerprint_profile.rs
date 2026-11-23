@@ -671,7 +671,7 @@ fn stable_seed_is_pinned_across_toolchains() {
     // Golden values: a change here silently re-rolls the browser identity of
     // every deployed client on upgrade. Update only on a deliberate re-roll.
     assert_eq!(stable_seed(b"Beelink-T4-Pro"), 0xbbd5_4375_c5c6_d5d6);
-    assert_eq!(stable_seed(b"cloud1.fleet.example"), 0x8c15_c197_ba6e_7107);
+    assert_eq!(stable_seed(b"cloud1.fleet.example"), 0xa82b_e859_42c0_a6f0);
 }
 
 #[test]

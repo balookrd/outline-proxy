@@ -33,7 +33,7 @@ token_file = "__INST_TOKEN_FILE__"
 
 [[ss.instances]]
 name = "cloud1"
-control_url = "https://cloud1.fleet.example/rust-ss-exporter"
+control_url = "https://cloud1.example.com/rust-ss-exporter"
 token_file = "__INST_TOKEN_FILE__"
 "#,
     );
@@ -45,7 +45,7 @@ token_file = "__INST_TOKEN_FILE__"
     assert_eq!(config.ws[0].name, "beelink102");
     assert_eq!(config.ws[0].token, "inst-tok");
     assert_eq!(config.ss.len(), 1);
-    assert_eq!(config.ss[0].control_url, "https://cloud1.fleet.example/rust-ss-exporter");
+    assert_eq!(config.ss[0].control_url, "https://cloud1.example.com/rust-ss-exporter");
 }
 
 /// The listener is on 0.0.0.0 inside the pod, and reaching it grants every

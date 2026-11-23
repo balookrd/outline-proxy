@@ -38,7 +38,7 @@ fn test_parse_outline_wrapped_ss_link() {
 
 #[test]
 fn test_parse_subscription_url() {
-    let url = "https://sub.fleet.example/api/v1/client/subscribe?token=abc123xyz";
+    let url = "https://sub.example.com/api/v1/client/subscribe?token=abc123xyz";
     let profile = ServerProfile::from_link(url).expect("should parse subscription url");
 
     assert_eq!(profile.name, "Subscription");

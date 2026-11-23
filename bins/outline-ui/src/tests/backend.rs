@@ -95,10 +95,10 @@ async fn unreachable_instance_errors_and_names_itself() {
 /// send every request to the wrong place.
 #[test]
 fn base_path_of_the_control_url_is_preserved() {
-    let url = instance_url("https://cloud1.fleet.example/rust-ws-exporter", "/control/topology")
+    let url = instance_url("https://cloud1.example.com/rust-ws-exporter", "/control/topology")
         .expect("url builds");
 
-    assert_eq!(url.as_str(), "https://cloud1.fleet.example/rust-ws-exporter/control/topology");
+    assert_eq!(url.as_str(), "https://cloud1.example.com/rust-ws-exporter/control/topology");
 }
 
 /// The uplinks proxy forwards the browser's filters as a query string; dropping

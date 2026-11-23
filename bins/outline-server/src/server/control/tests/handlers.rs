@@ -116,7 +116,7 @@ fn server_config_patch_deserializes_extended_fields() {
             "ipv6_refresh_secs": 60
         },
         "sni_fallback": {
-            "match_sni": ["*.fleet.example"],
+            "match_sni": ["*.example.com"],
             "allow_no_sni": false,
             "max_client_hello_bytes": 4096,
             "backends": [
@@ -164,7 +164,7 @@ fn server_config_patch_deserializes_extended_fields() {
     let FieldPatch::Set(Some(sf)) = patch.sni_fallback else {
         panic!("expected sni_fallback patch");
     };
-    assert_eq!(sf.match_sni, FieldPatch::Set(Some(vec!["*.fleet.example".to_string()])));
+    assert_eq!(sf.match_sni, FieldPatch::Set(Some(vec!["*.example.com".to_string()])));
     assert_eq!(sf.allow_no_sni, FieldPatch::Set(Some(false)));
     assert_eq!(sf.max_client_hello_bytes, FieldPatch::Set(Some(4096)));
     let FieldPatch::Set(Some(backends)) = sf.backends else {

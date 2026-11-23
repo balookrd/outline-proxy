@@ -56,7 +56,7 @@ cloud1    ops@cloud1.fleet.example    1600M    1800M   500M     700M
 cloud2    ops@cloud2.fleet.example    1600M    1800M   500M     700M
 nuxt      ops@nuxt.fleet.example      -        -       700M     800M
 nuxt2     ops@nuxt2.fleet.example     -        -       700M     800M
-sebek     ops@203.0.113.3       -        -       380M     450M
+sebek     ops@203.0.113.31       -        -       380M     450M
 ```
 
 Значения — снимок фактического состояния парка на 2026-08-24 после введения

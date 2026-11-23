@@ -2042,7 +2042,7 @@ Expected: `remaining files: 36` — three per user, nothing else.
 ```bash
 for ext in conf json txt; do
   printf "%-5s " "$ext"
-  curl -sS --max-time 20 --resolve cloud.fleet.example:443:203.0.113.5 \
+  curl -sS --max-time 20 --resolve cloud.fleet.example:443:203.0.113.22 \
     -o /dev/null -w '%{http_code} %{content_type}\n' \
     https://cloud.fleet.example/<keys-prefix>/beerloga.$ext
 done
@@ -2065,7 +2065,7 @@ current site file, add the widened location, install it, `nginx -t`, reload:
 ssh ops@cloud2.fleet.example 'sudo -n sed -i.bak-$(date +%Y%m%d%H%M%S) \
   "s#location ~ \^/<keys-prefix>/\[^/\]+\\\\.json\\$#location ~ ^/<keys-prefix>/[^/]+\\\\.(json|txt)\$#" \
   /etc/nginx/sites-available/fleet.example && sudo -n nginx -t 2>&1 | tail -1 && sudo -n systemctl reload nginx && echo reloaded'
-curl -sS -D- --max-time 20 --resolve cloud.fleet.example:443:203.0.113.5 -o /dev/null \
+curl -sS -D- --max-time 20 --resolve cloud.fleet.example:443:203.0.113.22 -o /dev/null \
   https://cloud.fleet.example/<keys-prefix>/beerloga.txt | grep -i "^profile-"
 ```
 
@@ -2079,7 +2079,7 @@ in an nginx config is worse than an obvious manual edit.
 - [ ] **Step 10: Repeat Steps 1–9 on cloud1, then nuxt, then nuxt2**
 
 Same commands with the node's hostname; in Step 8 and 9 use
-`--resolve cloud.fleet.example:443:203.0.113.4` for cloud1. `nuxt` and `nuxt2`
+`--resolve cloud.fleet.example:443:203.0.113.21` for cloud1. `nuxt` and `nuxt2`
 have 11 users, not 12, and serve different hostnames — adjust the expected
 counts and drop the `--resolve` checks, verifying locally instead:
 

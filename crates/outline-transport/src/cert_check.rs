@@ -1,7 +1,7 @@
 //! Direct TLS certificate-expiry check for uplink endpoints.
 //!
 //! Opens a direct (non-tunnel) TLS connection to an uplink's own endpoint
-//! (e.g. `senko.fleet.example:443`), accepts the presented certificate
+//! (e.g. `relay-a.fleet.example:443`), accepts the presented certificate
 //! *regardless of validity* — so an already-expired cert still completes the
 //! handshake — and reads the leaf certificate's `notAfter`.
 //!

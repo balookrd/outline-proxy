@@ -62,13 +62,13 @@ async fn matching_origin_on_a_mutation_is_allowed() {
 #[tokio::test]
 async fn configured_allowed_host_is_accepted() {
     let request = Request::post("/mutate")
-        .header(header::HOST, "ui.k3s.fleet.example")
-        .header(header::ORIGIN, "https://ui.k3s.fleet.example")
+        .header(header::HOST, "ui.k3s.example.com")
+        .header(header::ORIGIN, "https://ui.k3s.example.com")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::empty())
         .unwrap();
 
-    assert_eq!(status(app(&["ui.k3s.fleet.example"]), request).await, StatusCode::OK);
+    assert_eq!(status(app(&["ui.k3s.example.com"]), request).await, StatusCode::OK);
 }
 
 #[tokio::test]

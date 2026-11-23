@@ -140,21 +140,21 @@ fn unmatched_sni_falls_through_to_catch_all() {
 #[test]
 fn backend_exact_overrides_local_wildcard() {
     // Mirrors the operator's `[sni_fallback]` config: local owns the
-    // whole `*.fleet.example` apex via wildcard, but `px.fleet.example` is
+    // whole `*.example.com` apex via wildcard, but `px.example.com` is
     // explicitly carved out to a backend. Exact-first lookup means the
     // carve-out wins for that single host while everything else under
     // the apex still terminates locally; truly foreign SNIs hit the
     // catch-all.
     let lookup = SniLookup::build(&cfg(
-        vec![wildcard("*.fleet.example")],
+        vec![wildcard("*.example.com")],
         vec![
-            backend("127.0.0.1:10443", vec![exact("px.fleet.example")]),
+            backend("127.0.0.1:10443", vec![exact("px.example.com")]),
             backend("127.0.0.1:11443", vec![]),
         ],
         false,
     ));
-    assert_eq!(lookup.lookup(Some("px.fleet.example")), Some(SniRoute::Backend(0)));
-    assert_eq!(lookup.lookup(Some("cloud.fleet.example")), Some(SniRoute::Local));
+    assert_eq!(lookup.lookup(Some("px.example.com")), Some(SniRoute::Backend(0)));
+    assert_eq!(lookup.lookup(Some("cloud.example.com")), Some(SniRoute::Local));
     assert_eq!(lookup.lookup(Some("something.else.com")), Some(SniRoute::Backend(1)));
 }
 

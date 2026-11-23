@@ -92,7 +92,7 @@ zeroize = { workspace = true }
 # server they spin up needs the server side of hyper, which the
 # main build deliberately omits to keep the client crate slim.
 hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time", "test-util"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
 # Sans-IO QUIC core, used only by the H3 QUIC-Initial diagnostic
 # (`quic/tests/tls_config.rs`) to produce a real first Initial datagram
 # without any network I/O. `default-features = false` + `rustls-aws-lc-rs`

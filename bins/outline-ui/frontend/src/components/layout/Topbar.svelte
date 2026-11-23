@@ -4,7 +4,7 @@
   import logoDark from '../../assets/outline-logo-dark.png';
   import logoLight from '../../assets/outline-logo-light.png';
 
-  // The prototype hardcodes an example prod hostname here ("ui.k3s.fleet.example");
+  // The prototype hardcodes an example prod hostname here ("ui.k3s.example.com");
   // the real app shows wherever it is actually being served from (dev proxy,
   // this k3s ingress, or anything else) instead of a fixed string.
   const host = typeof location !== 'undefined' ? location.host : '';
