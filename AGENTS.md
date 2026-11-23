@@ -37,6 +37,10 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   одном порту), без data plane: только агрегация control API узлов. Живёт в k3s.
   В самих бинарях дашбордов нет: они отдают только control API, см.
   `bins/outline-ui/README.ru.md`. Edition 2024.
+- `bins/outline-windows/` — GUI-клиент для Windows (Tauri v2 + Svelte 5 +
+  Tailwind CSS): иконка в трее, управление профилями, подписками, журналом,
+  системным WinINet-прокси и дочерним процессом `outline-client.exe` (режимы
+  SOCKS5 и TUN через драйвер Wintun). Edition 2024.
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
   wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
   SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
@@ -55,6 +59,8 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   управление системным SOCKS5-прокси, профилями и подписками через `outline-client`
   без необходимости платного Apple Developer аккаунта. Сборка .app через `./macos/scripts/package-app.sh`,
   упаковка DMG-образов через `./macos/scripts/package-dmg.sh`.
+- `windows/` — обзорная документация, архитектурная схема и режимы работы клиента
+  для Windows. Сборка и упаковка инсталлятора через `./scripts/package-windows.sh`.
 
 ## Команды
 

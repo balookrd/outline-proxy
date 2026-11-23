@@ -33,6 +33,12 @@ macOS menu-bar client.
   interface), manages server profiles and shows live logs; it does not need a
   paid Apple Developer account. `./macos/scripts/package-dmg.sh` and GitHub
   Actions build a Universal DMG.
+- [`windows/`](windows/) is a Windows desktop client living in the system tray.
+  Built with Tauri v2, Svelte 5 and the Wintun driver, it switches between
+  SOCKS5 system proxy mode (no admin) and TUN mode (L3 VPN via the Wintun
+  driver), manages server profiles, subscriptions and routing, and controls the
+  child `outline-client.exe` process. `./scripts/package-windows.sh` and GitHub
+  Actions build the installer and portable archive.
 
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.
@@ -101,9 +107,11 @@ outline-proxy/
 ├── bins/
 │   ├── outline-server/    # server binary  (+ its README, CHANGELOG, docs/)
 │   ├── outline-client/    # client binary  (+ its README, CHANGELOG, docs/)
+│   ├── outline-windows/   # Windows client GUI (Tauri v2 + Svelte 5 frontend & IPC)
 │   └── outline-ui/        # aggregating dashboard UI (+ its README)
 ├── android/               # Android VPN client (separate workspace: Rust core + Gradle/Kotlin app)
 ├── macos/                 # macOS menu-bar client (Swift/AppKit)
+├── windows/               # Windows desktop client documentation and architecture
 ├── crates/                # shared crates (wire protocol, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # patched h3, sockudo-ws, quinn-proto, rustls, hyper (single copy, workspace-level)
 ├── .cargo/config.toml     # cross-build aliases (server-* / client-* / ui-*)
@@ -118,7 +126,8 @@ Per-component documentation lives next to each component:
 [client README](bins/outline-client/README.md) ·
 [dashboard UI README](bins/outline-ui/README.md) ·
 [Android client README](android/README.md) ·
-[macOS client README](macos/README.md). More detail is under each
+[macOS client README](macos/README.md) ·
+[Windows client README](windows/README.md). More detail is under each
 `bins/*/docs/`: server architecture and session resumption, client uplink
 configurations, TUN PMTUD and TUN GSO.
 
@@ -164,6 +173,8 @@ commands.
 The Android client lives under [`android/`](android/) as a separate Cargo
 workspace (the root `cargo build --workspace` does not reach it) plus a
 Gradle/Kotlin app; build it from there, see [its README](android/README.md).
+The macOS app is built via `./macos/scripts/package-dmg.sh` (see [its README](macos/README.md)),
+and the Windows installer is packaged with `./scripts/package-windows.sh` (see [its README](windows/README.md)).
 
 ## Releases
 

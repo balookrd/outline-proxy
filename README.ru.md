@@ -32,6 +32,12 @@
   управляет профилями серверов и показывает журнал; платный аккаунт Apple
   Developer не нужен. Universal DMG собирают `./macos/scripts/package-dmg.sh` и
   GitHub Actions.
+- [`windows/`](windows/) — клиент для Windows в области уведомлений (System Tray).
+  Построен на базе Tauri v2, Svelte 5 и сетевого драйвера Wintun. Переключает
+  режимы системного SOCKS5-прокси (без прав администратора) и TUN (L3 VPN через
+  драйвер Wintun), управляет профилями серверов, подписками и маршрутизацией,
+  контролируя дочерний процесс `outline-client.exe`. `./scripts/package-windows.sh`
+  и GitHub Actions собирают NSIS-инсталлятор и портативную версию.
 
 Клиент дозванивается до сервера; обе стороны говорят на одном wire-протоколе и
 делят набор общих крейтов, поэтому они в одном репозитории.
@@ -100,9 +106,11 @@ outline-proxy/
 ├── bins/
 │   ├── outline-server/    # серверный бинарь  (+ его README, CHANGELOG, docs/)
 │   ├── outline-client/    # клиентский бинарь  (+ его README, CHANGELOG, docs/)
+│   ├── outline-windows/   # Windows GUI-клиент (Tauri v2 + Svelte 5 frontend & IPC)
 │   └── outline-ui/        # агрегирующий dashboard-UI (+ его README)
 ├── android/               # Android-VPN-клиент (отдельный workspace: Rust-ядро + Gradle/Kotlin-приложение)
 ├── macos/                 # клиент для строки меню macOS (Swift/AppKit)
+├── windows/               # архитектура и документация клиента для Windows
 ├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # пропатченные h3, sockudo-ws, quinn-proto, rustls, hyper (одна копия, на уровне workspace)
 ├── .cargo/config.toml     # cross-build алиасы (server-* / client-* / ui-*)
@@ -117,7 +125,8 @@ outline-proxy/
 [README клиента](bins/outline-client/README.ru.md) ·
 [README dashboard-UI](bins/outline-ui/README.ru.md) ·
 [README Android-клиента](android/README.ru.md) ·
-[README клиента macOS](macos/README.ru.md). Подробности — в `bins/*/docs/`:
+[README клиента macOS](macos/README.ru.md) ·
+[README клиента Windows](windows/README.ru.md). Подробности — в `bins/*/docs/`:
 архитектура сервера и session resumption, конфигурации uplink'ов клиента, TUN
 PMTUD и TUN GSO.
 
@@ -162,6 +171,8 @@ WebSocket-путь зависит от пропатченных `vendor/h3` и `
 Android-клиент живёт в [`android/`](android/) как отдельный Cargo workspace
 (корневой `cargo build --workspace` его не видит) плюс Gradle/Kotlin-приложение;
 собирается оттуда, см. [его README](android/README.ru.md).
+Приложение macOS собирается скриптом `./macos/scripts/package-dmg.sh` (см. [его README](macos/README.ru.md)),
+а клиент для Windows упаковывается скриптом `./scripts/package-windows.sh` (см. [его README](windows/README.ru.md)).
 
 ## Релизы
 
