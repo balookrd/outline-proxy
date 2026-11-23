@@ -1,5 +1,199 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tauri::Emitter;
+
+pub const STARTUP_CHECK_DELAY_SECS: u64 = 5;
+pub const WEEKLY_CHECK_INTERVAL_SECS: u64 = 7 * 24 * 60 * 60;
+pub const SCHEDULER_POLL_INTERVAL_SECS: u64 = 60 * 60;
+
+/// Returns the current Unix timestamp in whole seconds.
+pub fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Returns true if a periodic weekly check should run now.
+///
+/// Treats missing/zero timestamps and system clock rollbacks (`now_secs < last`) as due.
+pub fn is_periodic_check_due(
+    last_check_secs: Option<u64>,
+    now_secs: u64,
+    interval_secs: u64,
+) -> bool {
+    match last_check_secs {
+        None | Some(0) => true,
+        Some(last) if now_secs < last => true,
+        Some(last) => now_secs - last >= interval_secs,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateState {
+    pub checking: bool,
+    pub installing: bool,
+    pub available: Option<UpdateInfo>,
+    pub status: Option<String>,
+}
+
+/// Shared coordinator for startup, weekly periodic, and manual update checks.
+pub struct UpdateManager {
+    state: std::sync::RwLock<UpdateState>,
+}
+
+impl Default for UpdateManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UpdateManager {
+    pub fn new() -> Self {
+        Self {
+            state: std::sync::RwLock::new(UpdateState::default()),
+        }
+    }
+
+    pub fn state(&self) -> UpdateState {
+        self.state.read().unwrap().clone()
+    }
+
+    pub fn begin_check(&self, interactive: bool) -> bool {
+        let mut lock = self.state.write().unwrap();
+        if lock.checking || lock.installing {
+            return false;
+        }
+        lock.checking = true;
+        if interactive {
+            lock.status = Some("проверка обновлений…".to_string());
+        }
+        true
+    }
+
+    pub fn finish_check(
+        &self,
+        result: &Result<UpdateCheckResult, String>,
+        interactive: bool,
+    ) -> UpdateState {
+        let mut lock = self.state.write().unwrap();
+        lock.checking = false;
+        match result {
+            Ok(UpdateCheckResult::Available(info)) => {
+                lock.available = Some(info.clone());
+                lock.status = Some(if interactive {
+                    format!("доступно {}", info.label)
+                } else {
+                    format!("доступно {} — нажмите", info.label)
+                });
+            },
+            Ok(UpdateCheckResult::UpToDate) => {
+                lock.available = None;
+                lock.status = if interactive {
+                    Some("актуальная версия".to_string())
+                } else {
+                    None
+                };
+            },
+            Err(_) => {
+                if interactive {
+                    lock.status = Some("ошибка проверки".to_string());
+                }
+            },
+        }
+        lock.clone()
+    }
+
+    pub fn begin_install(&self) -> bool {
+        let mut lock = self.state.write().unwrap();
+        if lock.installing {
+            return false;
+        }
+        lock.installing = true;
+        lock.checking = false;
+        true
+    }
+
+    pub fn finish_install_failed(&self) -> UpdateState {
+        let mut lock = self.state.write().unwrap();
+        lock.installing = false;
+        lock.clone()
+    }
+
+    pub async fn run_check(
+        &self,
+        interactive: bool,
+        app: Option<&tauri::AppHandle>,
+        state: &crate::AppState,
+    ) -> Result<UpdateCheckResult, String> {
+        if !interactive && let Some(info) = self.state().available {
+            return Ok(UpdateCheckResult::Available(info));
+        }
+
+        if !self.begin_check(interactive) {
+            return Err("Update check is already in progress".to_string());
+        }
+
+        if interactive && let Some(app_handle) = app {
+            let _ = crate::tray::update_tray_menu(app_handle, state);
+            let _ = app_handle.emit("update-state-changed", self.state());
+        }
+
+        let ver = crate::version::AppVersion::current();
+        let res = UpdateChecker::check(&ver.channel, &ver.commit, &ver.version).await;
+        if res.is_ok()
+            && let Err(e) = state.profile_store.set_last_update_check(current_unix_secs())
+        {
+            tracing::warn!("Failed to persist last_update_check: {e}");
+        }
+
+        let new_state = self.finish_check(&res, interactive);
+        if let Some(app_handle) = app {
+            let _ = crate::tray::update_tray_menu(app_handle, state);
+            let _ = app_handle.emit("update-state-changed", new_state);
+        }
+        res
+    }
+
+    /// Spawns the startup silent check (after 5s) and an hourly poll that triggers
+    /// a quiet background check whenever 7 days have passed since the last success.
+    pub fn spawn_scheduler(app: tauri::AppHandle, state: std::sync::Arc<crate::AppState>) {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(STARTUP_CHECK_DELAY_SECS)).await;
+
+            let initial = state.update_manager.state();
+            if !initial.checking
+                && !initial.installing
+                && initial.available.is_none()
+                && let Err(e) = state.update_manager.run_check(false, Some(&app), &state).await
+            {
+                tracing::warn!("Startup update check failed: {e}");
+            }
+
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_POLL_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+                let st = state.update_manager.state();
+                if st.checking || st.installing || st.available.is_some() {
+                    continue;
+                }
+                if is_periodic_check_due(
+                    state.profile_store.last_update_check(),
+                    current_unix_secs(),
+                    WEEKLY_CHECK_INTERVAL_SECS,
+                ) && let Err(e) = state.update_manager.run_check(false, Some(&app), &state).await
+                {
+                    tracing::warn!("Periodic weekly update check failed: {e}");
+                }
+            }
+        });
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

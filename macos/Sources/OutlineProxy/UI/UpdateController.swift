@@ -12,8 +12,6 @@ public final class UpdateController {
 
     private static let lastCheckKey = "OutlineProxy.LastUpdateCheck"
     private static let reconnectKey = "OutlineProxy.ReconnectAfterUpdate"
-    /// Background checks run at most this often; a manual check always runs.
-    private static let backgroundInterval: TimeInterval = 24 * 60 * 60
 
     /// What the version footer appends ("проверка…", "загрузка 42%"); nil when
     /// there is nothing to report.
@@ -41,11 +39,11 @@ public final class UpdateController {
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-            self?.checkInBackgroundIfDue()
+        DispatchQueue.main.asyncAfter(deadline: .now() + UpdateSchedule.startupDelay) { [weak self] in
+            self?.checkInBackground(force: true)
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { _ in
-            Task { @MainActor in UpdateController.shared.checkInBackgroundIfDue() }
+        timer = Timer.scheduledTimer(withTimeInterval: UpdateSchedule.pollInterval, repeats: true) { _ in
+            Task { @MainActor in UpdateController.shared.checkInBackground(force: false) }
         }
     }
 
@@ -76,12 +74,14 @@ public final class UpdateController {
         }
     }
 
-    /// Quiet daily check: an available build only shows up in the footer and
-    /// the menu — nothing is downloaded until the user asks.
-    private func checkInBackgroundIfDue() {
+    /// Quiet startup / weekly check: an available build only shows up in the footer
+    /// and the menu — nothing is downloaded until the user asks.
+    private func checkInBackground(force: Bool) {
         if busy || available != nil { return }
         let last = UserDefaults.standard.double(forKey: Self.lastCheckKey)
-        guard Date().timeIntervalSince1970 - last >= Self.backgroundInterval else { return }
+        guard UpdateSchedule.isDue(lastCheck: last, now: Date().timeIntervalSince1970, force: force) else {
+            return
+        }
         busy = true
         Task {
             let result = await UpdateChecker.check()

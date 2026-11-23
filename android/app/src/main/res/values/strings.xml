@@ -22,6 +22,7 @@
     <!-- Foreground-service notification: channel names and the one-off "cannot start" alert. -->
     <string name="notif_channel_status">VPN status</string>
     <string name="notif_channel_alerts">VPN alerts</string>
+    <string name="notif_channel_updates">App updates</string>
     <string name="notif_alert_cannot_start_title">Tunnel cannot start</string>
     <string name="notif_alert_cannot_start_text">Open Outline Proxy and connect again.</string>
 
@@ -105,6 +106,9 @@
     <string name="upd_downloading_pct">downloading %1$d%%</string>
     <string name="upd_downloaded_tap">downloaded — tap to install</string>
     <string name="upd_download_failed">download failed: %1$s</string>
+    <string name="upd_available_tap">%1$s available — tap</string>
+    <string name="upd_notif_title">Update available</string>
+    <string name="upd_notif_text">%1$s is available. Tap to view release notes and download.</string>
 
     <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
     <string name="split_mode_all">All</string>

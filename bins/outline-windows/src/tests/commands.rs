@@ -10,10 +10,12 @@ fn test_app_state_crud_and_settings() {
     let temp_file = NamedTempFile::new().unwrap();
     let store = Arc::new(ProfileStore::open(temp_file.path().to_path_buf()).unwrap());
     let controller = Arc::new(ProcessController::new());
+    let update_manager = Arc::new(crate::updater::UpdateManager::new());
 
     let state = AppState {
         profile_store: store.clone(),
         process_controller: controller.clone(),
+        update_manager,
     };
 
     // 1. Initially no profiles

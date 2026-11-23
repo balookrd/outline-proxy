@@ -329,6 +329,8 @@ pub struct ProfileStoreData {
     pub selected_id: Option<String>,
     #[serde(default)]
     pub settings: AppSettings,
+    #[serde(default)]
+    pub last_update_check: Option<u64>,
 }
 
 /// Thread-safe persistent profile store.
@@ -517,6 +519,21 @@ impl ProfileStore {
         {
             let mut lock = self.data.write().map_err(|_| anyhow!("lock poisoned"))?;
             lock.settings = settings;
+        }
+        self.save()
+    }
+
+    /// Returns the Unix timestamp (seconds) of the last successful update check.
+    pub fn last_update_check(&self) -> Option<u64> {
+        let lock = self.data.read().unwrap();
+        lock.last_update_check
+    }
+
+    /// Records the Unix timestamp (seconds) of the last successful update check and persists to disk.
+    pub fn set_last_update_check(&self, timestamp_secs: u64) -> Result<()> {
+        {
+            let mut lock = self.data.write().map_err(|_| anyhow!("lock poisoned"))?;
+            lock.last_update_check = Some(timestamp_secs);
         }
         self.save()
     }

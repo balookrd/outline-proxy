@@ -56,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,10 +89,16 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var store: ProfileStore
     private var pendingConfig: String = ""
+    private var openUpdateDialogRequested by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ProfileStore(this)
+
+        UpdateWorker.schedule(this)
+        UpdateCoordinator.hydrate(this)
+        UpdateCoordinator.scheduleStartupCheck(this)
+        consumeUpdateIntent(intent)
 
         // Persistent-notification mode: make sure the ongoing banner is up as soon
         // as the app is opened, even with the tunnel down (standby). A running
@@ -231,20 +238,22 @@ class MainActivity : ComponentActivity() {
                 var showExternal by remember { mutableStateOf(false) }
                 var showKeepAlive by remember { mutableStateOf(false) }
                 var showProfiles by remember { mutableStateOf(false) }
-                // A tap on the build label asks GitHub what its channel publishes;
-                // an available build is offered as a download, never installed here.
-                var update by remember { mutableStateOf<UpdateChecker.Result.Available?>(null) }
-                // What the version footer appends while an update check or a
-                // download is in flight; null once there is nothing to report.
-                var updateStatus by remember { mutableStateOf<String?>(null) }
-                // Set once an APK is on disk: the footer then reads "tap to
-                // install" and its tap opens an installer instead of re-checking.
-                var downloadedApk by remember { mutableStateOf<String?>(null) }
-                // One download at a time: a second tap used to start a parallel
-                // fetch whose progress callbacks then overwrote the finished
-                // one's terminal status, leaving the footer stuck mid-percentage
-                // while the APK was already on disk.
-                var downloading by remember { mutableStateOf(false) }
+                val updateUi by UpdateCoordinator.state.collectAsState()
+                var updateDialog by remember { mutableStateOf<UpdateChecker.Result.Available?>(null) }
+
+                LaunchedEffect(openUpdateDialogRequested) {
+                    if (openUpdateDialogRequested) {
+                        openUpdateDialogRequested = false
+                        val apk = updateUi.downloadedApk
+                        if (apk != null) {
+                            UpdateChecker.openForInstall(this@MainActivity, apk)
+                        } else if (updateUi.available != null) {
+                            updateDialog = updateUi.available
+                        } else {
+                            UpdateCoordinator.checkManually(this@MainActivity) { updateDialog = it }
+                        }
+                    }
+                }
 
                 // On a sub-screen the system Back gesture / button should return to
                 // Home, not leave the app. The top "‹ Back" button already does
@@ -388,37 +397,22 @@ class MainActivity : ComponentActivity() {
                         onOpenExternalControl = { showExternal = true },
                         onOpenKeepAlive = { showKeepAlive = true },
                         onCheckForUpdates = {
-                            val apk = downloadedApk
-                            if (downloading) return@HomeScreen
+                            val apk = updateUi.downloadedApk
+                            if (updateUi.downloading) return@HomeScreen
                             if (apk != null) {
                                 UpdateChecker.openForInstall(this@MainActivity, apk)
                                 return@HomeScreen
                             }
-                            updateStatus = context.getString(R.string.upd_checking)
-                            scope.launch {
-                                when (val result = UpdateChecker.check()) {
-                                    is UpdateChecker.Result.Available -> {
-                                        updateStatus = null
-                                        update = result
-                                    }
-                                    UpdateChecker.Result.UpToDate ->
-                                        updateStatus = context.getString(R.string.upd_up_to_date)
-                                    is UpdateChecker.Result.Failed ->
-                                        updateStatus = context.getString(
-                                            R.string.upd_check_failed,
-                                            result.reason,
-                                        )
-                                }
-                            }
+                            UpdateCoordinator.checkManually(this@MainActivity) { updateDialog = it }
                         },
-                        updateStatus = updateStatus,
+                        updateStatus = updateUi.status,
                     )
                 }
                 }
 
-                update?.let { available ->
+                updateDialog?.let { available ->
                     AlertDialog(
-                        onDismissRequest = { update = null },
+                        onDismissRequest = { updateDialog = null },
                         title = { Text(stringResource(R.string.upd_available)) },
                         text = {
                             val notes = remember(available) { ReleaseNotes.format(available.notes) }
@@ -457,48 +451,32 @@ class MainActivity : ComponentActivity() {
                         },
                         confirmButton = {
                             TextButton(onClick = {
-                                update = null
-                                if (downloading) return@TextButton
-                                downloading = true
-                                updateStatus = context.getString(R.string.upd_downloading_pct, 0)
-                                // lifecycleScope, not the composition's: a 24 MB
-                                // fetch outlives a recomposition, and a cancelled
-                                // one would freeze the footer at its last percent.
-                                lifecycleScope.launch {
-                                    val outcome = UpdateChecker.download(
-                                        this@MainActivity,
-                                        available,
-                                    ) { percent ->
-                                        if (downloading) {
-                                            updateStatus = context.getString(
-                                                R.string.upd_downloading_pct,
-                                                percent,
-                                            )
-                                        }
-                                    }
-                                    downloading = false
-                                    updateStatus = when (outcome) {
-                                        is UpdateChecker.Download.Saved -> {
-                                            downloadedApk = outcome.uri
-                                            context.getString(R.string.upd_downloaded_tap)
-                                        }
-                                        is UpdateChecker.Download.Failed ->
-                                            context.getString(
-                                                R.string.upd_download_failed,
-                                                outcome.reason,
-                                            )
-                                    }
-                                }
+                                updateDialog = null
+                                UpdateCoordinator.startDownload(this@MainActivity, available)
                             }) { Text(stringResource(R.string.upd_download)) }
                         },
                         dismissButton = {
-                            TextButton(onClick = { update = null }) {
+                            TextButton(onClick = { updateDialog = null }) {
                                 Text(stringResource(R.string.upd_later))
                             }
                         },
                     )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeUpdateIntent(intent)
+    }
+
+    private fun consumeUpdateIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(UpdateNotification.EXTRA_OPEN_UPDATE, false) == true) {
+            intent.removeExtra(UpdateNotification.EXTRA_OPEN_UPDATE)
+            UpdateNotification.cancel(this)
+            openUpdateDialogRequested = true
         }
     }
 

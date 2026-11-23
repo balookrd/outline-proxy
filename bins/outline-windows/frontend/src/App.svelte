@@ -24,9 +24,11 @@
     onSettingsUpdated,
     onNavigate,
     getAppVersion,
+    getUpdateState,
     checkForUpdates,
     installUpdate,
     onUpdateProgress,
+    onUpdateStateChanged,
   } from './lib/api';
   import type {
     ServerProfile,
@@ -35,6 +37,7 @@
     AppSettings,
     AppVersionInfo,
     UpdateInfo,
+    UpdateState,
   } from './lib/types';
   import {
     isProcessRunning,
@@ -415,6 +418,13 @@
   }
 
   // Updates Interaction
+  function applyUpdateState(st: UpdateState) {
+    isCheckingUpdate = st.checking;
+    isInstallingUpdate = st.installing;
+    availableUpdate = st.available ?? null;
+    updateStatus = st.status ?? null;
+  }
+
   async function handleFooterClick() {
     if (isCheckingUpdate || isInstallingUpdate) return;
     if (availableUpdate) {
@@ -432,13 +442,17 @@
       } else {
         updateStatus = 'актуальная версия';
         setTimeout(() => {
-          updateStatus = null;
+          if (!availableUpdate && !isCheckingUpdate && !isInstallingUpdate && updateStatus === 'актуальная версия') {
+            updateStatus = null;
+          }
         }, 4000);
       }
     } catch (err: any) {
       updateStatus = 'ошибка проверки';
       setTimeout(() => {
-        updateStatus = null;
+        if (!availableUpdate && !isCheckingUpdate && !isInstallingUpdate && updateStatus === 'ошибка проверки') {
+          updateStatus = null;
+        }
       }, 5000);
     } finally {
       isCheckingUpdate = false;
@@ -465,13 +479,19 @@
     refreshSettings();
     refreshLogs();
 
-    // Load desktop app version
+    // Load desktop app version and current update manager state
     getAppVersion()
       .then((ver) => {
         appVersion = ver;
       })
       .catch((e) => {
         console.warn('Failed to get app version:', e);
+      });
+
+    getUpdateState()
+      .then(applyUpdateState)
+      .catch((e) => {
+        console.warn('Failed to get update state:', e);
       });
 
     const unlistens: Array<() => void> = [];
@@ -481,19 +501,9 @@
       updateProgressPercent = payload.percent;
     }).then((un) => unlistens.push(un));
 
-    // Background silent update check after 5 seconds
-    const silentCheckTimer = setTimeout(async () => {
-      try {
-        const res = await checkForUpdates();
-        if (res.status === 'available') {
-          availableUpdate = res.update;
-          updateStatus = `доступно ${res.update.label} — нажмите`;
-        }
-      } catch (e) {
-        // Silent error ignore in background check
-        console.warn('Silent update check failed:', e);
-      }
-    }, 5000);
+    onUpdateStateChanged((st) => {
+      applyUpdateState(st);
+    }).then((un) => unlistens.push(un));
 
     onStatusChanged((newState) => {
       if (status) {
@@ -520,10 +530,21 @@
     onNavigate((view) => {
       if (view === 'settings') showSettings = true;
       if (view === 'logs') showLogs = true;
+      if (view === 'update') {
+        if (availableUpdate) {
+          showUpdateModal = true;
+        } else {
+          getUpdateState()
+            .then((st) => {
+              applyUpdateState(st);
+              if (st.available) showUpdateModal = true;
+            })
+            .catch(() => {});
+        }
+      }
     }).then((un) => unlistens.push(un));
 
     return () => {
-      clearTimeout(silentCheckTimer);
       unlistens.forEach((un) => un());
     };
   });

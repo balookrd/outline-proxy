@@ -106,6 +106,16 @@ export interface UpdateProgressEvent {
 }
 
 /**
+ * Shared update manager state synchronized between backend scheduler, tray, and UI.
+ */
+export interface UpdateState {
+  checking: boolean;
+  installing: boolean;
+  available: UpdateInfo | null;
+  status: string | null;
+}
+
+/**
  * Helper predicates for ProcessState.
  */
 export function isProcessRunning(state: ProcessState): boolean {

@@ -139,8 +139,9 @@ published DMG was built from a different commit.
 
 - Checking: click the version line at the bottom of the main window, or choose
   **Проверить обновления...** ("Check for updates") in the menu-bar menu. A
-  background check also runs at most once every 24 hours; a found build only
-  shows up in the footer and the menu, nothing is downloaded until you ask.
+  silent background check also runs on every cold launch (after 10 seconds) and
+  every 7 days while the app stays open; a found build only shows up in the
+  footer and the menu, nothing is downloaded until you ask.
 - Installing: the dialog shows the release notes and the **Установить и
   перезапустить** ("Install and relaunch") button. The app downloads the DMG
   bypassing the system proxy (so in SOCKS5 mode the download does not depend on

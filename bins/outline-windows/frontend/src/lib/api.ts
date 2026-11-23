@@ -9,6 +9,7 @@ import type {
   UpdateInfo,
   UpdateCheckResult,
   UpdateProgressEvent,
+  UpdateState,
 } from './types';
 
 /**
@@ -140,13 +141,13 @@ export async function onSettingsUpdated(
 }
 
 /**
- * Listen for tray navigation commands ('settings' | 'logs').
+ * Listen for tray navigation commands ('settings' | 'logs' | 'update').
  */
 export async function onNavigate(
-  handler: (target: 'settings' | 'logs') => void,
+  handler: (target: 'settings' | 'logs' | 'update') => void,
 ): Promise<UnlistenFn> {
   return listen<string>('navigate', (event) => {
-    if (event.payload === 'settings' || event.payload === 'logs') {
+    if (event.payload === 'settings' || event.payload === 'logs' || event.payload === 'update') {
       handler(event.payload);
     }
   });
@@ -157,6 +158,13 @@ export async function onNavigate(
  */
 export async function getAppVersion(): Promise<AppVersionInfo> {
   return invoke<AppVersionInfo>('get_app_version');
+}
+
+/**
+ * Fetch the current shared update manager state.
+ */
+export async function getUpdateState(): Promise<UpdateState> {
+  return invoke<UpdateState>('get_update_state');
 }
 
 /**
@@ -171,6 +179,17 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
  */
 export async function installUpdate(update: UpdateInfo): Promise<void> {
   return invoke<void>('install_update', { update });
+}
+
+/**
+ * Listen for update state transitions from startup, weekly, or tray checks.
+ */
+export async function onUpdateStateChanged(
+  callback: (state: UpdateState) => void,
+): Promise<UnlistenFn> {
+  return listen<UpdateState>('update-state-changed', (event) => {
+    callback(event.payload);
+  });
 }
 
 /**

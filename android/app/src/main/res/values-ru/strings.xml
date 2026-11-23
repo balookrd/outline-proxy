@@ -20,6 +20,7 @@
     <!-- Foreground-service notification: channel names and the one-off "cannot start" alert. -->
     <string name="notif_channel_status">Статус VPN</string>
     <string name="notif_channel_alerts">Оповещения VPN</string>
+    <string name="notif_channel_updates">Обновления приложения</string>
     <string name="notif_alert_cannot_start_title">Не удаётся запустить туннель</string>
     <string name="notif_alert_cannot_start_text">Откройте Outline Proxy и подключитесь снова.</string>
 
@@ -90,6 +91,9 @@
     <string name="upd_downloading_pct">загрузка %1$d%%</string>
     <string name="upd_downloaded_tap">загружено — нажмите для установки</string>
     <string name="upd_download_failed">ошибка загрузки: %1$s</string>
+    <string name="upd_available_tap">доступно %1$s — нажмите</string>
+    <string name="upd_notif_title">Доступно обновление</string>
+    <string name="upd_notif_text">Доступна сборка %1$s. Нажмите, чтобы посмотреть изменения и скачать.</string>
 
     <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
     <string name="split_mode_all">Все</string>

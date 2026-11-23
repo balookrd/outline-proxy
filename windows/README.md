@@ -80,6 +80,26 @@ flowchart TD
 
 ---
 
+## Updates
+
+The Windows client updates itself from GitHub Releases according to its build
+channel: release builds follow the latest unified `v*` tag (`/releases/latest`),
+while nightly builds track the rolling `windows-nightly` tag by commit hash.
+
+- **Automatic checks**: a silent check runs in the Rust backend 5 seconds after
+  startup (including when launched with `start_minimized = true`) and then every
+  7 days based on the `lastUpdateCheck` timestamp in `profiles.json`.
+- **Manual checks & tray integration**: click the version footer at the bottom
+  of the main window or select **Check for Updates...** / **Install Update...**
+  in the system tray menu.
+- **Verified install & auto-reconnect**: before applying, the app verifies the
+  downloaded archive against `SHA256SUMS.txt` and enforces Zip-Slip protection
+  on extraction. If the tunnel is active, it sets `reconnectAfterUpdate`, stops
+  the core, launches a detached `cmd` swapper script (`apply_update`), and
+  automatically reconnects the tunnel after restarting.
+
+---
+
 ## Building
 
 The repository includes an automated build and packaging script: `scripts/package-windows.sh`.

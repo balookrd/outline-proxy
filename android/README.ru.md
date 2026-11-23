@@ -47,7 +47,8 @@ android/
       KeepAlivePolicy.kt / KeepAliveState.kt / KeepAliveScreen.kt
       AutomationPolicy.kt / AutomationStore.kt / AutomationState.kt / WifiAutomationScreen.kt
       OutlineTileService.kt / QuickConnectActivity.kt  # плитка быстрых настроек, ярлык
-      UpdateChecker.kt / ReleaseNotes.kt       # проверка обновлений в приложении
+      UpdateChecker.kt / ReleaseNotes.kt       # проверка обновлений и загрузка APK
+      UpdateSchedule.kt / UpdateStore.kt / UpdateCoordinator.kt / UpdateWorker.kt / UpdateNotification.kt  # проверка при старте и раз в неделю
       keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, профили вендоров
     src/test/java/com/outline/proxy/           # JVM-юнит-тесты
 ```
@@ -467,6 +468,26 @@ adb shell am broadcast -a android.intent.action.BOOT_COMPLETED com.outline.proxy
 переходы в системные экраны (HONOR / MagicOS). Фоновые пути возврата
 (force-stop → возврат, ребут) реализованы, но end-to-end на железе не прогнаны.
 Таблица вендорских экранов для MIUI/EMUI/ColorOS/One UI не проверена.
+
+## Обновления
+
+Приложение проверяет обновления в GitHub Releases по своему каналу сборки:
+релизные сборки (`release`) следят за общим CalVer-тегом `v*` (`/releases/latest`),
+а `nightly` — за плавающим тегом `android-nightly` (сравнение по коммиту в имени
+APK).
+
+- **При запуске**: спустя 5 секунд после холодного старта процесса выполняется
+  одна тихая проверка (`UpdateCoordinator`), без повтора при пересоздании Activity.
+- **Раз в неделю в фоне**: `UpdateWorker` (`WorkManager`, уникальная задача
+  `outline-update-check`) просыпается раз в сутки при наличии сети и обращается к
+  GitHub, только если с прошлой успешной проверки прошло ≥ 7 дней (`UpdateStore`).
+  При обнаружении обновления в фоне показывается одноразовое системное уведомление
+  на канале `outline_updates` (с дедупликацией по метке версии, если выдано
+  `POST_NOTIFICATIONS`), нажатие на которое открывает диалог обновления.
+- **Вручную и загрузка**: нажатие на строку версии внизу главного экрана сразу
+  показывает найденное обновление или запускает немедленную проверку. APK
+  загружается внутри процесса (мимо собственного VPN) в папку «Загрузки» без
+  запроса разрешения `REQUEST_INSTALL_PACKAGES`.
 
 ## История разработки
 

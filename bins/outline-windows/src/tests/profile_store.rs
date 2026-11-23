@@ -143,4 +143,28 @@ fn test_profile_store_bom_handling() {
     let store = ProfileStore::open(file_path).expect("open store with BOM");
     assert_eq!(store.profiles().len(), 0);
     assert_eq!(store.settings().socks_port, 1080);
+    assert_eq!(store.last_update_check(), None);
+}
+
+#[test]
+fn test_profile_store_persists_last_update_check_independently_of_settings() {
+    let temp_dir = tempfile::tempdir().expect("create tempdir");
+    let file_path = temp_dir.path().join("profiles_updates.json");
+
+    let store = ProfileStore::open(file_path.clone()).expect("open store");
+    assert_eq!(store.last_update_check(), None);
+
+    store
+        .set_last_update_check(1_700_000_123)
+        .expect("set last_update_check");
+    assert_eq!(store.last_update_check(), Some(1_700_000_123));
+
+    // Updating AppSettings (e.g. from SettingsModal) must not wipe last_update_check.
+    let mut settings = store.settings();
+    settings.socks_port = 1088;
+    store.update_settings(settings).expect("update settings");
+
+    let reloaded = ProfileStore::open(file_path).expect("reload store");
+    assert_eq!(reloaded.settings().socks_port, 1088);
+    assert_eq!(reloaded.last_update_check(), Some(1_700_000_123));
 }

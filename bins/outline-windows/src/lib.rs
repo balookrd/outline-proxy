@@ -22,6 +22,7 @@ pub use profile_store::ProfileStore;
 pub struct AppState {
     pub profile_store: Arc<ProfileStore>,
     pub process_controller: Arc<ProcessController>,
+    pub update_manager: Arc<updater::UpdateManager>,
 }
 
 pub fn run() {
@@ -38,10 +39,12 @@ pub fn run() {
         ProfileStore::empty(ProfileStore::default_storage_path())
     }));
     let process_controller = Arc::new(ProcessController::new());
+    let update_manager = Arc::new(updater::UpdateManager::new());
 
     let app_state = AppState {
         profile_store: profile_store.clone(),
         process_controller: process_controller.clone(),
+        update_manager: update_manager.clone(),
     };
 
     let app_state_for_setup = Arc::new(app_state.clone());
@@ -63,6 +66,7 @@ pub fn run() {
             commands::update_settings,
             commands::update_subscription,
             commands::get_app_version,
+            commands::get_update_state,
             commands::check_for_updates,
             commands::install_update,
         ])
@@ -72,6 +76,10 @@ pub fn run() {
 
             let app_handle = app.handle();
             tray::init_tray(app_handle, app_state_for_setup.clone())?;
+            updater::UpdateManager::spawn_scheduler(
+                app_handle.clone(),
+                app_state_for_setup.clone(),
+            );
 
             let settings = app_state_for_setup.profile_store.settings();
             if !settings.start_minimized

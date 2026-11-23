@@ -130,6 +130,20 @@ pub fn build_tray_menu(app: &AppHandle, state: &AppState) -> Result<Menu<Wry>> {
     menu.append(&settings_item)?;
     menu.append(&logs_item)?;
 
+    let upd = state.update_manager.state();
+    let (update_title, update_enabled) = if upd.installing {
+        ("Installing update...".to_string(), false)
+    } else if upd.checking {
+        ("Checking for updates...".to_string(), false)
+    } else if let Some(ref info) = upd.available {
+        (format!("Install Update {}...", info.label), true)
+    } else {
+        ("Check for Updates...".to_string(), true)
+    };
+    let update_item =
+        MenuItem::with_id(app, "check_updates", update_title, update_enabled, None::<&str>)?;
+    menu.append(&update_item)?;
+
     menu.append(&PredefinedMenuItem::separator(app)?)?;
 
     // 7. Quit
@@ -247,6 +261,31 @@ fn handle_tray_menu_event(app: &AppHandle, state: &Arc<AppState>, event_id: &str
                 let _ = window.show();
                 let _ = window.set_focus();
                 let _ = app.emit("navigate", "logs");
+            }
+        },
+        "check_updates" => {
+            let current = state.update_manager.state();
+            if current.available.is_some() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = app.emit("navigate", "update");
+                }
+            } else if !current.checking && !current.installing {
+                let app_clone = app.clone();
+                let state_clone = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(crate::updater::UpdateCheckResult::Available(_)) = state_clone
+                        .update_manager
+                        .run_check(true, Some(&app_clone), &state_clone)
+                        .await
+                        && let Some(window) = app_clone.get_webview_window("main")
+                    {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = app_clone.emit("navigate", "update");
+                    }
+                });
             }
         },
         "quit" => {

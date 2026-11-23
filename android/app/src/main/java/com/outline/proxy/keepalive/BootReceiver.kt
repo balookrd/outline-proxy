@@ -6,6 +6,9 @@ import android.content.Intent
 import android.util.Log
 import com.outline.proxy.KeepAliveState
 import com.outline.proxy.OutlineVpnService
+import com.outline.proxy.UpdateNotification
+import com.outline.proxy.UpdateStore
+import com.outline.proxy.UpdateWorker
 
 /**
  * Brings the tunnel back after a reboot or an app update.
@@ -24,6 +27,12 @@ class BootReceiver : BroadcastReceiver() {
         ) {
             Log.w(TAG, "ignoring unexpected broadcast action: $action")
             return
+        }
+
+        UpdateWorker.schedule(context)
+        if (action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            UpdateStore(context).clearAvailable()
+            UpdateNotification.cancel(context)
         }
 
         if (!KeepAliveState(context).shouldRun) return

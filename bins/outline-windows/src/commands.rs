@@ -184,11 +184,21 @@ pub async fn get_app_version() -> Result<crate::version::AppVersionInfo, String>
     Ok(crate::version::AppVersion::current())
 }
 
+/// Returns the current update status and cached available release metadata.
+#[tauri::command]
+pub async fn get_update_state(
+    state: State<'_, AppState>,
+) -> Result<crate::updater::UpdateState, String> {
+    Ok(state.update_manager.state())
+}
+
 /// Checks GitHub releases for available application updates according to current build channel.
 #[tauri::command]
-pub async fn check_for_updates() -> Result<crate::updater::UpdateCheckResult, String> {
-    let ver = crate::version::AppVersion::current();
-    crate::updater::UpdateChecker::check(&ver.channel, &ver.commit, &ver.version).await
+pub async fn check_for_updates(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<crate::updater::UpdateCheckResult, String> {
+    state.update_manager.run_check(true, Some(&app), &state).await
 }
 
 /// Downloads, verifies, stages, and initiates installation of an application update.
@@ -200,6 +210,26 @@ pub async fn install_update(
     update: crate::updater::UpdateInfo,
     app: AppHandle,
     state: State<'_, AppState>,
+) -> Result<(), String> {
+    if !state.update_manager.begin_install() {
+        return Err("Update installation is already in progress".to_string());
+    }
+    let _ = crate::tray::update_tray_menu(&app, &state);
+    let _ = app.emit("update-state-changed", state.update_manager.state());
+
+    let result = run_install_update(update, &app, &state).await;
+    if result.is_err() {
+        let st = state.update_manager.finish_install_failed();
+        let _ = crate::tray::update_tray_menu(&app, &state);
+        let _ = app.emit("update-state-changed", st);
+    }
+    result
+}
+
+async fn run_install_update(
+    update: crate::updater::UpdateInfo,
+    app: &AppHandle,
+    state: &AppState,
 ) -> Result<(), String> {
     // 1. Download and verify with progress emission (keep tunnel active during download)
     let app_handle = app.clone();
@@ -241,7 +271,7 @@ pub async fn install_update(
 
         state
             .process_controller
-            .stop(Some(&app))
+            .stop(Some(app))
             .await
             .map_err(|e| e.to_string())?;
     }

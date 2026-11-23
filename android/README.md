@@ -47,7 +47,8 @@ android/
       KeepAlivePolicy.kt / KeepAliveState.kt / KeepAliveScreen.kt
       AutomationPolicy.kt / AutomationStore.kt / AutomationState.kt / WifiAutomationScreen.kt
       OutlineTileService.kt / QuickConnectActivity.kt  # quick-settings tile, shortcut
-      UpdateChecker.kt / ReleaseNotes.kt       # in-app update check
+      UpdateChecker.kt / ReleaseNotes.kt       # GitHub update check & APK download
+      UpdateSchedule.kt / UpdateStore.kt / UpdateCoordinator.kt / UpdateWorker.kt / UpdateNotification.kt  # startup & weekly checks
       keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, vendor profiles
     src/test/java/com/outline/proxy/           # JVM unit tests
 ```
@@ -463,6 +464,26 @@ Verified: unit tests for the decision table; on a device, the checklist screen
 and its system-screen intents (HONOR / MagicOS). The background revival paths
 (force-stop → return, reboot) are implemented but not yet run end-to-end on
 hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is not verified.
+
+## Updates
+
+The app checks GitHub Releases according to its build channel: `release` builds
+follow the unified repository CalVer tag (`v*`, `/releases/latest`), while
+`nightly` builds follow the rolling `android-nightly` tag and compare the commit
+embedded in the APK name.
+
+- **Startup check**: a single silent check runs 5 seconds after cold process launch
+  (`UpdateCoordinator`), without repeating on Activity recreation.
+- **Weekly background check**: `UpdateWorker` (`WorkManager`, unique periodic task
+  `outline-update-check`) wakes up once a day when a network is connected and
+  queries GitHub only if at least 7 days have passed since the last successful check
+  (`UpdateStore`). If an update is found in the background, a one-shot notification
+  is posted on the `outline_updates` channel (deduplicated per release label, when
+  `POST_NOTIFICATIONS` is granted); tapping it opens the update dialog.
+- **Manual check & download**: tapping the version footer checks immediately (or
+  reopens a cached available update without a redundant network request). APKs are
+  downloaded in-process (bypassing the VPN via self-exclusion) directly to
+  `Downloads` without requesting `REQUEST_INSTALL_PACKAGES`.
 
 ## Development history
 
