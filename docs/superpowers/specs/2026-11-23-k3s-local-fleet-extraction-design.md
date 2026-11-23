@@ -28,7 +28,8 @@ infra-repo/
 │   ├── FLEET.md               # Бывший FLEET.local.md (топология, роли, IP узлов)
 │   ├── fleet.tsv              # Боевой файл параметров памяти/узлов (из memory-tuning)
 │   ├── network/               # Бывший hosts-network (бэкапы сети .102, .104)
-│   └── provision/             # Бывший fleet-provision (развёртывание новых нод)
+│   ├── provision/             # Бывший fleet-provision (развёртывание новых нод)
+│   └── snapshots/             # Полные слепки конфигураций узлов парка (cloud1, cloud2, nuxt, nuxt2, 102, 104, 105, k3s)
 ├── deploy/                    # Деплой сервисов и бинарников
 │   ├── bin/                   # deploy-binary.sh, deploy-fleet.sh, revert-binary.sh
 │   └── k8s/                   # Манифесты сервисов кластера (registry-gc, outline-ui и др.)
@@ -77,6 +78,7 @@ infra-repo/
 | `ops/nanopi-r5c-k3s/` | `nodes/nanopi-r5c-k3s/` | Конфигурация кластера NanoPi R5C |
 | `ops/hosts-network/` | `fleet/network/` | Сетевые конфиги хостов |
 | `ops/fleet-provision/` | `fleet/provision/` | Провижнинг хостов |
+| Слепки узлов (hosts-network + архивы) | `fleet/snapshots/` | Полные слепки конфигураций (etc, network, systemd, outline) для всех узлов |
 | `ops/windows-bench/` | `nodes/windows-bench/` | Стенд KVM/Docker |
 | `ops/alerting/` | `ops/alerting/` | Алертинг |
 | `ops/grafana/` | `ops/grafana/` | Дашборды |
