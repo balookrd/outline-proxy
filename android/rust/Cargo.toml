@@ -6,7 +6,7 @@
 # monorepo crates.
 [package]
 name = "outline-android"
-version = "26.11.3"
+version = "26.11.2"
 edition = "2024"
 publish = false
 
