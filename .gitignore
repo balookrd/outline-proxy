@@ -24,6 +24,7 @@ target
 .idea/
 *.iml
 .claude/
+.agents/
 .DS_Store
 /.code-index/
 
