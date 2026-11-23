@@ -3,7 +3,7 @@
 Defines the four supported `[[outline.uplinks]]` shapes, with a minimal
 config block and the dial-time fallback chain for each.
 
-Real fleet node names, domains and addresses in this document are replaced with stand-ins: `exit-a`…`exit-e` are the exit nodes. The mapping lives in the local, uncommitted `FLEET.local.md`.
+Real fleet node names, domains and addresses in this document are replaced with stand-ins: `exit-a`…`exit-e` are the exit nodes. The mapping lives in `infra-repo/fleet/FLEET.md`.
 
 Each fallback step fires only when the previous step returns an error
 during the dial / handshake. Once an "advanced" mode (`ws_h3`,

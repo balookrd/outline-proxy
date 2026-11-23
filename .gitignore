@@ -48,6 +48,7 @@ FLEET.md
 *.local.md
 *.local.tsv
 *.local.conf
+.archify/
 *.local.json
 *.local.env
 

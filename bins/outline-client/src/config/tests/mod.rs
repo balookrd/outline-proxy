@@ -2053,7 +2053,7 @@ async fn load_config_tun_wire_dial_can_be_enabled_per_group() {
 async fn generated_android_config_fixture_loads() {
     let path = std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../ops/access-keys/golden/expected-ws/both.toml"
+        "/tests/fixtures/android_both.toml"
     ));
 
     // The fixture is an Android config: TUN attaches to the VpnService fd, so it
