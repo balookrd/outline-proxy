@@ -22,18 +22,22 @@ with an English gloss.
     as root, adds host routes to the servers (so the tunnel does not route
     itself) and default sub-routes through the `utun` peer `10.0.85.1`.
     This captures traffic of every process, including CLI tools and DNS.
-- Passwordless TUN start. The **Настроить в 1 клик...** ("Configure in 1
-  click") button in Settings asks for the administrator password once, installs
-  both `tun-runner.sh` and `outline-client` to `/Library/Application Support/OutlineProxy/`
+- Passwordless TUN start. The **Настроить...** ("Configure…") button in
+  Settings asks for the administrator password once, installs both
+  `tun-runner.sh` and `outline-client` to `/Library/Application Support/OutlineProxy/`
   with `root:wheel 0755` permissions, prepares `/var/run/outline-proxy` (`0755`),
   and writes a strictly scoped `NOPASSWD` rule for that runner path to
   `/etc/sudoers.d/outline-proxy`. The helper executes only the fixed system-installed
-  binary, ignoring arbitrary CLI arguments. After that, TUN connect and disconnect
-  show no password dialog. The **Удалить правило** ("Remove rule") button in the
-  same card removes the rule and the system binaries.
+  binary, ignoring arbitrary CLI arguments, and stores TUN runtime state inside
+  `/var/run/outline-proxy`. On app updates, SHA-256 digests of the system copies
+  are checked against the app bundle and refreshed on the next privileged TUN
+  connect (or via **Обновить...** in Settings), keeping 1-click `NOPASSWD` intact
+  afterwards. The **Удалить** ("Remove") button removes the rule and the system
+  binaries.
 - IPv6 leak protection in TUN mode: while TUN is active, `tun-runner.sh` applies
-  IPv6 blackhole routes (`::/1` and `8000::/1`), preventing IPv6 traffic from bypassing
-  the tunnel on dual-stack networks.
+  IPv6 `reject` routes via loopback (`::/1` and `8000::/1`), preventing IPv6
+  traffic from bypassing the tunnel on dual-stack networks while letting sockets
+  fall back to IPv4 immediately without blackhole timeouts.
 - Menu-bar item: connect/disconnect, status, mode and server selection.
 - "TCP only" mode (no HTTP/3), a switch in Settings and in the menu-bar menu.
   It rewrites the config so that `xhttp_h3` / `ws_h3` carriers become `xhttp_h2`

@@ -125,9 +125,95 @@ func testAssetSanitization() {
     print("   [OK] Asset sanitization passed")
 }
 
+// 5. Real tun-runner.sh BSD Compatibility & Host Extraction Test
+func runBash(_ args: [String]) -> (Int32, String) {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+    proc.arguments = args
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = pipe
+    do {
+        try proc.run()
+    } catch {
+        return (-1, error.localizedDescription)
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    return (proc.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+func testTunRunnerScript() {
+    print("-> Testing real macos/Resources/tun-runner.sh...")
+    let scriptDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let runnerURL = scriptDir.deletingLastPathComponent().appendingPathComponent("Resources/tun-runner.sh")
+    guard let content = try? String(contentsOf: runnerURL, encoding: .utf8) else {
+        print("FAIL: Cannot read \(runnerURL.path)")
+        exit(1)
+    }
+
+    let (syntaxCode, syntaxOut) = runBash(["-n", runnerURL.path])
+    assertEq(syntaxCode, 0, "bash -n tun-runner.sh failed: \(syntaxOut)")
+
+    // BSD /sbin/route and macOS dig reject `--` with `bad keyword: -` / `Invalid option: --`
+    for (idx, line) in content.components(separatedBy: .newlines).enumerated() {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("#") { continue }
+        if trimmed.contains("/sbin/route") {
+            assertTrue(!trimmed.contains(" -- "), "Line \(idx + 1) passes GNU `--` to BSD /sbin/route: \(trimmed)")
+        }
+        if trimmed.contains("dig ") {
+            assertTrue(!trimmed.contains(" -- "), "Line \(idx + 1) passes unsupported `--` to macOS dig: \(trimmed)")
+        }
+    }
+
+    assertTrue(content.contains("STATE_PATH="), "tun-runner.sh must isolate STATE_PATH inside RUN_DIR")
+    assertTrue(content.contains("-reject"), "tun-runner.sh must use -reject for IPv6 leak prevention so apps fail over to IPv4 immediately")
+    assertTrue(!content.contains("-blackhole"), "tun-runner.sh must not silently blackhole IPv6 packets")
+
+    // Source helper functions from tun-runner.sh (guarded by TUN_RUNNER_LIB_ONLY=1) and test host extraction + validation
+    let tmpCfg = FileManager.default.temporaryDirectory.appendingPathComponent("tun-runner-test-\(UUID().uuidString).toml")
+    defer { try? FileManager.default.removeItem(at: tmpCfg) }
+
+    let sampleToml = """
+    [[outline.uplinks]]
+    link = "vless://uuid@edge1.example.com:443?type=xhttp#edge1"
+
+      [[outline.uplinks.fallbacks]]
+      link = "ss://YWJj@203.0.113.10"
+
+    [[outline.uplinks]]
+    ws_url = "wss://ws.example.com:8443/secret"
+    server_addr = "198.51.100.7:9000"
+
+    [[outline.uplinks]]
+    link = "vless://uuid@-flag-injection.example.com:443?type=ws"
+    """
+    try! sampleToml.write(to: tmpCfg, atomically: true, encoding: .utf8)
+
+    let bashCmd = """
+    set -e
+    TUN_RUNNER_LIB_ONLY=1 source "\(runnerURL.path)"
+    extract_valid_hosts "\(tmpCfg.path)" "-badhost.example.com"
+    """
+    let (extractCode, extractOut) = runBash(["-c", bashCmd])
+    assertEq(extractCode, 0, "extract_valid_hosts execution failed: \(extractOut)")
+
+    let hosts = Set(extractOut.split(whereSeparator: \.isNewline).map(String.init))
+    assertTrue(hosts.contains("edge1.example.com"), "Must extract host from vless link with port, got: \(hosts)")
+    assertTrue(hosts.contains("203.0.113.10"), "Must extract host from link without port before closing quote, got: \(hosts)")
+    assertTrue(hosts.contains("ws.example.com"), "Must extract host from ws_url, got: \(hosts)")
+    assertTrue(hosts.contains("198.51.100.7"), "Must extract host from server_addr, got: \(hosts)")
+    assertTrue(!hosts.contains("-flag-injection.example.com"), "Must reject host starting with `-`, got: \(hosts)")
+    assertTrue(!hosts.contains("-badhost.example.com"), "Must reject raw server_host starting with `-`, got: \(hosts)")
+
+    print("   [OK] tun-runner.sh BSD compatibility and host extraction passed")
+}
+
 // Run all tests
 testShellQuote()
 testTomlSanitization()
 testHostSanitization()
 testAssetSanitization()
+testTunRunnerScript()
 print("\nALL SECURITY TESTS PASSED SUCCESSFULLY!")

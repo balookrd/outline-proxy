@@ -1,7 +1,8 @@
-import Foundation
 import AppKit
+import CryptoKit
+import Foundation
 
-/// Manages passwordless `sudo` configuration for TUN mode via `/etc/sudoers.d/outline-proxy`.
+/// Manages passwordless `sudo` configuration and root-owned helper synchronization for TUN mode.
 public final class PrivilegedHelperManager: @unchecked Sendable {
     public static let shared = PrivilegedHelperManager()
 
@@ -12,6 +13,15 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
     private static let legacySystemBinaryPath = "/Library/Application Support/OutlineProxy/outline-ws-rust"
     public static let systemRunDir = "/var/run/outline-proxy"
 
+    private struct DigestCacheEntry {
+        let size: UInt64
+        let mtime: Date
+        let sha256: String
+    }
+
+    private static let digestLock = NSLock()
+    private static var digestCache: [String: DigestCacheEntry] = [:]
+
     private init() {}
 
     /// Safely quotes an argument for POSIX shell execution using single quotes.
@@ -19,11 +29,68 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Checks whether passwordless `sudo` is currently permitted for `tun-runner.sh`
-    /// and whether both the system script and binary are properly installed.
-    public func isSudoersConfigured() -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: Self.systemRunnerPath),
-              FileManager.default.isExecutableFile(atPath: Self.systemBinaryPath) else {
+    /// Compares two files by size and SHA-256 digest (with metadata-keyed caching).
+    public static func filesMatchSha256(_ lhs: URL, _ rhs: URL) -> Bool {
+        let fm = FileManager.default
+        guard let lhsAttrs = try? fm.attributesOfItem(atPath: lhs.path),
+              let rhsAttrs = try? fm.attributesOfItem(atPath: rhs.path),
+              let lhsSize = lhsAttrs[.size] as? UInt64,
+              let rhsSize = rhsAttrs[.size] as? UInt64,
+              lhsSize == rhsSize else {
+            return false
+        }
+
+        guard let lhsDigest = cachedSha256(for: lhs, attrs: lhsAttrs, size: lhsSize),
+              let rhsDigest = cachedSha256(for: rhs, attrs: rhsAttrs, size: rhsSize) else {
+            return false
+        }
+        return lhsDigest == rhsDigest
+    }
+
+    private static func cachedSha256(for url: URL, attrs: [FileAttributeKey: Any], size: UInt64) -> String? {
+        let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
+
+        digestLock.lock()
+        if let cached = digestCache[url.path], cached.size == size, cached.mtime == mtime {
+            digestLock.unlock()
+            return cached.sha256
+        }
+        digestLock.unlock()
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+
+        digestLock.lock()
+        digestCache[url.path] = DigestCacheEntry(size: size, mtime: mtime, sha256: hex)
+        digestLock.unlock()
+        return hex
+    }
+
+    /// Checks whether the installed root-owned helper script and binary match the current app bundle.
+    public func areSystemFilesUpToDate() -> Bool {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: Self.systemRunnerPath),
+              fm.isExecutableFile(atPath: Self.systemBinaryPath),
+              let bundleRunner = ProcessController.shared.locateBundleTunRunner(),
+              let bundleBinary = ProcessController.shared.locateBinary() else {
+            return false
+        }
+
+        let sysRunner = URL(fileURLWithPath: Self.systemRunnerPath)
+        let sysBinary = URL(fileURLWithPath: Self.systemBinaryPath)
+        return Self.filesMatchSha256(bundleRunner, sysRunner)
+            && Self.filesMatchSha256(bundleBinary, sysBinary)
+    }
+
+    /// Checks whether passwordless `sudo` currently works for the installed `tun-runner.sh` (used e.g. for stop).
+    public func canRunPasswordlessSudo() -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: Self.systemRunnerPath) else {
             return false
         }
 
@@ -42,6 +109,40 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         } catch {
             return false
         }
+    }
+
+    /// Checks whether passwordless `sudo` is permitted AND the installed helper files match the current bundle.
+    public func isSudoersConfigured() -> Bool {
+        areSystemFilesUpToDate() && canRunPasswordlessSudo()
+    }
+
+    /// Builds the privileged shell snippet that installs/updates root-owned `tun-runner.sh` and `outline-client`.
+    public static func systemFilesSyncScript(runnerSrc: String, binarySrc: String) -> String {
+        let qSupportDir = shellQuote(systemSupportDir)
+        let qRunnerSrc = shellQuote(runnerSrc)
+        let qRunnerDst = shellQuote(systemRunnerPath)
+        let qBinarySrc = shellQuote(binarySrc)
+        let qBinaryDst = shellQuote(systemBinaryPath)
+        let qLegacyBinary = shellQuote(legacySystemBinaryPath)
+        let qRunDir = shellQuote(systemRunDir)
+
+        return """
+        mkdir -p \(qSupportDir)
+        cp \(qRunnerSrc) \(qRunnerDst)
+        chmod 755 \(qRunnerDst)
+        chown root:wheel \(qRunnerDst)
+
+        if [ \(qBinarySrc) != \(qBinaryDst) ]; then
+            cp \(qBinarySrc) \(qBinaryDst)
+        fi
+        chmod 755 \(qBinaryDst)
+        chown root:wheel \(qBinaryDst)
+        rm -f \(qLegacyBinary)
+
+        mkdir -p \(qRunDir)
+        chmod 755 \(qRunDir)
+        chown root:wheel \(qRunDir)
+        """
     }
 
     /// Installs the sudoers rule and system helper script, prompting for administrator password once.
@@ -65,29 +166,11 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
             ])
         }
 
-        let qSupportDir = Self.shellQuote(Self.systemSupportDir)
-        let qRunnerSrc = Self.shellQuote(bundleRunnerURL.path)
-        let qRunnerDst = Self.shellQuote(Self.systemRunnerPath)
-        let qBinarySrc = Self.shellQuote(binaryURL.path)
-        let qBinaryDst = Self.shellQuote(Self.systemBinaryPath)
-        let qLegacyBinary = Self.shellQuote(Self.legacySystemBinaryPath)
-        let qRunDir = Self.shellQuote(Self.systemRunDir)
+        let syncFiles = Self.systemFilesSyncScript(runnerSrc: bundleRunnerURL.path, binarySrc: binaryURL.path)
         let qSudoersFile = Self.shellQuote(Self.sudoersFilePath)
 
         let script = """
-        mkdir -p \(qSupportDir)
-        cp \(qRunnerSrc) \(qRunnerDst)
-        chmod 755 \(qRunnerDst)
-        chown root:wheel \(qRunnerDst)
-
-        cp \(qBinarySrc) \(qBinaryDst)
-        chmod 755 \(qBinaryDst)
-        chown root:wheel \(qBinaryDst)
-        rm -f \(qLegacyBinary)
-
-        mkdir -p \(qRunDir)
-        chmod 755 \(qRunDir)
-        chown root:wheel \(qRunDir)
+        \(syncFiles)
 
         mkdir -p /etc/sudoers.d
         TMP_FILE=$(mktemp /etc/sudoers.d/.outline-proxy.XXXXXX)

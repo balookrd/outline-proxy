@@ -428,6 +428,7 @@ public final class SettingsWindowController: NSWindowController {
 
     private func updateTunAuthUI() {
         let isConfigured = PrivilegedHelperManager.shared.isSudoersConfigured()
+        let needsSync = PrivilegedHelperManager.shared.canRunPasswordlessSudo() && !isConfigured
         let palette = ThemeManager.shared.palette(for: window)
         if isConfigured {
             tunAuthIcon.image = NSImage(systemSymbolName: "checkmark.shield.fill", accessibilityDescription: "Настроено")
@@ -435,6 +436,12 @@ public final class SettingsWindowController: NSWindowController {
             tunAuthSubtitle.stringValue = "Подключение в 1 клик без пароля."
             tunAuthSubtitle.textColor = palette.statusGreen
             tunAuthButton.title = "Удалить"
+        } else if needsSync {
+            tunAuthIcon.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Требуется обновление")
+            tunAuthIcon.contentTintColor = palette.statusAmber
+            tunAuthSubtitle.stringValue = "Хелпер устарел после обновления приложения."
+            tunAuthSubtitle.textColor = palette.statusAmber
+            tunAuthButton.title = "Обновить..."
         } else {
             tunAuthIcon.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Требуется пароль")
             tunAuthIcon.contentTintColor = palette.statusAmber

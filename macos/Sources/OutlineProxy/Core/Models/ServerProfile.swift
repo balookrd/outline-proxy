@@ -150,13 +150,18 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
             return nil
         }
         let clean = trimmed.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
-        return clean.isEmpty ? nil : clean
+        guard let first = clean.first, first.isLetter || first.isNumber else {
+            return nil
+        }
+        return clean
     }
 
     public static func extractHost(from urlStr: String) -> String? {
         guard let atIndex = urlStr.lastIndex(of: "@") else { return nil }
         let afterAt = urlStr[urlStr.index(after: atIndex)...]
-        let hostPort = afterAt.prefix { $0 != "?" && $0 != "#" && $0 != "/" }
+        let hostPort = afterAt.prefix {
+            $0 != "?" && $0 != "#" && $0 != "/" && $0 != "\"" && $0 != "'" && !$0.isWhitespace
+        }
         guard let hostSub = hostPort.split(separator: ":").first else { return nil }
         let rawHost = String(hostSub)
         return sanitizeHost(rawHost)

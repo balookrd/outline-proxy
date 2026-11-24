@@ -256,8 +256,9 @@ public final class ProcessController: @unchecked Sendable {
     // MARK: - TUN Mode (Root privileged)
 
     private func startTun(configPath: URL, serverHost: String) throws {
-        guard let runnerURL = locateTunRunner() else {
-            let err = "Скрипт tun-runner.sh не найден в ресурсах приложения."
+        guard let bundleRunnerURL = locateBundleTunRunner() ?? locateTunRunner(),
+              let bundleBinaryURL = locateBinary() else {
+            let err = "Скрипт tun-runner.sh или бинарник outline-client не найдены в ресурсах приложения."
             stateLock.lock()
             state = .error(err)
             stateLock.unlock()
@@ -266,6 +267,7 @@ public final class ProcessController: @unchecked Sendable {
             throw NSError(domain: "ProcessController", code: 2, userInfo: [NSLocalizedDescriptionKey: err])
         }
 
+        let systemRunnerPath = PrivilegedHelperManager.systemRunnerPath
         let runDir = URL(fileURLWithPath: PrivilegedHelperManager.systemRunDir)
         let sanitizedHost = ServerProfile.sanitizeHost(serverHost) ?? ""
         lastLogOffset = 0
@@ -275,14 +277,18 @@ public final class ProcessController: @unchecked Sendable {
             if PrivilegedHelperManager.shared.isSudoersConfigured() {
                 appendLog("[INFO] Запуск TUN через беспарольный sudo (в 1 клик)...")
                 output = runCommand("/usr/bin/sudo", [
-                    runnerURL.path, "start", configPath.path, sanitizedHost
+                    systemRunnerPath, "start", configPath.path, sanitizedHost
                 ])
             } else {
-                appendLog("[INFO] Запрос прав администратора для создания L3 utun интерфейса...")
-                let qRunner = PrivilegedHelperManager.shellQuote(runnerURL.path)
+                appendLog("[INFO] Синхронизация системного хелпера и запуск L3 utun интерфейса с правами администратора...")
+                let syncScript = PrivilegedHelperManager.systemFilesSyncScript(
+                    runnerSrc: bundleRunnerURL.path,
+                    binarySrc: bundleBinaryURL.path
+                )
+                let qRunner = PrivilegedHelperManager.shellQuote(systemRunnerPath)
                 let qConfig = PrivilegedHelperManager.shellQuote(configPath.path)
                 let qHost = PrivilegedHelperManager.shellQuote(sanitizedHost)
-                let cmd = "\(qRunner) start \(qConfig) \(qHost)"
+                let cmd = "\(syncScript)\n\(qRunner) start \(qConfig) \(qHost)"
                 output = try PrivilegedHelperManager.executeAsAdmin(command: cmd)
             }
             appendLog("[INFO] tun-runner: \(output)")
@@ -318,7 +324,7 @@ public final class ProcessController: @unchecked Sendable {
             onStateChanged?(.running(pid: pid))
 
             // Start log and liveness polling
-            startTunMonitor(runDir: runDir, runnerURL: runnerURL)
+            startTunMonitor(runDir: runDir, runnerURL: URL(fileURLWithPath: systemRunnerPath))
         } catch {
             stateLock.lock()
             self.state = .error("Ошибка запуска TUN: \(error.localizedDescription)")
@@ -447,8 +453,8 @@ public final class ProcessController: @unchecked Sendable {
             appendLog("[INFO] Остановка TUN VPN и очистка системных маршрутов...")
 
             if let runnerURL = locateTunRunner() {
-                if PrivilegedHelperManager.shared.isSudoersConfigured() {
-                    _ = runCommand("/usr/bin/sudo", [runnerURL.path, "stop"])
+                if PrivilegedHelperManager.shared.canRunPasswordlessSudo() {
+                    _ = runCommand("/usr/bin/sudo", [PrivilegedHelperManager.systemRunnerPath, "stop"])
                 } else {
                     let qRunner = PrivilegedHelperManager.shellQuote(runnerURL.path)
                     let cmd = "\(qRunner) stop"
