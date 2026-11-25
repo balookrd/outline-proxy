@@ -445,9 +445,9 @@ async fn ipsec_nat_keepalive_does_not_extend_last_seen_past_ipsec_idle_timeout()
     tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
-fn scalar_metric_value(name: &str) -> i64 {
+fn keepalive_client_metric_value(name: &str, client_ip: IpAddr) -> i64 {
     let rendered = outline_metrics::render_prometheus(&[]).expect("render metrics");
-    let needle = format!("{name} ");
+    let needle = format!("{name}{{client_ip=\"{client_ip}\"}} ");
     rendered
         .lines()
         .find_map(|line| line.strip_prefix(&needle)?.trim().parse().ok())
@@ -470,8 +470,13 @@ async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
     )
     .await;
 
-    let active_before = scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active");
-    let packets_before = scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_packets_total");
+    let client_ip = IpAddr::V4(CLIENT_IP);
+    let active_before =
+        keepalive_client_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active", client_ip);
+    let packets_before = keepalive_client_metric_value(
+        "outline_ws_tun_ipsec_nat_keepalive_packets_total",
+        client_ip,
+    );
 
     send_client_datagram(&engine, destination_addr, b"open").await;
     let mut buf = vec![0u8; 256];
@@ -480,7 +485,7 @@ async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active"),
+        keepalive_client_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active", client_ip,),
         active_before + 1,
     );
 
@@ -490,19 +495,26 @@ async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
         .unwrap();
     assert_eq!(&buf[..ka_len], &[0xff]);
     assert!(
-        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_packets_total") > packets_before,
+        keepalive_client_metric_value(
+            "outline_ws_tun_ipsec_nat_keepalive_packets_total",
+            client_ip,
+        ) > packets_before,
     );
 
     tokio::time::sleep(Duration::from_millis(140)).await;
     engine.cleanup_idle_flows().await;
     for _ in 0..100 {
-        if scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active") == active_before {
+        if keepalive_client_metric_value(
+            "outline_ws_tun_ipsec_nat_keepalive_flows_active",
+            client_ip,
+        ) == active_before
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active"),
+        keepalive_client_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active", client_ip,),
         active_before,
     );
 }

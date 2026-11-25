@@ -136,18 +136,21 @@ const DEFAULT_IPSEC_IDLE_TIMEOUT: Duration = Duration::from_secs(3600);
 /// keepalive (`0xff`). Lives inside the flow's `AbortOnDrop` sender task so
 /// `outline_ws_tun_ipsec_nat_keepalive_flows_active` stays balanced on every
 /// teardown path (idle timeout, eviction, engine drop).
-struct IpsecNatKeepaliveGuard;
+struct IpsecNatKeepaliveGuard {
+    label: std::sync::Arc<str>,
+}
 
 impl IpsecNatKeepaliveGuard {
-    fn new() -> Self {
-        metrics::add_tun_ipsec_nat_keepalive_flows_active(1);
-        Self
+    fn new(client_ip: std::net::IpAddr) -> Self {
+        Self {
+            label: metrics::acquire_tun_ipsec_nat_keepalive_slot(client_ip),
+        }
     }
 }
 
 impl Drop for IpsecNatKeepaliveGuard {
     fn drop(&mut self) {
-        metrics::add_tun_ipsec_nat_keepalive_flows_active(-1);
+        metrics::release_tun_ipsec_nat_keepalive_slot(&self.label);
     }
 }
 
@@ -698,6 +701,7 @@ impl TunUdpEngine {
         // and is counted here rather than reported back to the read-loop as if
         // the loop had failed — the tunnelled path treats its carrier errors
         // the same way.
+        let src_ip = key.local_ip;
         let ipsec_bypass = self.inner.dispatch.ipsec_bypass();
         let is_nat_t = ipsec_bypass && key.remote_port == self.inner.ipsec_nat_t_port;
         let is_ipsec = is_nat_t || (ipsec_bypass && crate::routing::is_ipsec_port(key.remote_port));
@@ -711,8 +715,9 @@ impl TunUdpEngine {
         // Direct flows carry constant `(direct, direct)` labels; resolve the
         // uplink datagram+byte counters once for the sender's lifetime.
         let up_counters = metrics::direct_udp_counters("up");
-        let keepalive_guard = nat_keepalive.map(|_| IpsecNatKeepaliveGuard::new());
+        let keepalive_guard = nat_keepalive.map(|_| IpsecNatKeepaliveGuard::new(key.local_ip));
         let sender = AbortOnDrop::new(tokio::spawn(async move {
+            let keepalive_label = keepalive_guard.as_ref().map(|g| std::sync::Arc::clone(&g.label));
             let _keepalive_guard = keepalive_guard;
             loop {
                 let payload = match nat_keepalive {
@@ -725,7 +730,11 @@ impl TunUdpEngine {
                                     .send_to(&IPSEC_NAT_KEEPALIVE_PAYLOAD, target_addr)
                                     .await
                                 {
-                                    Ok(_) => metrics::record_tun_ipsec_nat_keepalive_packet(),
+                                    Ok(_) => {
+                                        if let Some(ref label) = keepalive_label {
+                                            metrics::record_tun_ipsec_nat_keepalive_packet(label);
+                                        }
+                                    },
                                     Err(error) => {
                                         debug!(
                                             error = %error,
@@ -877,6 +886,7 @@ impl TunUdpEngine {
         metrics::record_tun_flow_created(metrics::DIRECT_GROUP_LABEL, metrics::DIRECT_UPLINK_LABEL);
         info!(
             flow_id,
+            src = %src_ip,
             target = %remote_target,
             "created direct TUN UDP flow"
         );

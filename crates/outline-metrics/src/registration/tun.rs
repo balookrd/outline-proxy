@@ -1,7 +1,5 @@
 use super::macros::{register_histogram, register_labeled, register_scalar};
-use prometheus::{
-    Gauge, GaugeVec, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
-};
+use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 
 pub(super) struct TunFields {
     pub(super) tun_packets_total: IntCounterVec,
@@ -19,8 +17,8 @@ pub(super) struct TunFields {
     pub(super) tun_carrier_flows_active: IntGauge,
     pub(super) tun_carrier_flow_memory_estimate_bytes: IntGauge,
     pub(super) tun_idle_timeout_seconds: Gauge,
-    pub(super) tun_ipsec_nat_keepalive_flows_active: IntGauge,
-    pub(super) tun_ipsec_nat_keepalive_packets_total: IntCounter,
+    pub(super) tun_ipsec_nat_keepalive_flows_active: IntGaugeVec,
+    pub(super) tun_ipsec_nat_keepalive_packets_total: IntCounterVec,
     pub(super) tun_tcp_events_total: IntCounterVec,
     pub(super) tun_udp_events_total: IntCounterVec,
     pub(super) tun_tcp_sniff_total: IntCounterVec,
@@ -158,17 +156,19 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         "outline_ws_tun_idle_timeout_seconds",
         "Configured idle timeout for TUN UDP flows."
     );
-    let tun_ipsec_nat_keepalive_flows_active = register_scalar!(
+    let tun_ipsec_nat_keepalive_flows_active = register_labeled!(
         registry,
-        IntGauge,
+        IntGaugeVec,
         "outline_ws_tun_ipsec_nat_keepalive_flows_active",
-        "Active direct TUN UDP flows emulating RFC 3948 NAT-keepalive (UDP 4500)."
+        "Active direct TUN UDP flows emulating RFC 3948 NAT-keepalive (UDP 4500).",
+        ["client_ip"]
     );
-    let tun_ipsec_nat_keepalive_packets_total = register_scalar!(
+    let tun_ipsec_nat_keepalive_packets_total = register_labeled!(
         registry,
-        IntCounter,
+        IntCounterVec,
         "outline_ws_tun_ipsec_nat_keepalive_packets_total",
-        "Total RFC 3948 NAT-keepalive (0xff) packets sent on idle direct IPsec UDP flows."
+        "Total RFC 3948 NAT-keepalive (0xff) packets sent on idle direct IPsec UDP flows.",
+        ["client_ip"]
     );
     let tun_tcp_events_total = register_labeled!(
         registry,

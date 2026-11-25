@@ -86,12 +86,102 @@ pub fn record_tun_udp_forward_error(reason: &'static str) {
         .inc();
 }
 
-pub fn add_tun_ipsec_nat_keepalive_flows_active(delta: i64) {
-    METRICS.tun_ipsec_nat_keepalive_flows_active.add(delta);
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+const IPSEC_KEEPALIVE_CLIENT_CAP: usize = 64;
+const IPSEC_KEEPALIVE_OTHER_LABEL: &str = "other";
+
+#[derive(Default)]
+struct IpsecKeepaliveTracker {
+    active_counts: HashMap<Arc<str>, i64>,
+    packet_labels: HashSet<Arc<str>>,
 }
 
-pub fn record_tun_ipsec_nat_keepalive_packet() {
-    METRICS.tun_ipsec_nat_keepalive_packets_total.inc();
+static IPSEC_KEEPALIVE_TRACKER: std::sync::LazyLock<Mutex<IpsecKeepaliveTracker>> =
+    std::sync::LazyLock::new(|| Mutex::new(IpsecKeepaliveTracker::default()));
+
+/// Acquire a bounded `client_ip` label slot for an emulated IPsec NAT-keepalive
+/// flow and increment `outline_ws_tun_ipsec_nat_keepalive_flows_active`.
+/// Up to 64 distinct client IPs get their own label; overflow folds into `"other"`.
+pub fn acquire_tun_ipsec_nat_keepalive_slot(client_ip: IpAddr) -> Arc<str> {
+    let raw = client_ip.to_string();
+    let label = {
+        let mut tracker = IPSEC_KEEPALIVE_TRACKER.lock();
+        if let Some((existing, count)) = tracker
+            .active_counts
+            .iter_mut()
+            .find(|(k, _)| k.as_ref() == raw.as_str())
+        {
+            *count += 1;
+            Arc::clone(existing)
+        } else if tracker.active_counts.len() < IPSEC_KEEPALIVE_CLIENT_CAP {
+            let key: Arc<str> = Arc::from(raw);
+            tracker.active_counts.insert(Arc::clone(&key), 1);
+            key
+        } else {
+            let other: Arc<str> = Arc::from(IPSEC_KEEPALIVE_OTHER_LABEL);
+            *tracker.active_counts.entry(Arc::clone(&other)).or_insert(0) += 1;
+            other
+        }
+    };
+    METRICS
+        .tun_ipsec_nat_keepalive_flows_active
+        .with_label_values(&[label.as_ref()])
+        .inc();
+    label
+}
+
+/// Release a previously acquired `client_ip` label slot and clean up the gauge
+/// series once its active count returns to zero.
+pub fn release_tun_ipsec_nat_keepalive_slot(label: &str) {
+    let remove_series = {
+        let mut tracker = IPSEC_KEEPALIVE_TRACKER.lock();
+        if let Some(count) = tracker.active_counts.get_mut(label) {
+            *count -= 1;
+            if *count <= 0 {
+                tracker.active_counts.remove(label);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if remove_series {
+        let _ = METRICS
+            .tun_ipsec_nat_keepalive_flows_active
+            .remove_label_values(&[label]);
+    } else {
+        METRICS
+            .tun_ipsec_nat_keepalive_flows_active
+            .with_label_values(&[label])
+            .dec();
+    }
+}
+
+pub fn record_tun_ipsec_nat_keepalive_packet(client_ip_label: &str) {
+    let bounded_label = {
+        let mut tracker = IPSEC_KEEPALIVE_TRACKER.lock();
+        if tracker.packet_labels.contains(client_ip_label) {
+            client_ip_label
+        } else if client_ip_label != IPSEC_KEEPALIVE_OTHER_LABEL
+            && tracker.packet_labels.len() < IPSEC_KEEPALIVE_CLIENT_CAP
+        {
+            tracker.packet_labels.insert(Arc::from(client_ip_label));
+            client_ip_label
+        } else {
+            IPSEC_KEEPALIVE_OTHER_LABEL
+        }
+    };
+    METRICS
+        .tun_ipsec_nat_keepalive_packets_total
+        .with_label_values(&[bounded_label])
+        .inc();
 }
 
 pub fn record_tun_ip_fragment_received(ip_family: &'static str) {
