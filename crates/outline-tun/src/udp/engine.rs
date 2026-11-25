@@ -132,6 +132,25 @@ const IPSEC_NAT_KEEPALIVE_PAYLOAD: [u8; 1] = [0xff];
 const DEFAULT_IPSEC_NAT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const DEFAULT_IPSEC_IDLE_TIMEOUT: Duration = Duration::from_secs(3600);
 
+/// RAII gauge guard for direct IPsec NAT-T flows that emulate RFC 3948
+/// keepalive (`0xff`). Lives inside the flow's `AbortOnDrop` sender task so
+/// `outline_ws_tun_ipsec_nat_keepalive_flows_active` stays balanced on every
+/// teardown path (idle timeout, eviction, engine drop).
+struct IpsecNatKeepaliveGuard;
+
+impl IpsecNatKeepaliveGuard {
+    fn new() -> Self {
+        metrics::add_tun_ipsec_nat_keepalive_flows_active(1);
+        Self
+    }
+}
+
+impl Drop for IpsecNatKeepaliveGuard {
+    fn drop(&mut self) {
+        metrics::add_tun_ipsec_nat_keepalive_flows_active(-1);
+    }
+}
+
 // The ceiling that used to live here as `tunnelled_flow_cap` now belongs to the
 // budget shared with the TCP engine — `crate::carrier_slots::carrier_flow_cap`,
 // resolved once in `spawn_tun_loop`. Keeping a second copy of the rule here
@@ -692,7 +711,9 @@ impl TunUdpEngine {
         // Direct flows carry constant `(direct, direct)` labels; resolve the
         // uplink datagram+byte counters once for the sender's lifetime.
         let up_counters = metrics::direct_udp_counters("up");
+        let keepalive_guard = nat_keepalive.map(|_| IpsecNatKeepaliveGuard::new());
         let sender = AbortOnDrop::new(tokio::spawn(async move {
+            let _keepalive_guard = keepalive_guard;
             loop {
                 let payload = match nat_keepalive {
                     Some(interval) => {
@@ -700,15 +721,18 @@ impl TunUdpEngine {
                             Ok(Some(payload)) => payload,
                             Ok(None) => break,
                             Err(_) => {
-                                if let Err(error) = sender_sock
+                                match sender_sock
                                     .send_to(&IPSEC_NAT_KEEPALIVE_PAYLOAD, target_addr)
                                     .await
                                 {
-                                    debug!(
-                                        error = %error,
-                                        target = %target_addr,
-                                        "direct TUN UDP IPsec NAT-keepalive send failed"
-                                    );
+                                    Ok(_) => metrics::record_tun_ipsec_nat_keepalive_packet(),
+                                    Err(error) => {
+                                        debug!(
+                                            error = %error,
+                                            target = %target_addr,
+                                            "direct TUN UDP IPsec NAT-keepalive send failed"
+                                        );
+                                    },
                                 }
                                 continue;
                             },

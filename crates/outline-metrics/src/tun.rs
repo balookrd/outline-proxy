@@ -86,6 +86,14 @@ pub fn record_tun_udp_forward_error(reason: &'static str) {
         .inc();
 }
 
+pub fn add_tun_ipsec_nat_keepalive_flows_active(delta: i64) {
+    METRICS.tun_ipsec_nat_keepalive_flows_active.add(delta);
+}
+
+pub fn record_tun_ipsec_nat_keepalive_packet() {
+    METRICS.tun_ipsec_nat_keepalive_packets_total.inc();
+}
+
 pub fn record_tun_ip_fragment_received(ip_family: &'static str) {
     METRICS.tun_ip_fragments_total.with_label_values(&[ip_family]).inc();
 }

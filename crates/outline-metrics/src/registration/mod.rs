@@ -145,6 +145,10 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_idle_timeout_seconds: tun.tun_idle_timeout_seconds,
             #[cfg(feature = "tun")]
+            tun_ipsec_nat_keepalive_flows_active: tun.tun_ipsec_nat_keepalive_flows_active,
+            #[cfg(feature = "tun")]
+            tun_ipsec_nat_keepalive_packets_total: tun.tun_ipsec_nat_keepalive_packets_total,
+            #[cfg(feature = "tun")]
             tun_tcp_events_total: tun.tun_tcp_events_total,
             #[cfg(feature = "tun")]
             tun_udp_events_total: tun.tun_udp_events_total,

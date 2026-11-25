@@ -278,6 +278,8 @@ pub fn record_tun_flow_closed(
 }
 pub fn record_tun_icmp_local_reply(_ip_family: &'static str) {}
 pub fn record_tun_udp_forward_error(_reason: &'static str) {}
+pub fn add_tun_ipsec_nat_keepalive_flows_active(_delta: i64) {}
+pub fn record_tun_ipsec_nat_keepalive_packet() {}
 pub fn record_tun_ip_fragment_received(_ip_family: &'static str) {}
 pub fn record_tun_ip_reassembly(_ip_family: &'static str, _result: &'static str) {}
 pub fn set_tun_ip_fragment_sets_active(_ip_family: &'static str, _count: usize) {}

@@ -433,3 +433,58 @@ async fn ipsec_nat_keepalive_does_not_extend_last_seen_past_ipsec_idle_timeout()
         "sender task must stop sending keepalives once the flow is reaped",
     );
 }
+
+fn scalar_metric_value(name: &str) -> i64 {
+    let rendered = outline_metrics::render_prometheus(&[]).expect("render metrics");
+    let needle = format!("{name} ");
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(&needle)?.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
+    let (writer, _capture) = TunCapture::new();
+    let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let destination_addr = destination.local_addr().unwrap();
+    let engine = direct_engine_with_ipsec(
+        writer,
+        true,
+        Duration::from_millis(80),
+        destination_addr.port(),
+        Duration::from_millis(40),
+        Duration::from_millis(500),
+    )
+    .await;
+
+    let active_before = scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active");
+    let packets_before = scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_packets_total");
+
+    send_client_datagram(&engine, destination_addr, b"open").await;
+    let mut buf = vec![0u8; 256];
+    let _ = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active"),
+        active_before + 1,
+    );
+
+    let (ka_len, _) = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..ka_len], &[0xff]);
+    assert!(
+        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_packets_total") > packets_before,
+    );
+
+    drop(engine);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active"),
+        active_before,
+    );
+}
