@@ -115,7 +115,22 @@ pub(super) struct TunUdpEngineInner {
     /// existed the cap bound this table alone, so the two paths could add up to
     /// twice the configured ceiling. Unset (`OnceLock` empty) = no accounting.
     pub(super) carrier_slots: std::sync::OnceLock<Arc<crate::carrier_slots::CarrierSlots>>,
+    /// UDP port treated as IPsec NAT-T (default 4500, overridable in tests).
+    pub(super) ipsec_nat_t_port: u16,
+    /// Interval after which an idle direct IPsec NAT-T flow emits RFC 3948 §2.3
+    /// NAT-keepalive (`0xff`). Zero disables keepalive emission.
+    pub(super) ipsec_nat_keepalive_interval: Duration,
+    /// Idle timeout applied to direct `ipsec_bypass` (UDP 500/4500) flows so
+    /// long modem Doze gaps survive without inflating the general UDP timeout.
+    pub(super) ipsec_idle_timeout: Duration,
 }
+
+/// RFC 3948 §2.3 NAT-keepalive payload sent on idle IPsec NAT-T (UDP 4500)
+/// direct flows so intermediate NAT/conntrack tables keep the outer port
+/// mapping alive even when the handset modem pauses DPD in Doze mode.
+const IPSEC_NAT_KEEPALIVE_PAYLOAD: [u8; 1] = [0xff];
+const DEFAULT_IPSEC_NAT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const DEFAULT_IPSEC_IDLE_TIMEOUT: Duration = Duration::from_secs(3600);
 
 // The ceiling that used to live here as `tunnelled_flow_cap` now belongs to the
 // budget shared with the TCP engine — `crate::carrier_slots::carrier_flow_cap`,
@@ -138,6 +153,77 @@ impl TunUdpEngine {
         sniff_override_include: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
         sniff_override_exclude: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
         udp_gso: bool,
+    ) -> Self {
+        Self::new_inner(
+            writer,
+            dispatch,
+            max_flows,
+            max_carrier_flows,
+            idle_timeout,
+            pmtud_emit_below_quic_initial,
+            sniff_quic,
+            route_by_sni,
+            sniff_override_include,
+            sniff_override_exclude,
+            udp_gso,
+            crate::routing::IPSEC_NAT_T_PORT,
+            DEFAULT_IPSEC_NAT_KEEPALIVE_INTERVAL,
+            DEFAULT_IPSEC_IDLE_TIMEOUT,
+        )
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_ipsec_params_for_tests(
+        writer: SharedTunWriter,
+        dispatch: TunRouting,
+        max_flows: usize,
+        max_carrier_flows: usize,
+        idle_timeout: Duration,
+        pmtud_emit_below_quic_initial: bool,
+        sniff_quic: bool,
+        route_by_sni: bool,
+        sniff_override_include: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+        sniff_override_exclude: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+        udp_gso: bool,
+        ipsec_nat_t_port: u16,
+        ipsec_nat_keepalive_interval: Duration,
+        ipsec_idle_timeout: Duration,
+    ) -> Self {
+        Self::new_inner(
+            writer,
+            dispatch,
+            max_flows,
+            max_carrier_flows,
+            idle_timeout,
+            pmtud_emit_below_quic_initial,
+            sniff_quic,
+            route_by_sni,
+            sniff_override_include,
+            sniff_override_exclude,
+            udp_gso,
+            ipsec_nat_t_port,
+            ipsec_nat_keepalive_interval,
+            ipsec_idle_timeout,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        writer: SharedTunWriter,
+        dispatch: TunRouting,
+        max_flows: usize,
+        max_carrier_flows: usize,
+        idle_timeout: Duration,
+        pmtud_emit_below_quic_initial: bool,
+        sniff_quic: bool,
+        route_by_sni: bool,
+        sniff_override_include: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+        sniff_override_exclude: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+        udp_gso: bool,
+        ipsec_nat_t_port: u16,
+        ipsec_nat_keepalive_interval: Duration,
+        ipsec_idle_timeout: Duration,
     ) -> Self {
         let (close_tx, close_rx) = mpsc::unbounded_channel();
         let engine = Self {
@@ -171,6 +257,9 @@ impl TunUdpEngine {
                 udp_gso,
                 dial_admission: std::sync::OnceLock::new(),
                 carrier_slots: std::sync::OnceLock::new(),
+                ipsec_nat_t_port,
+                ipsec_nat_keepalive_interval,
+                ipsec_idle_timeout,
             }),
         };
         engine.spawn_cleanup_loop();
@@ -590,13 +679,46 @@ impl TunUdpEngine {
         // and is counted here rather than reported back to the read-loop as if
         // the loop had failed — the tunnelled path treats its carrier errors
         // the same way.
+        let ipsec_bypass = self.inner.dispatch.ipsec_bypass();
+        let is_nat_t = ipsec_bypass && key.remote_port == self.inner.ipsec_nat_t_port;
+        let is_ipsec = is_nat_t || (ipsec_bypass && crate::routing::is_ipsec_port(key.remote_port));
+        let nat_keepalive = (is_nat_t && !self.inner.ipsec_nat_keepalive_interval.is_zero())
+            .then_some(self.inner.ipsec_nat_keepalive_interval);
+        let flow_idle_timeout =
+            is_ipsec.then(|| self.inner.ipsec_idle_timeout.max(self.inner.idle_timeout));
+
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Bytes>(UDP_OUTBOUND_QUEUE_CAP);
         let sender_sock = Arc::clone(&sock);
         // Direct flows carry constant `(direct, direct)` labels; resolve the
         // uplink datagram+byte counters once for the sender's lifetime.
         let up_counters = metrics::direct_udp_counters("up");
         let sender = AbortOnDrop::new(tokio::spawn(async move {
-            while let Some(payload) = outbound_rx.recv().await {
+            loop {
+                let payload = match nat_keepalive {
+                    Some(interval) => {
+                        match tokio::time::timeout(interval, outbound_rx.recv()).await {
+                            Ok(Some(payload)) => payload,
+                            Ok(None) => break,
+                            Err(_) => {
+                                if let Err(error) = sender_sock
+                                    .send_to(&IPSEC_NAT_KEEPALIVE_PAYLOAD, target_addr)
+                                    .await
+                                {
+                                    debug!(
+                                        error = %error,
+                                        target = %target_addr,
+                                        "direct TUN UDP IPsec NAT-keepalive send failed"
+                                    );
+                                }
+                                continue;
+                            },
+                        }
+                    },
+                    None => match outbound_rx.recv().await {
+                        Some(payload) => payload,
+                        None => break,
+                    },
+                };
                 match sender_sock.send_to(&payload, target_addr).await {
                     Ok(sent) => up_counters.record(sent),
                     Err(error) => {
@@ -692,6 +814,7 @@ impl TunUdpEngine {
             created_at: now,
             last_seen: now,
             eviction_indexed_at: now,
+            idle_timeout: flow_idle_timeout,
         }));
         // Bound the direct flow table the same way `spawn_tunnel_flow` bounds
         // the tunnelled `flows` table: on overflow, evict the least-recently-seen

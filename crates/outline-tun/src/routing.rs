@@ -114,6 +114,10 @@ impl TunRouting {
         &self.registry
     }
 
+    pub(crate) fn ipsec_bypass(&self) -> bool {
+        self.ipsec_bypass
+    }
+
     /// Current [`RoutingTable::version`] — `0` when no table is configured, in
     /// which case no rule can ever change and the constant is as valid as any
     /// snapshot. Callers that cache a routing *input* (e.g. the UDP engine's
@@ -297,11 +301,14 @@ pub(crate) fn target_port(target: &TargetAddr) -> u16 {
     }
 }
 
+/// IKEv2 / IPsec NAT-T UDP port (RFC 3948).
+pub(crate) const IPSEC_NAT_T_PORT: u16 = 4500;
+
 /// Match IKE / IPsec NAT-T well-known UDP ports. Both 500 and 4500 are
 /// recognised because NAT_DETECTION mid-session moves IKE_AUTH off port 500;
 /// dropping either half breaks the handshake or the post-handshake ESP flow.
 pub(crate) fn is_ipsec_port(port: u16) -> bool {
-    matches!(port, 500 | 4500)
+    matches!(port, 500 | IPSEC_NAT_T_PORT)
 }
 
 pub mod windows;

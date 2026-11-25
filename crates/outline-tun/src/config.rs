@@ -49,7 +49,11 @@ pub struct TunConfig {
     /// IKEv2/IPsec clients rely on ESP datagrams that cannot be tunnelled
     /// through Outline transports — ESP-in-UDP packets are forwarded
     /// transparently by the direct socket; raw ESP (proto 50) is still
-    /// dropped by the TUN classifier regardless. The direct path uses
+    /// dropped by the TUN classifier regardless. Direct UDP/4500 flows also
+    /// emit an RFC 3948 §2.3 NAT-keepalive (`0xff`, 1 byte) every 20 s of
+    /// client inactivity (without advancing `last_seen`) and use an idle
+    /// timeout of `max(3600 s, idle_timeout)` for UDP/{500,4500} so multi-layer
+    /// NAT mappings survive long modem Doze gaps. The direct path uses
     /// `direct_fwmark` / `direct_dscp` to escape the TUN routing loop, so this
     /// option only works out-of-the-box in split-tunnel setups; with TUN
     /// catching the default route, set `direct_fwmark` (and configure a

@@ -1021,7 +1021,7 @@ impl TunUdpEngine {
         }
     }
 
-    async fn cleanup_idle_flows(&self) {
+    pub(super) async fn cleanup_idle_flows(&self) {
         let now = Instant::now();
         let idle_timeout = self.inner.idle_timeout;
 

@@ -44,6 +44,9 @@ pub(super) trait FlowStamp {
     fn set_last_seen(&mut self, now: Instant);
     fn eviction_indexed_at(&self) -> Instant;
     fn set_eviction_indexed_at(&mut self, at: Instant);
+    fn idle_timeout(&self, default: Duration) -> Duration {
+        default
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -143,6 +146,10 @@ pub(super) struct DirectUdpFlowState {
     pub(super) last_seen: Instant,
     /// See [`UdpFlowState::eviction_indexed_at`].
     pub(super) eviction_indexed_at: Instant,
+    /// Optional per-flow override of the engine's default `idle_timeout`
+    /// (used for `ipsec_bypass` flows so long modem Doze gaps survive without
+    /// inflating `idle_timeout` for general UDP flows).
+    pub(super) idle_timeout: Option<Duration>,
 }
 
 pub(super) type DirectFlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<DirectUdpFlowState>>>>>;
@@ -180,6 +187,9 @@ impl FlowStamp for DirectUdpFlowState {
     }
     fn set_eviction_indexed_at(&mut self, at: Instant) {
         self.eviction_indexed_at = at;
+    }
+    fn idle_timeout(&self, default: Duration) -> Duration {
+        self.idle_timeout.unwrap_or(default)
     }
 }
 
@@ -258,7 +268,7 @@ where
     for (key, handle) in handles {
         let idle = {
             let flow = handle.lock().await;
-            now.saturating_duration_since(flow.last_seen()) >= idle_timeout
+            now.saturating_duration_since(flow.last_seen()) >= flow.idle_timeout(idle_timeout)
         };
         if idle {
             expired.push((key, handle));

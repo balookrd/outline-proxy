@@ -1007,6 +1007,8 @@ The bypass uses the direct path's local socket. On hosts where TUN holds the def
 
 Default: `false`. Both ports are matched together: IKEv2 moves IKE_AUTH from 500 to 4500 mid-session via NAT_DETECTION, so bypassing only 4500 breaks the handshake.
 
+When `ipsec_bypass = true`, direct UDP/4500 flows automatically emit a standard RFC 3948 §2.3 NAT-keepalive (`0xff`, 1 byte) after every 20 s without client traffic to keep intermediate NAT/conntrack bindings alive during long handset Doze pauses. The synthetic keepalive does not extend the flow's `last_seen` timestamp, and direct UDP/{500,4500} flows use a `max(3600 s, tun.idle_timeout_secs)` idle timeout so flows still reap cleanly once the device leaves the network.
+
 ### Carrier migration (surviving a dead carrier)
 
 A tunnelled TUN flow does not own its transport: it shares one carrier — a single H3/H2/H1 connection — with the other flows on that uplink. When the carrier collapses (an H3 connection-level error takes down everything multiplexed on it at once), every flow on it loses its transport at the same moment, and each application sees its connection die.

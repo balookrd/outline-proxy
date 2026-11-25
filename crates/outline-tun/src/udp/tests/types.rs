@@ -21,6 +21,7 @@ struct TestFlow {
     id: u64,
     last_seen: Instant,
     eviction_indexed_at: Instant,
+    idle_timeout_override: Option<Duration>,
 }
 
 impl FlowStamp for TestFlow {
@@ -38,6 +39,9 @@ impl FlowStamp for TestFlow {
     }
     fn set_eviction_indexed_at(&mut self, at: Instant) {
         self.eviction_indexed_at = at;
+    }
+    fn idle_timeout(&self, default: Duration) -> Duration {
+        self.idle_timeout_override.unwrap_or(default)
     }
 }
 
@@ -77,6 +81,7 @@ async fn idle_sweep_keeps_a_flow_recreated_after_the_snapshot() {
         id: 1,
         last_seen: stale_stamp(now),
         eviction_indexed_at: stale_stamp(now),
+        idle_timeout_override: None,
     }));
     flows.write().await.insert(key.clone(), Arc::clone(&stale));
 
@@ -106,6 +111,7 @@ async fn idle_sweep_keeps_a_flow_recreated_after_the_snapshot() {
         id: 2,
         last_seen: now,
         eviction_indexed_at: now,
+        idle_timeout_override: None,
     }));
     flows.write().await.insert(key.clone(), Arc::clone(&fresh));
 
@@ -137,11 +143,13 @@ async fn idle_sweep_still_evicts_untouched_idle_flows() {
         id: 1,
         last_seen: stale_stamp(now),
         eviction_indexed_at: stale_stamp(now),
+        idle_timeout_override: None,
     }));
     let live = Arc::new(Mutex::new(TestFlow {
         id: 2,
         last_seen: now,
         eviction_indexed_at: now,
+        idle_timeout_override: None,
     }));
     {
         let mut guard = flows.write().await;
@@ -158,4 +166,44 @@ async fn idle_sweep_still_evicts_untouched_idle_flows() {
     let table = flows.read().await;
     assert!(!table.contains_key(&idle_key), "the idle flow must be gone from the table");
     assert!(table.contains_key(&live_key), "the live flow must survive the sweep");
+}
+
+#[tokio::test]
+async fn idle_sweep_respects_per_flow_idle_timeout_override() {
+    let flows: TestTable = Arc::new(RwLock::new(HashMap::new()));
+    let now = Instant::now();
+    let short_key = UdpFlowKey { local_port: 41001, ..flow_key() };
+    let long_key = UdpFlowKey { local_port: 41002, ..flow_key() };
+
+    {
+        let mut guard = flows.write().await;
+        guard.insert(
+            short_key.clone(),
+            Arc::new(Mutex::new(TestFlow {
+                id: 1,
+                last_seen: now - Duration::from_secs(60),
+                eviction_indexed_at: now - Duration::from_secs(60),
+                idle_timeout_override: None,
+            })),
+        );
+        guard.insert(
+            long_key.clone(),
+            Arc::new(Mutex::new(TestFlow {
+                id: 2,
+                last_seen: now - Duration::from_secs(60),
+                eviction_indexed_at: now - Duration::from_secs(60),
+                idle_timeout_override: Some(Duration::from_secs(300)),
+            })),
+        );
+    }
+
+    let drained = drain_idle_flows(&flows, Duration::from_secs(30), now).await;
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].0, short_key);
+    assert!(flows.read().await.contains_key(&long_key));
+
+    let drained_later =
+        drain_idle_flows(&flows, Duration::from_secs(30), now + Duration::from_secs(250)).await;
+    assert_eq!(drained_later.len(), 1);
+    assert_eq!(drained_later[0].0, long_key);
 }

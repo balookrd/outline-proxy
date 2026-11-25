@@ -80,6 +80,25 @@ fn packet_length(data: &[u8]) -> Option<usize> {
 
 /// An engine whose routing table sends everything out `via = "direct"`.
 async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
+    direct_engine_with_ipsec(
+        writer,
+        false,
+        Duration::from_secs(60),
+        crate::routing::IPSEC_NAT_T_PORT,
+        Duration::from_secs(20),
+        Duration::from_secs(3600),
+    )
+    .await
+}
+
+async fn direct_engine_with_ipsec(
+    writer: SharedTunWriter,
+    ipsec_bypass: bool,
+    idle_timeout: Duration,
+    ipsec_nat_t_port: u16,
+    ipsec_nat_keepalive_interval: Duration,
+    ipsec_idle_timeout: Duration,
+) -> TunUdpEngine {
     let manager = build_test_manager_with_urls(None, None).await;
     let table = SharedRoutingTable::new(
         RoutingTable::compile(&RoutingTableConfig {
@@ -95,21 +114,24 @@ async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
         Some(table),
         None,
         None,
-        false,
+        ipsec_bypass,
     );
-    TunUdpEngine::new(
+    TunUdpEngine::new_with_ipsec_params_for_tests(
         writer,
         routing,
         128,
         // No carrier cap: these tests exercise other limits.
         0,
-        Duration::from_secs(60),
+        idle_timeout,
         false,
         false,
         false,
         crate::empty_sniff_override(),
         crate::empty_sniff_override(),
         false,
+        ipsec_nat_t_port,
+        ipsec_nat_keepalive_interval,
+        ipsec_idle_timeout,
     )
 }
 
@@ -261,4 +283,153 @@ async fn direct_downlink_reuses_its_buffer_without_bleeding_between_datagrams() 
             "each downlink datagram must carry exactly its own bytes",
         );
     }
+}
+
+#[tokio::test]
+async fn ipsec_bypass_nat_t_port_emits_rfc3948_keepalive_on_idle() {
+    let (writer, _capture) = TunCapture::new();
+    let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let destination_addr = destination.local_addr().unwrap();
+    let engine = direct_engine_with_ipsec(
+        writer,
+        true,
+        Duration::from_secs(60),
+        destination_addr.port(),
+        Duration::from_millis(50),
+        Duration::from_secs(3600),
+    )
+    .await;
+
+    send_client_datagram(&engine, destination_addr, b"ikev2-init").await;
+
+    let mut buf = vec![0u8; 256];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .expect("timed out waiting for initial datagram")
+        .unwrap();
+    assert_eq!(&buf[..len], b"ikev2-init");
+
+    let (ka_len, _) = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .expect("timed out waiting for RFC 3948 NAT-keepalive")
+        .unwrap();
+    assert_eq!(&buf[..ka_len], &[0xff], "RFC 3948 §2.3 NAT-keepalive must be 1 byte 0xff");
+}
+
+#[tokio::test]
+async fn ipsec_bypass_disabled_or_other_port_does_not_emit_keepalive() {
+    let (writer, _capture) = TunCapture::new();
+    let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let destination_addr = destination.local_addr().unwrap();
+
+    // Case 1: ipsec_bypass = false even when port matches nat_t_port.
+    let engine_disabled = direct_engine_with_ipsec(
+        writer.clone(),
+        false,
+        Duration::from_secs(60),
+        destination_addr.port(),
+        Duration::from_millis(40),
+        Duration::from_secs(3600),
+    )
+    .await;
+    send_client_datagram(&engine_disabled, destination_addr, b"plain-udp").await;
+    let mut buf = vec![0u8; 256];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..len], b"plain-udp");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(120), destination.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "keepalive must not be emitted when ipsec_bypass is false",
+    );
+
+    // Case 2: ipsec_bypass = true, but destination port != nat_t_port.
+    let other_dest = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let other_addr = other_dest.local_addr().unwrap();
+    let engine_other_port = direct_engine_with_ipsec(
+        writer,
+        true,
+        Duration::from_secs(60),
+        destination_addr.port(),
+        Duration::from_millis(40),
+        Duration::from_secs(3600),
+    )
+    .await;
+    send_client_datagram(&engine_other_port, other_addr, b"non-nat-t").await;
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), other_dest.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..len], b"non-nat-t");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(120), other_dest.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "keepalive must not be emitted on ports other than NAT-T",
+    );
+}
+
+#[tokio::test]
+async fn ipsec_nat_keepalive_does_not_extend_last_seen_past_ipsec_idle_timeout() {
+    let (writer, _capture) = TunCapture::new();
+    let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let destination_addr = destination.local_addr().unwrap();
+    let engine = direct_engine_with_ipsec(
+        writer,
+        true,
+        Duration::from_millis(80),
+        destination_addr.port(),
+        Duration::from_millis(30),
+        Duration::from_millis(220),
+    )
+    .await;
+
+    send_client_datagram(&engine, destination_addr, b"start").await;
+    let mut buf = vec![0u8; 256];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), destination.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..len], b"start");
+
+    // Past general idle_timeout (80ms), the ipsec flow must still survive cleanup.
+    tokio::time::sleep(Duration::from_millis(110)).await;
+    engine.cleanup_idle_flows().await;
+    assert!(
+        engine
+            .inner
+            .direct_flows
+            .read()
+            .await
+            .contains_key(&flow_key(destination_addr)),
+        "ipsec_bypass flow must outlive general idle_timeout",
+    );
+
+    // Past ipsec_idle_timeout (220ms), synthetic keepalives must NOT have extended last_seen.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    engine.cleanup_idle_flows().await;
+    assert!(
+        !engine
+            .inner
+            .direct_flows
+            .read()
+            .await
+            .contains_key(&flow_key(destination_addr)),
+        "ipsec_bypass flow must be reaped after ipsec_idle_timeout despite synthetic keepalives",
+    );
+
+    // Drain any keepalive already in flight, then confirm the sender stopped.
+    while tokio::time::timeout(Duration::from_millis(60), destination.recv_from(&mut buf))
+        .await
+        .is_ok()
+    {}
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), destination.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "sender task must stop sending keepalives once the flow is reaped",
+    );
 }

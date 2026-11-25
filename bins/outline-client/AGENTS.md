@@ -412,10 +412,13 @@ cargo client-release-musl-aarch64
   `dashboard.html`; в `outline-client-dashboard.json` (внешний репозиторий мониторинга парка) — панели
   Direct Bypass (id 230/231) в секции Routing Policy.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
-  `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
-  выхода из TUN routing loop. Не оптимизируйте этот fast-path так, чтобы он
-  скрывал отсутствие `direct_fwmark` на Linux — стартовое предупреждение об
-  этой комбинации должно сохраняться.
+  `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` /
+  `direct_dscp` для выхода из TUN routing loop. Прямые UDP/4500-флоу при
+  этом шлют RFC 3948 §2.3 NAT-keepalive (`0xff`, 1 байт раз в 20 с простоя,
+  без сдвига `last_seen`) и имеют per-flow `idle_timeout = max(3600 с,
+  tun.idle_timeout_secs)`. Не оптимизируйте этот fast-path так, чтобы он
+  скрывал отсутствие `direct_fwmark`/`direct_dscp` на Linux — стартовое
+  предупреждение об этой комбинации должно сохраняться.
 - TUN direct egress без DNS: TUN ingress всегда несёт литеральный IP-таргет
   (`wire::ip_to_target` никогда не возвращает `Domain`), поэтому ветка
   `TunRoute::Direct` в `spawn_upstream_connect` обязана строить `SocketAddr`
