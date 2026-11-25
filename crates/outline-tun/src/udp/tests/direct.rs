@@ -285,8 +285,14 @@ async fn direct_downlink_reuses_its_buffer_without_bleeding_between_datagrams() 
     }
 }
 
+/// Process-global keepalive gauge (`outline_ws_tun_ipsec_nat_keepalive_flows_active`)
+/// is shared across parallel test threads, so tests that spawn keepalive-emulating
+/// flows serialize on this lock and wait for `AbortOnDrop` teardown before releasing it.
+static IPSEC_KEEPALIVE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn ipsec_bypass_nat_t_port_emits_rfc3948_keepalive_on_idle() {
+    let _serial = IPSEC_KEEPALIVE_TEST_LOCK.lock().await;
     let (writer, _capture) = TunCapture::new();
     let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
     let destination_addr = destination.local_addr().unwrap();
@@ -314,6 +320,8 @@ async fn ipsec_bypass_nat_t_port_emits_rfc3948_keepalive_on_idle() {
         .expect("timed out waiting for RFC 3948 NAT-keepalive")
         .unwrap();
     assert_eq!(&buf[..ka_len], &[0xff], "RFC 3948 §2.3 NAT-keepalive must be 1 byte 0xff");
+    drop(engine);
+    tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
 #[tokio::test]
@@ -374,6 +382,7 @@ async fn ipsec_bypass_disabled_or_other_port_does_not_emit_keepalive() {
 
 #[tokio::test]
 async fn ipsec_nat_keepalive_does_not_extend_last_seen_past_ipsec_idle_timeout() {
+    let _serial = IPSEC_KEEPALIVE_TEST_LOCK.lock().await;
     let (writer, _capture) = TunCapture::new();
     let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
     let destination_addr = destination.local_addr().unwrap();
@@ -432,6 +441,8 @@ async fn ipsec_nat_keepalive_does_not_extend_last_seen_past_ipsec_idle_timeout()
             .is_err(),
         "sender task must stop sending keepalives once the flow is reaped",
     );
+    drop(engine);
+    tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
 fn scalar_metric_value(name: &str) -> i64 {
@@ -445,16 +456,17 @@ fn scalar_metric_value(name: &str) -> i64 {
 
 #[tokio::test]
 async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
+    let _serial = IPSEC_KEEPALIVE_TEST_LOCK.lock().await;
     let (writer, _capture) = TunCapture::new();
     let destination = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
     let destination_addr = destination.local_addr().unwrap();
     let engine = direct_engine_with_ipsec(
         writer,
         true,
-        Duration::from_millis(80),
+        Duration::from_millis(60),
         destination_addr.port(),
-        Duration::from_millis(40),
-        Duration::from_millis(500),
+        Duration::from_millis(30),
+        Duration::from_millis(120),
     )
     .await;
 
@@ -481,8 +493,14 @@ async fn ipsec_nat_keepalive_metrics_track_active_flows_and_packets() {
         scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_packets_total") > packets_before,
     );
 
-    drop(engine);
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    engine.cleanup_idle_flows().await;
+    for _ in 0..100 {
+        if scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active") == active_before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert_eq!(
         scalar_metric_value("outline_ws_tun_ipsec_nat_keepalive_flows_active"),
         active_before,
