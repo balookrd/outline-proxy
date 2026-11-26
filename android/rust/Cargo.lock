@@ -1431,8 +1431,10 @@ name = "outline-net"
 version = "26.11.3"
 dependencies = [
  "anyhow",
+ "bytes",
  "hashbrown 0.17.1",
  "libc",
+ "outline-wire",
  "parking_lot 0.13.0",
  "rand 0.10.3",
  "socket2",
