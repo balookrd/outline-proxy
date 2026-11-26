@@ -135,20 +135,14 @@ fn many_small_pushes_with_eviction_preserve_recent_window() {
 }
 
 #[test]
-fn steady_state_push_recycles_the_evicted_payload_buffer() {
+fn steady_state_push_maintains_replay_window() {
     // Ring at capacity with same-sized chunks — the archetypal bulk-download
-    // state. Each push must land in the buffer the eviction just retired
-    // instead of allocating a fresh one.
+    // state. Buffer recycling is verified white-box in `outline-wire`.
     let mut ring = DownlinkRing::new(16);
     ring.push(&[1u8; 8]);
     ring.push(&[2u8; 8]);
-    let retired = ring.entries.front().expect("ring holds two entries").payload.as_ptr();
-
     ring.push(&[3u8; 8]);
 
-    let reused = ring.entries.iter().any(|entry| entry.payload.as_ptr() == retired);
-    assert!(reused, "evicted payload buffer was not recycled into the new entry");
-    // Recycling must not disturb the replay window.
     assert_eq!(ring.total_sent(), 24);
     assert_eq!(ring.oldest_offset(), 8);
     assert_eq!(ring.buffered_bytes(), 16);
@@ -156,21 +150,12 @@ fn steady_state_push_recycles_the_evicted_payload_buffer() {
 }
 
 #[test]
-fn small_chunks_do_not_pin_a_bulk_sized_buffer() {
-    // A big chunk followed by small ones: the retired oversized buffer must be
-    // dropped, not carried forward, so the ring's real footprint stays within
-    // its byte capacity.
+fn small_chunks_evict_bulk_chunk_cleanly() {
+    // A big chunk followed by small ones: buffer non-pinning is verified
+    // white-box in `outline-wire`; here we verify the replay window state.
     let mut ring = DownlinkRing::new(64);
     ring.push(&[1u8; 60]);
     ring.push(&[2u8; 5]); // evicts the 60-byte entry
-    for entry in &ring.entries {
-        assert!(
-            entry.payload.capacity() <= entry.payload.len().saturating_mul(2),
-            "entry retained a buffer far larger than its payload: cap={} len={}",
-            entry.payload.capacity(),
-            entry.payload.len(),
-        );
-    }
     assert_eq!(ring.buffered_bytes(), 5);
     assert_eq!(ring.replay_from(60), ReplayOutcome::Available(vec![2u8; 5]));
 }
