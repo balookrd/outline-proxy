@@ -47,6 +47,15 @@ pub enum CryptoError {
     #[error("UDP packet is too short")]
     UdpPacketTooShort,
 
+    #[error("invalid encrypted length header")]
+    InvalidLengthHeader,
+
+    #[error("unsupported chunk size {0}")]
+    InvalidChunkSize(usize),
+
+    #[error("decrypted fixed header length mismatch")]
+    InvalidHeaderLength,
+
     #[error("{0}")]
     Protocol(&'static str),
 }

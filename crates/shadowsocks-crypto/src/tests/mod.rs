@@ -115,3 +115,34 @@ fn ss2022_chacha_udp_packet_round_trip() {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+#[test]
+fn stream_nonce_advances_little_endian_and_caps_at_2_pow_32() {
+    let mut n = crate::StreamNonce::new();
+    assert_eq!(n.next().unwrap(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(n.next().unwrap(), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+    let mut near = crate::StreamNonce::from_counter(crate::MAX_STREAM_NONCE_COUNTER - 1);
+    let last = near.next().unwrap();
+    assert_eq!(&last[..4], &[0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(&last[4..], &[0; 8]);
+    assert!(matches!(near.next(), Err(crate::CryptoError::NonceOverflow)));
+}
+
+#[test]
+fn aes_header_and_xchacha_ciphers_round_trip() {
+    let key32 = [0x42u8; 32];
+    let hdr_cipher = crate::AesHeaderCipher::new(crate::CipherKind::Aes256Gcm2022, &key32).unwrap();
+    let block = [0xABu8; 16];
+    let enc = hdr_cipher.encrypt_header(&block);
+    assert_ne!(enc, block);
+    assert_eq!(hdr_cipher.decrypt_header(&enc).unwrap(), block);
+
+    let xcipher = crate::XChaChaCipher::new(&key32).unwrap();
+    let nonce = [0x11u8; 24];
+    let mut buf = b"hello xchacha".to_vec();
+    let tag = xcipher.seal_in_place_separate_tag(&nonce, &mut buf).unwrap();
+    buf.extend_from_slice(&tag);
+    let len = xcipher.decrypt_detached_in_place(&nonce, &mut buf).unwrap();
+    assert_eq!(&buf[..len], b"hello xchacha");
+}

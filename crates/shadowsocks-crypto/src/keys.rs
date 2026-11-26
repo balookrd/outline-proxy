@@ -1,5 +1,4 @@
-use hkdf::Hkdf;
-use sha1::Sha1;
+use aws_lc_rs::hkdf;
 use zeroize::Zeroizing;
 
 use crate::cipher_kind::CipherKind;
@@ -11,6 +10,14 @@ use crate::error::{CryptoError, Result};
 pub use outline_wire::SS_SUBKEY_INFO as SHADOWSOCKS_INFO;
 pub use outline_wire::evp_bytes_to_key;
 pub use outline_wire::ss2022::SS2022_SUBKEY_CONTEXT as SHADOWSOCKS_2022_INFO;
+
+struct HkdfLen(usize);
+
+impl hkdf::KeyType for HkdfLen {
+    fn len(&self) -> usize {
+        self.0
+    }
+}
 
 /// Derives a session subkey from `master_key` and `salt`.
 ///
@@ -31,8 +38,12 @@ pub fn derive_subkey(
     if cipher.is_ss2022() {
         outline_wire::ss2022::ss2022_session_subkey_into(master_key, salt, &mut subkey[..key_len]);
     } else {
-        let hk = Hkdf::<Sha1>::new(Some(salt), master_key);
-        hk.expand(SHADOWSOCKS_INFO, &mut subkey[..key_len])
+        let salt = hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt);
+        let prk = salt.extract(master_key);
+        let okm = prk
+            .expand(&[SHADOWSOCKS_INFO], HkdfLen(key_len))
+            .map_err(|_| CryptoError::HkdfExpandFailed)?;
+        okm.fill(&mut subkey[..key_len])
             .map_err(|_| CryptoError::HkdfExpandFailed)?;
     }
     Ok(subkey)

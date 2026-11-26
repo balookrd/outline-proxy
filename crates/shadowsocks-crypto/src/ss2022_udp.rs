@@ -166,26 +166,91 @@ fn decrypt_udp_packet_2022_aes(
     Ok((session_id, packet_id, payload.to_vec()))
 }
 
+/// Pre-initialised AES-128 / AES-256 ECB cipher for SS2022 UDP separate headers.
+pub enum AesHeaderCipher {
+    Aes128(Aes128),
+    Aes256(Aes256),
+}
+
+impl AesHeaderCipher {
+    pub fn new(cipher: CipherKind, master_key: &[u8]) -> Result<Self> {
+        match cipher {
+            CipherKind::Aes128Gcm2022 => Aes128::new_from_slice(master_key)
+                .map(Self::Aes128)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 }),
+            CipherKind::Aes256Gcm2022 => Aes256::new_from_slice(master_key)
+                .map(Self::Aes256)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 }),
+            _ => Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
+        }
+    }
+
+    pub fn encrypt_header(&self, header: &[u8; 16]) -> [u8; 16] {
+        let mut block = *header;
+        match self {
+            Self::Aes128(cipher) => cipher.encrypt_block((&mut block).into()),
+            Self::Aes256(cipher) => cipher.encrypt_block((&mut block).into()),
+        }
+        block
+    }
+
+    pub fn decrypt_header(&self, header: &[u8; 16]) -> Result<[u8; 16]> {
+        let mut block = *header;
+        match self {
+            Self::Aes128(cipher) => cipher.decrypt_block((&mut block).into()),
+            Self::Aes256(cipher) => cipher.decrypt_block((&mut block).into()),
+        }
+        Ok(block)
+    }
+}
+
+/// Pre-initialised XChaCha20-Poly1305 cipher for SS2022 UDP packets.
+pub struct XChaChaCipher(XChaCha20Poly1305);
+
+impl XChaChaCipher {
+    pub fn new(master_key: &[u8]) -> Result<Self> {
+        XChaCha20Poly1305::new_from_slice(master_key)
+            .map(Self)
+            .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })
+    }
+
+    pub fn seal_in_place_separate_tag(
+        &self,
+        nonce: &[u8; 24],
+        in_out: &mut [u8],
+    ) -> Result<[u8; SHADOWSOCKS_TAG_LEN]> {
+        let tag = self
+            .0
+            .encrypt_inout_detached(nonce.into(), b"", in_out.into())
+            .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
+        Ok(tag.into())
+    }
+
+    pub fn decrypt_detached_in_place(&self, nonce: &[u8; 24], buf: &mut [u8]) -> Result<usize> {
+        if buf.len() < SHADOWSOCKS_TAG_LEN {
+            return Err(CryptoError::ShortCiphertext);
+        }
+        let split_at = buf.len() - SHADOWSOCKS_TAG_LEN;
+        let mut tag_arr = [0u8; SHADOWSOCKS_TAG_LEN];
+        tag_arr.copy_from_slice(&buf[split_at..]);
+        self.0
+            .decrypt_inout_detached(
+                nonce.into(),
+                b"",
+                (&mut buf[..split_at]).into(),
+                (&tag_arr).into(),
+            )
+            .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_XCHACHA })?;
+        Ok(split_at)
+    }
+}
+
 pub fn encrypt_udp_separate_header(
     cipher: CipherKind,
     master_key: &[u8],
     header: &[u8; 16],
 ) -> Result<[u8; 16]> {
-    let mut block = *header;
-    match cipher {
-        CipherKind::Aes128Gcm2022 => {
-            let cipher = Aes128::new_from_slice(master_key)
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
-            cipher.encrypt_block((&mut block).into());
-        },
-        CipherKind::Aes256Gcm2022 => {
-            let cipher = Aes256::new_from_slice(master_key)
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
-            cipher.encrypt_block((&mut block).into());
-        },
-        _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
-    }
-    Ok(block)
+    Ok(AesHeaderCipher::new(cipher, master_key)?.encrypt_header(header))
 }
 
 pub fn decrypt_udp_separate_header(
@@ -193,21 +258,7 @@ pub fn decrypt_udp_separate_header(
     master_key: &[u8],
     header: &[u8; 16],
 ) -> Result<[u8; 16]> {
-    let mut block = *header;
-    match cipher {
-        CipherKind::Aes128Gcm2022 => {
-            let cipher = Aes128::new_from_slice(master_key)
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
-            cipher.decrypt_block((&mut block).into());
-        },
-        CipherKind::Aes256Gcm2022 => {
-            let cipher = Aes256::new_from_slice(master_key)
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
-            cipher.decrypt_block((&mut block).into());
-        },
-        _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
-    }
-    Ok(block)
+    AesHeaderCipher::new(cipher, master_key)?.decrypt_header(header)
 }
 
 pub(crate) fn encrypt_udp_packet_2022_chacha(
@@ -231,8 +282,7 @@ pub(crate) fn seal_xchacha_packet(
     nonce: &[u8; 24],
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new_from_slice(master_key)
-        .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
+    let cipher = XChaChaCipher::new(master_key)?;
 
     // Encrypt in place inside the final packet (nonce prefix + plaintext region)
     // instead of into a throwaway `buffer` that is then copied in — the second
@@ -240,9 +290,7 @@ pub(crate) fn seal_xchacha_packet(
     let mut packet = Vec::with_capacity(nonce.len() + plaintext.len() + SHADOWSOCKS_TAG_LEN);
     packet.extend_from_slice(nonce);
     packet.extend_from_slice(plaintext);
-    let tag = cipher
-        .encrypt_inout_detached(nonce.into(), b"", (&mut packet[nonce.len()..]).into())
-        .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
+    let tag = cipher.seal_in_place_separate_tag(nonce, &mut packet[nonce.len()..])?;
     packet.extend_from_slice(&tag);
     Ok(packet)
 }
@@ -263,15 +311,10 @@ fn decrypt_udp_packet_2022_chacha(
     let (nonce, rest) = packet
         .split_first_chunk::<24>()
         .ok_or(CryptoError::UdpPacketTooShort)?;
-    let (body, tag) = rest
-        .split_last_chunk::<SHADOWSOCKS_TAG_LEN>()
-        .ok_or(CryptoError::UdpPacketTooShort)?;
-    let mut buffer = body.to_vec();
-    let cipher = XChaCha20Poly1305::new_from_slice(master_key)
-        .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
-    cipher
-        .decrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into(), tag.into())
-        .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_XCHACHA })?;
+    let mut buffer = rest.to_vec();
+    let cipher = XChaChaCipher::new(master_key)?;
+    let plaintext_len = cipher.decrypt_detached_in_place(nonce, &mut buffer)?;
+    buffer.truncate(plaintext_len);
 
     let expected = expected_session_bytes(expected_client_session_id);
     let response = parse_chacha_udp_response_body(&buffer, expected.as_ref(), unix_now_secs()?)

@@ -1,81 +1,85 @@
-use aes_gcm::aead::AeadInOut;
-use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit};
-use chacha20poly1305::ChaCha20Poly1305;
+use aws_lc_rs::aead::{
+    AES_128_GCM, AES_256_GCM, Aad, Algorithm, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey,
+};
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
+use crate::keys::derive_subkey;
 
 pub const SHADOWSOCKS_TAG_LEN: usize = 16;
+pub const SHADOWSOCKS_NONCE_LEN: usize = 12;
+pub const SHADOWSOCKS_XNONCE_LEN: usize = 24;
+pub const LEGACY_MAX_PAYLOAD_LEN: usize = 0x3fff;
 pub const SHADOWSOCKS_MAX_PAYLOAD: usize = 0xffff;
+/// Maximum number of AEAD calls allowed per stream key (NIST SP 800-38D).
+pub const MAX_STREAM_NONCE_COUNTER: u64 = 1 << 32;
 
 const CIPHER_CHACHA: &str = "chacha20-poly1305";
 const CIPHER_AES_128: &str = "aes-128-gcm";
 const CIPHER_AES_256: &str = "aes-256-gcm";
 
-/// A pre-initialised AEAD cipher instance.
+/// A pre-initialised AEAD cipher instance backed by `aws-lc-rs`.
 ///
-/// Constructing an `Aes128Gcm` / `Aes256Gcm` / `ChaCha20Poly1305` from a key
-/// performs the per-key setup (AES key expansion, etc.). Doing that once per
-/// session and then reusing the instance for every chunk avoids the setup
-/// cost on the hot path — `TcpShadowsocksWriter::send_payload_frame` encrypts
-/// twice per frame (length block + payload), so an active session performs
-/// this key setup thousands of times over its lifetime without an instance
-/// cache.
-pub enum AeadCipher {
-    Chacha(Box<ChaCha20Poly1305>),
-    Aes128(Box<Aes128Gcm>),
-    Aes256(Box<Aes256Gcm>),
+/// Constructing a [`LessSafeKey`] performs the per-key setup once per session
+/// so reusing the instance across frames avoids repeating key expansion on the
+/// hot path.
+pub struct AeadCipher {
+    key: LessSafeKey,
+    cipher_name: &'static str,
 }
 
 impl AeadCipher {
     pub fn new(cipher: CipherKind, key: &[u8]) -> Result<Self> {
-        match cipher {
+        let (alg, cipher_name): (&'static Algorithm, &'static str) = match cipher {
             CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
-                ChaCha20Poly1305::new_from_slice(key)
-                    .map(|c| Self::Chacha(Box::new(c)))
-                    .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_CHACHA })
+                (&CHACHA20_POLY1305, CIPHER_CHACHA)
             },
-            CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => Aes128Gcm::new_from_slice(key)
-                .map(|c| Self::Aes128(Box::new(c)))
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128 }),
-            CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => Aes256Gcm::new_from_slice(key)
-                .map(|c| Self::Aes256(Box::new(c)))
-                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256 }),
-        }
+            CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => (&AES_128_GCM, CIPHER_AES_128),
+            CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => (&AES_256_GCM, CIPHER_AES_256),
+        };
+        let unbound = UnboundKey::new(alg, key)
+            .map_err(|_| CryptoError::InvalidKey { cipher: cipher_name })?;
+        Ok(Self {
+            key: LessSafeKey::new(unbound),
+            cipher_name,
+        })
+    }
+
+    pub fn from_master_and_salt(
+        cipher: CipherKind,
+        master_key: &[u8],
+        salt: &[u8],
+    ) -> Result<Self> {
+        let subkey = derive_subkey(cipher, master_key, salt)?;
+        Self::new(cipher, &subkey[..cipher.key_len()])
+    }
+
+    pub fn seal_in_place_separate_tag(
+        &self,
+        nonce: &[u8; 12],
+        in_out: &mut [u8],
+    ) -> Result<[u8; SHADOWSOCKS_TAG_LEN]> {
+        let tag = self
+            .key
+            .seal_in_place_separate_tag(Nonce::assume_unique_for_key(*nonce), Aad::empty(), in_out)
+            .map_err(|_| CryptoError::EncryptFailed { cipher: self.cipher_name })?;
+        let mut out = [0u8; SHADOWSOCKS_TAG_LEN];
+        out.copy_from_slice(tag.as_ref());
+        Ok(out)
     }
 
     pub fn encrypt(&self, nonce: &[u8; 12], payload: &[u8]) -> Result<Vec<u8>> {
-        let mut buffer = payload.to_vec();
-        let tag = match self {
-            Self::Chacha(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
-            Self::Aes128(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
-            Self::Aes256(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
-        };
-        buffer.extend_from_slice(&tag);
+        let mut buffer = Vec::with_capacity(payload.len() + SHADOWSOCKS_TAG_LEN);
+        self.encrypt_into(nonce, payload, &mut buffer)?;
         Ok(buffer)
     }
 
     /// Encrypt `payload` in-place into `out`, appending ciphertext + tag.
     pub fn encrypt_into(&self, nonce: &[u8; 12], payload: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        out.reserve(payload.len() + SHADOWSOCKS_TAG_LEN);
         let start = out.len();
         out.extend_from_slice(payload);
-        let tag = match self {
-            Self::Chacha(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
-            Self::Aes128(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
-            Self::Aes256(c) => c
-                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
-                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
-        };
+        let tag = self.seal_in_place_separate_tag(nonce, &mut out[start..])?;
         out.extend_from_slice(&tag);
         Ok(())
     }
@@ -94,37 +98,11 @@ impl AeadCipher {
         if buf.len() < SHADOWSOCKS_TAG_LEN {
             return Err(CryptoError::ShortCiphertext);
         }
-        let split_at = buf.len() - SHADOWSOCKS_TAG_LEN;
-        // Copy the tag to the stack before taking &mut buf[..split_at].
-        let mut tag_arr = [0u8; SHADOWSOCKS_TAG_LEN];
-        tag_arr.copy_from_slice(&buf[split_at..]);
-        match self {
-            Self::Chacha(c) => c
-                .decrypt_inout_detached(
-                    nonce.into(),
-                    b"",
-                    (&mut buf[..split_at]).into(),
-                    (&tag_arr).into(),
-                )
-                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_CHACHA })?,
-            Self::Aes128(c) => c
-                .decrypt_inout_detached(
-                    nonce.into(),
-                    b"",
-                    (&mut buf[..split_at]).into(),
-                    (&tag_arr).into(),
-                )
-                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_128 })?,
-            Self::Aes256(c) => c
-                .decrypt_inout_detached(
-                    nonce.into(),
-                    b"",
-                    (&mut buf[..split_at]).into(),
-                    (&tag_arr).into(),
-                )
-                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
-        };
-        Ok(split_at)
+        let plaintext = self
+            .key
+            .open_in_place(Nonce::assume_unique_for_key(*nonce), Aad::empty(), buf)
+            .map_err(|_| CryptoError::DecryptFailed { cipher: self.cipher_name })?;
+        Ok(plaintext.len())
     }
 
     /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place and truncate it to
@@ -133,6 +111,53 @@ impl AeadCipher {
         let plaintext_len = self.decrypt_detached_in_place(nonce, buf)?;
         buf.truncate(plaintext_len);
         Ok(())
+    }
+
+    /// Decrypt a fixed-length AEAD frame in place and verify its plaintext length.
+    pub fn open_fixed_in_place<'a>(
+        &self,
+        nonce: &[u8; 12],
+        ciphertext: &'a mut [u8],
+        expected_plaintext_len: usize,
+    ) -> Result<&'a [u8]> {
+        let plaintext = self
+            .key
+            .open_in_place(Nonce::assume_unique_for_key(*nonce), Aad::empty(), ciphertext)
+            .map_err(|_| CryptoError::DecryptFailed { cipher: self.cipher_name })?;
+        if plaintext.len() != expected_plaintext_len {
+            return Err(CryptoError::InvalidHeaderLength);
+        }
+        Ok(plaintext)
+    }
+}
+
+/// Little-endian 96-bit stream nonce capped at [`MAX_STREAM_NONCE_COUNTER`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamNonce(u64);
+
+impl StreamNonce {
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    pub const fn from_counter(counter: u64) -> Self {
+        Self(counter)
+    }
+
+    pub const fn counter(&self) -> u64 {
+        self.0
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<[u8; SHADOWSOCKS_NONCE_LEN]> {
+        let current = self.0;
+        if current >= MAX_STREAM_NONCE_COUNTER {
+            return Err(CryptoError::NonceOverflow);
+        }
+        self.0 = current + 1;
+        let mut nonce = [0u8; SHADOWSOCKS_NONCE_LEN];
+        nonce[..8].copy_from_slice(&current.to_le_bytes());
+        Ok(nonce)
     }
 }
 

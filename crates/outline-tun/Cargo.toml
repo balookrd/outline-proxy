@@ -33,7 +33,7 @@ outline-transport = { path = "../outline-transport" }
 outline-uplink = { path = "../outline-uplink", default-features = false }
 parking_lot = { workspace = true }
 rand = { workspace = true }
-sha2 = "0.11"
+sha2 = { workspace = true }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
