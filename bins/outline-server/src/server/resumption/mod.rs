@@ -14,9 +14,9 @@ mod config;
 pub(crate) mod downlink_ring;
 mod parked;
 mod registry;
-mod session_id;
 
 pub(super) use config::ResumptionConfig;
+pub(crate) use outline_wire::resume::SessionId;
 pub(super) use parked::{
     Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedProtocol, ParkedSsUdpStream, ParkedTcp,
     ParkedVlessMux, ParkedVlessUdpSingle,
@@ -25,4 +25,3 @@ pub(super) use registry::{
     ClusterIdentity, OrphanRegistry, PARK_HARVEST_WAIT, ParkProbe, ParkQuery, ParkShape,
     ResumeMiss, ResumeOutcome,
 };
-pub(super) use session_id::SessionId;

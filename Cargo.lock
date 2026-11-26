@@ -3690,6 +3690,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "http",
  "md5",
  "proptest",
  "quinn",

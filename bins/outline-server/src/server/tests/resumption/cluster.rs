@@ -43,7 +43,6 @@ use outline_wire::resume::{
     SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER, parse_v1,
 };
 use quinn::Endpoint;
-use ring::rand::SystemRandom;
 use rustls::pki_types::CertificateDer;
 use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, Message as H3Message, Role as H3Role,
@@ -756,10 +755,10 @@ async fn spawn_combined_xhttp_h3_node(
 fn resume_id_for_shard(psk: &[u8], shard: u8) -> Result<SessionId> {
     let key = ObfuscationKey::derive_from_psk(psk);
     Ok(SessionId::random_with_shard(
-        &SystemRandom::new(),
+        &mut rand::rng(),
         &key,
         ShardId::new(shard).unwrap(),
-    )?)
+    ))
 }
 
 /// A TCP target that accepts connections and then never reads from them, so a

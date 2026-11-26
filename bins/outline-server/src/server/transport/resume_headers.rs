@@ -242,9 +242,8 @@ pub(in crate::server) fn edge_route(
                     .and_then(|v| v.to_str().ok())
                     .and_then(SessionId::parse_hex)
                 && let RouteDecision::Relay(shard) = decide(Some(id), Some(affinity_id))
-                && let Ok(fresh_id) =
-                    SessionId::random_with_shard(&ring::rand::SystemRandom::new(), &id.key, shard)
             {
+                let fresh_id = SessionId::random_with_shard(&mut rand::rng(), &id.key, shard);
                 let advert = EdgeResumeAdvert {
                     session_id: fresh_id,
                     resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),

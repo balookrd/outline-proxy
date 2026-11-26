@@ -9,6 +9,12 @@
 //! client's dial plumbing stay in their respective crates — only the
 //! format-level vocabulary is here.
 
+use std::fmt;
+
+use rand::Rng;
+
+use crate::cluster::{ObfuscationKey, ShardId, decode_shard, encode_session_id};
+
 /// Lower-cased name of the request header carrying the Session ID a
 /// client wishes to resume.
 pub const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
@@ -264,6 +270,102 @@ pub mod downlink_replay {
                 .expect("FRAME_HEADER_LEN_V1 guarantees 8 bytes here"),
         );
         ParseResult::Valid { flags, replay_len }
+    }
+}
+
+/// Server-minted opaque 16-byte token identifying a resumable session.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId([u8; 16]);
+
+impl SessionId {
+    /// Length, in characters, of [`Self::to_hex`] output.
+    pub const HEX_LEN: usize = 32;
+
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Draws a fresh random identifier from `rng`.
+    pub fn random<R: Rng + ?Sized>(rng: &mut R) -> Self {
+        let mut bytes = [0u8; 16];
+        rng.fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
+    /// Draws a fresh identifier carrying the obfuscated cluster `shard` under `key`.
+    pub fn random_with_shard<R: Rng + ?Sized>(
+        rng: &mut R,
+        key: &ObfuscationKey,
+        shard: ShardId,
+    ) -> Self {
+        let mut entropy = [0u8; 16];
+        rng.fill_bytes(&mut entropy);
+        Self(encode_session_id(key, shard, &entropy))
+    }
+
+    /// Decodes the cluster shard embedded in this id under `key`.
+    pub fn shard(&self, key: &ObfuscationKey) -> ShardId {
+        decode_shard(key, &self.0)
+    }
+
+    /// Lowercase 32-hex-char representation suitable for HTTP headers.
+    pub fn to_hex(self) -> String {
+        let mut out = String::with_capacity(Self::HEX_LEN);
+        for byte in &self.0 {
+            out.push(hex_nibble(byte >> 4));
+            out.push(hex_nibble(byte & 0x0f));
+        }
+        out
+    }
+
+    /// Parses a 32-character hex value (case-insensitive).
+    pub fn parse_hex(s: &str) -> Option<Self> {
+        if s.len() != Self::HEX_LEN {
+            return None;
+        }
+        let bytes = s.as_bytes();
+        let mut out = [0u8; 16];
+        for i in 0..16 {
+            let hi = hex_value(bytes[2 * i])?;
+            let lo = hex_value(bytes[2 * i + 1])?;
+            out[i] = (hi << 4) | lo;
+        }
+        Some(Self(out))
+    }
+}
+
+impl fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Truncate so logs stay readable; the full ID is a bearer token.
+        let hex = self.to_hex();
+        write!(f, "SessionId({}…)", &hex[..8])
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+const fn hex_nibble(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'a' + n - 10) as char,
+        _ => '?',
+    }
+}
+
+const fn hex_value(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
     }
 }
 

@@ -11,13 +11,12 @@ use std::{
 use dashmap::DashMap;
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use parking_lot::Mutex;
-use ring::rand::SystemRandom;
 use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::metrics::Metrics;
 
-use super::{config::ResumptionConfig, parked::Parked, session_id::SessionId};
+use super::{SessionId, config::ResumptionConfig, parked::Parked};
 
 /// Upper bound on how long a `take_for_resume` waits for an in-flight park to
 /// commit before concluding a miss. The park side only holds a reservation
@@ -174,7 +173,6 @@ struct ParkedEntry {
 /// Process-wide registry of parked sessions.
 pub(crate) struct OrphanRegistry {
     config: ResumptionConfig,
-    rng: SystemRandom,
     by_id: DashMap<SessionId, ParkedEntry>,
     /// Session ids with a park *in flight*: reserved before the parking side
     /// harvests its reader (a step that awaits), and cleared once the entry is
@@ -200,7 +198,6 @@ impl OrphanRegistry {
     pub(crate) fn new(config: ResumptionConfig, metrics: Arc<Metrics>) -> Self {
         Self {
             config,
-            rng: SystemRandom::new(),
             by_id: DashMap::new(),
             reservations: DashMap::new(),
             per_user: DashMap::new(),
@@ -334,19 +331,11 @@ impl OrphanRegistry {
         if !self.enabled() {
             return None;
         }
-        let minted = match &self.cluster {
-            Some(identity) => {
-                SessionId::random_with_shard(&self.rng, &identity.key, identity.shard)
-            },
-            None => SessionId::random(&self.rng),
-        };
-        match minted {
-            Ok(id) => Some(id),
-            Err(error) => {
-                warn!(?error, "csprng failure minting session id; resumption unavailable");
-                None
-            },
-        }
+        let mut rng = rand::rng();
+        Some(match &self.cluster {
+            Some(identity) => SessionId::random_with_shard(&mut rng, &identity.key, identity.shard),
+            None => SessionId::random(&mut rng),
+        })
     }
 
     /// Mint a fresh unique [`SessionId`] stamped with a specific foreign
@@ -361,13 +350,7 @@ impl OrphanRegistry {
             return None;
         }
         let id = self.cluster.as_ref()?;
-        match SessionId::random_with_shard(&self.rng, &id.key, shard) {
-            Ok(sid) => Some(sid),
-            Err(error) => {
-                warn!(?error, "csprng failure minting home-affinity session id");
-                None
-            },
-        }
+        Some(SessionId::random_with_shard(&mut rand::rng(), &id.key, shard))
     }
 
     /// Reserves `id` for an imminent park, returning an RAII guard the parking

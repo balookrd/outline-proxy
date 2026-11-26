@@ -6,7 +6,9 @@
 //! below exercise the exact pairs the server emits and the client
 //! consumes (previously each side tested against a private copy).
 
-use super::{FLAGS_NONE, FRAME_LEN_V1, MAGIC, ParseResult, VERSION_V1, build_v1_payload, parse_v1};
+use super::{
+    FLAGS_NONE, FRAME_LEN_V1, MAGIC, ParseResult, SessionId, VERSION_V1, build_v1_payload, parse_v1,
+};
 
 #[test]
 fn payload_layout_matches_spec() {
@@ -210,5 +212,46 @@ proptest::proptest! {
     fn control_frame_parsers_never_panic(buf: Vec<u8>) {
         let _ = parse_v1(&buf);
         let _ = super::downlink_replay::parse_v1(&buf);
+    }
+}
+
+#[test]
+fn session_id_round_trip_hex_and_case_folding() {
+    let mut rng = rand::rng();
+    let id = SessionId::random(&mut rng);
+    let hex = id.to_hex();
+    assert_eq!(hex.len(), SessionId::HEX_LEN);
+    assert_eq!(SessionId::parse_hex(&hex), Some(id));
+    assert_eq!(SessionId::parse_hex(&hex.to_ascii_uppercase()), Some(id));
+}
+
+#[test]
+fn session_id_parse_hex_rejects_bad_length_and_non_hex() {
+    assert!(SessionId::parse_hex("").is_none());
+    assert!(SessionId::parse_hex(&"a".repeat(31)).is_none());
+    assert!(SessionId::parse_hex(&"a".repeat(33)).is_none());
+    assert!(SessionId::parse_hex(&"g".repeat(32)).is_none());
+}
+
+#[test]
+fn session_id_debug_truncates_secret() {
+    let id = SessionId::from_bytes([0xAB; 16]);
+    let debug = format!("{id:?}");
+    assert_eq!(debug, "SessionId(abababab…)");
+    assert_eq!(format!("{id}"), "abababababababababababababababab");
+}
+
+#[test]
+fn session_id_shard_round_trips_all_shards() {
+    use crate::cluster::{MAX_SHARDS, ObfuscationKey, ShardId};
+
+    let mut rng = rand::rng();
+    let key = ObfuscationKey::derive_from_psk(b"session-id-shard-psk");
+    for s in 0..MAX_SHARDS {
+        let shard = ShardId::new(s).unwrap();
+        let id = SessionId::random_with_shard(&mut rng, &key, shard);
+        assert_eq!(id.shard(&key), shard);
+        let parsed = SessionId::parse_hex(&id.to_hex()).unwrap();
+        assert_eq!(parsed.shard(&key), shard);
     }
 }

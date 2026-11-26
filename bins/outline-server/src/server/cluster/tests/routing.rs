@@ -1,5 +1,4 @@
 use outline_wire::cluster::{ObfuscationKey, ShardId};
-use ring::rand::SystemRandom;
 
 use super::*;
 
@@ -14,9 +13,8 @@ fn identity(shard: u8) -> ClusterIdentity {
 
 /// Mints a session id carrying `shard` under the shared test PSK.
 fn id_for(shard: u8) -> SessionId {
-    let rng = SystemRandom::new();
     let key = ObfuscationKey::derive_from_psk(PSK);
-    SessionId::random_with_shard(&rng, &key, ShardId::new(shard).unwrap()).unwrap()
+    SessionId::random_with_shard(&mut rand::rng(), &key, ShardId::new(shard).unwrap())
 }
 
 #[test]

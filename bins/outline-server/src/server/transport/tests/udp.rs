@@ -15,7 +15,6 @@ use futures_util::future::BoxFuture;
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use outline_wire::padding::PaddingScheme;
 use quinn::VarInt;
-use ring::rand::SystemRandom;
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -901,8 +900,7 @@ impl UdpEdgeHarness {
                 user,
                 other_user,
                 // A resume id the *home* shard minted, as if on a prior connect.
-                session_id: SessionId::random_with_shard(&SystemRandom::new(), &obfuscation, shard)
-                    .unwrap(),
+                session_id: SessionId::random_with_shard(&mut rand::rng(), &obfuscation, shard),
                 _home_endpoint: home_endpoint,
             },
             home,

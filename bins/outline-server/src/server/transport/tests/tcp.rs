@@ -15,7 +15,6 @@ use axum::http::HeaderMap;
 use bytes::BytesMut;
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use quinn::VarInt;
-use ring::rand::SystemRandom;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
 
@@ -404,8 +403,7 @@ impl EdgeHarness {
                 registry,
                 user,
                 // A resume id the *home* shard minted, as if on a prior connect.
-                session_id: SessionId::random_with_shard(&SystemRandom::new(), &obfuscation, shard)
-                    .unwrap(),
+                session_id: SessionId::random_with_shard(&mut rand::rng(), &obfuscation, shard),
                 _home_endpoint: home_endpoint,
             },
             home,

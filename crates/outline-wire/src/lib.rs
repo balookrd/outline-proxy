@@ -34,4 +34,5 @@ pub use cluster::{
     MAX_SHARDS, ObfuscationKey, SHARD_BITS, ShardId, decode_shard, derive_mesh_auth_seed,
     encode_session_id,
 };
+pub use resume::SessionId;
 pub use target::{TargetAddr, TargetAddrError, parse_target_addr, socket_addr_to_target};

@@ -21,85 +21,15 @@
 //! is read straight off the upgrade response.
 
 use std::collections::{HashMap, VecDeque};
-use std::fmt;
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 
-/// Server-minted opaque token identifying a resumable session.
-///
-/// Emitted by the server in the `X-Outline-Session` response header.
-/// The client treats it as an opaque 16-byte value;
-/// any ordering or structure is the server's concern. Kept `Copy` so
-/// callers can stash it in `Arc<Mutex<Option<SessionId>>>` without
-/// fighting borrow checker over clones.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId([u8; 16]);
-
-impl SessionId {
-    /// Length, in characters, of [`Self::to_hex`] output.
-    pub const HEX_LEN: usize = 32;
-
-    /// Constructs a [`SessionId`] from a raw 16-byte value. The bytes
-    /// are not validated — the only invariant is the length, which is
-    /// statically guaranteed by the array type.
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-
-    /// Returns the underlying raw bytes.
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-
-    /// Lowercase 32-hex-char representation suitable for HTTP headers.
-    pub fn to_hex(self) -> String {
-        let mut out = String::with_capacity(Self::HEX_LEN);
-        for byte in &self.0 {
-            out.push(hex_nibble(byte >> 4));
-            out.push(hex_nibble(byte & 0x0f));
-        }
-        out
-    }
-
-    /// Parses a 32-character hex value (case-insensitive). Returns
-    /// `None` for any other length or non-hex input — including the
-    /// empty string, so a missing header trivially folds into `None`.
-    pub fn parse_hex(s: &str) -> Option<Self> {
-        if s.len() != Self::HEX_LEN {
-            return None;
-        }
-        let bytes = s.as_bytes();
-        let mut out = [0u8; 16];
-        for i in 0..16 {
-            let hi = hex_value(bytes[2 * i])?;
-            let lo = hex_value(bytes[2 * i + 1])?;
-            out[i] = (hi << 4) | lo;
-        }
-        Some(Self(out))
-    }
-}
-
-impl fmt::Debug for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Truncate so logs stay readable; the full ID is a bearer
-        // token and we deliberately avoid logging it in full.
-        let hex = self.to_hex();
-        write!(f, "SessionId({}…)", &hex[..8])
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-// The `X-Outline-*` header names are wire vocabulary shared with the
-// server; the single definition lives in `outline_wire::resume`.
+// The `X-Outline-*` header names and `SessionId` are wire vocabulary shared
+// with the server; the single definition lives in `outline_wire::resume`.
 pub use outline_wire::resume::{
     ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, HOME_AFFINITY_HEADER, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER, SessionId,
 };
 use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
 
@@ -430,23 +360,6 @@ impl UdpResumeStore {
             Self::ProcessWide => global_vless_udp_resume_cache(),
             Self::Private(cache) => cache,
         }
-    }
-}
-
-const fn hex_nibble(n: u8) -> char {
-    match n {
-        0..=9 => (b'0' + n) as char,
-        10..=15 => (b'a' + n - 10) as char,
-        _ => '?',
-    }
-}
-
-const fn hex_value(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
     }
 }
 

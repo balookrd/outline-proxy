@@ -17,6 +17,7 @@ base64 = { workspace = true, features = ["std"] }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, optional = true, features = ["derive", "std"] }
+http = { workspace = true }
 md5 = { workspace = true }
 rand = { workspace = true }
 quinn = { workspace = true, optional = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
