@@ -42,11 +42,11 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
   wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
   SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
-  логика, без tokio и без AEAD-backend'ов — AEAD seal/open остаётся по
-  сторонам: `ring` на сервере, RustCrypto на клиенте). Ныне в основном
+  логика, без tokio и без AEAD-backend'ов) и `shadowsocks-crypto` — единый
+  AEAD / SS2022 / потоковый кодек поверх `aws-lc-rs`. Ныне в основном
   client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
-  `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
+  `outline-routing`, `socks5-proto`.
 - `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/quinn-udp`, `vendor/rustls`, `vendor/hyper` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 - `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
@@ -145,8 +145,9 @@ lock-файлов вместе с vendored-крейтами, которые об
   (`tokio-rustls`, `rcgen`, `quinn`, `tokio-tungstenite`, `sockudo-ws`), должна
   быть на aws-lc-rs: `default-features = false` + явный `aws_lc_rs`
   (`rustls-aws-lc-rs` у quinn). Проверка: `cargo tree -i 'rustls@0.23' -e features
-  | grep 'rustls feature "ring"'` — пусто. `ring`-крейт остаётся только для
-  SS-AEAD/SHA-256, не как rustls-провайдер. aws-lc-sys требует cmake при сборке.
+  | grep 'rustls feature "ring"'` — пусто. Крейт `ring` полностью удалён из
+  графа зависимостей workspace; для AEAD/HKDF/SHA-256 везде используется
+  `aws-lc-rs` (или `sha2` в GUI). aws-lc-sys требует cmake при сборке.
 - **Единый `vendor/`.** `vendor/sockudo-ws` = upstream 1.7.5 + ровно четыре
   логических патча, и все они живут в трёх файлах — `src/error.rs`
   (valid-close-codes 1012-1014), `src/server.rs` (h3-noerror:

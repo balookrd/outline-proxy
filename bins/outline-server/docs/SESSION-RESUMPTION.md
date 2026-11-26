@@ -35,7 +35,7 @@ The feature is for the `outline-server` ↔ `outline-client` pair; it is not a p
 
 ## Identifiers
 
-A Session ID is 16 bytes from a CSPRNG (`ring::rand::SystemRandom`), minted by the server. In a cluster (`[cluster]`) the id also carries the home server's shard, obfuscated under the cluster key so it still looks random on the wire (see [`docs/CLUSTER.md`](../../../docs/CLUSTER.md)). The client treats the id as an opaque byte string and echoes it back on resume.
+A Session ID is 16 bytes from a CSPRNG (`rand::rng()`, ChaCha12 CSPRNG), minted by the server. In a cluster (`[cluster]`) the id also carries the home server's shard, obfuscated under the cluster key so it still looks random on the wire (see [`docs/CLUSTER.md`](../../../docs/CLUSTER.md)). The client treats the id as an opaque byte string and echoes it back on resume.
 
 ### Lifetime
 

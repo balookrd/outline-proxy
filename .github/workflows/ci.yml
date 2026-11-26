@@ -166,17 +166,21 @@ jobs:
         run: cargo check -p outline-client --no-default-features
 
       # Monorepo invariant: rustls must stay on a single CryptoProvider
-      # (aws-lc-rs). Two providers panic at runtime ("exactly one of aws-lc-rs
-      # and ring"). The `ring` crate itself stays for SS AEAD / SHA-256, but
-      # never as the rustls provider.
-      - name: invariant — aws-lc-rs only, no ring rustls provider
+      # (aws-lc-rs) and the `ring` crate must stay out of the workspace graph
+      # entirely (SS AEAD / HKDF / SHA-256 use aws-lc-rs via shadowsocks-crypto).
+      - name: invariant — aws-lc-rs only, no ring in workspace
         run: |
           if cargo tree -i 'rustls@0.23' -e features 2>/dev/null | grep -q 'rustls feature "ring"'; then
             echo "::error::rustls is pulling its ring provider; the workspace must stay on aws-lc-rs only"
             cargo tree -i 'rustls@0.23' -e features | grep 'rustls feature'
             exit 1
           fi
-          echo "ok: rustls is on aws-lc-rs only"
+          if [ -n "$(cargo tree --workspace --exclude sockudo-ws --exclude outline-windows -i ring 2>/dev/null)" ]; then
+            echo "::error::the ring crate re-entered the workspace dependency graph; stay on aws-lc-rs"
+            cargo tree --workspace --exclude sockudo-ws --exclude outline-windows -i ring
+            exit 1
+          fi
+          echo "ok: no ring in workspace graph (aws-lc-rs only)"
 
       # Monorepo invariant: every direct sockudo-ws reference in production
       # code stays behind the two vendored-gate modules, so rebasing the

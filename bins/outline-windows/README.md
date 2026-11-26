@@ -83,7 +83,7 @@ To protect against corrupted downloads or file tampering, strict verification is
 performed before installation:
 1. The application fetches `SHA256SUMS.txt` from the release assets.
 2. The update zip archive is streamed chunk-by-chunk (`reqwest`), computing the
-   SHA-256 digest on the fly via `ring` (`ring::digest::SHA256`) into a temporary
+   SHA-256 digest on the fly via `sha2` (`sha2::Sha256`) into a temporary
    file in `%TEMP%`.
 3. The `UpdateModal` displays download progress with an accurate percentage bar.
 4. Once download finishes, the calculated SHA-256 hash is compared against the entry
