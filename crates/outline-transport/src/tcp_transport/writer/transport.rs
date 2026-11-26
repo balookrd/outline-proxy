@@ -116,7 +116,8 @@ impl WriteTransport for WsWriteTransport {
             .data_tx
             .as_ref()
             .ok_or_else(|| anyhow!("writer already closed"))?;
-        for payload in self.framer.frame(frame.into(), &mut rand::rng()) {
+        let frames = self.framer.frame(frame.into(), &mut rand::rng());
+        for payload in frames {
             let bytes = payload.len();
             tx.send(Message::Binary(payload), bytes)
                 .await
