@@ -1,0 +1,36 @@
+state_path = "/tmp/client.state.toml"
+
+[padding]
+enabled = true
+min_bytes = 16
+max_bytes = 256
+cover = true
+cover_jitter_min_ms = 50
+cover_jitter_max_ms = 100
+
+[socks5]
+listen = "0.0.0.0:1080"
+
+[metrics]
+listen = "0.0.0.0:9092"
+
+[outline.probe]
+interval_secs = 60
+timeout_secs = 5
+min_failures = 3
+
+[outline.probe.ws]
+enabled = true
+
+[[uplink_group]]
+name = "main"
+routing_scope = "global"
+
+[[outline.uplinks]]
+group = "main"
+name = "vless-xhttp"
+transport = "vless"
+vless_mode = "xhttp_h1"
+vless_xhttp_url = "http://srv:8080/vless-xhttp"
+vless_id = "11111111-1111-1111-1111-111111111111"
+padding = true

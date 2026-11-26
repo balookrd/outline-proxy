@@ -1,0 +1,39 @@
+state_path = "/tmp/client.state.toml"
+
+[padding]
+enabled = true
+min_bytes = 16
+max_bytes = 256
+cover = true
+cover_jitter_min_ms = 50
+cover_jitter_max_ms = 100
+
+[socks5]
+listen = "0.0.0.0:1080"
+
+[metrics]
+listen = "0.0.0.0:9092"
+
+[outline.probe]
+interval_secs = 60
+timeout_secs = 5
+min_failures = 3
+
+[outline.probe.ws]
+enabled = true
+
+[[uplink_group]]
+name = "main"
+routing_scope = "global"
+
+[[outline.uplinks]]
+group = "main"
+name = "ss-ws"
+transport = "websocket"
+tcp_mode = "ws_h1"
+udp_mode = "ws_h1"
+tcp_ws_url = "ws://srv:8080/ss-tcp"
+udp_ws_url = "ws://srv:8080/ss-udp"
+method = "2022-blake3-aes-256-gcm"
+password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+padding = true

@@ -1,0 +1,42 @@
+[server]
+listen = "0.0.0.0:8080"
+
+[outbound]
+block_private_ips = false
+
+[[endpoint]]
+path = "/ss-tcp"
+kind = "ws_ss_tcp"
+padded = true
+
+[[endpoint]]
+path = "/ss-udp"
+kind = "ws_ss_udp"
+padded = true
+
+[[endpoint]]
+path = "/vless-xhttp"
+kind = "xhttp_vless"
+padded = true
+
+[shadowsocks]
+method = "2022-blake3-aes-256-gcm"
+
+[session_resumption]
+enabled = true
+
+[padding]
+max_bytes = 256
+cover = true
+
+[control]
+listen = "0.0.0.0:9090"
+token = "stand-token"
+
+[metrics]
+listen = "0.0.0.0:9091"
+
+[[users]]
+id = "stand-user"
+password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+vless_id = "11111111-1111-1111-1111-111111111111"
