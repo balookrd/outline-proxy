@@ -31,7 +31,7 @@ pub use outline_wire::resume::{
     ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, HOME_AFFINITY_HEADER, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER, SessionId,
 };
-use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
+use outline_wire::xhttp::apply_udp_datagram_header;
 
 /// Writes the request-side resume negotiation headers. One
 /// implementation shared by the h1 upgrade, h2 CONNECT and h3 Extended
@@ -71,7 +71,7 @@ pub(crate) fn apply_udp_datagram_request_header(
     headers: &mut http::HeaderMap,
 ) {
     if resume.udp_datagram_requested {
-        headers.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("1"));
+        apply_udp_datagram_header(headers);
     }
 }
 

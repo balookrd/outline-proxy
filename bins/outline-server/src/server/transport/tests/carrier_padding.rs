@@ -75,7 +75,13 @@ fn shaped_messages_cut_a_server_flight_and_round_trip() {
         let mut shaper =
             EarlyShaper::new(ShapeDirection::ServerToClient, false, &mut draw_in(&mut rng));
         let frame: Vec<u8> = (0..4499u32).map(|i| (i % 251) as u8).collect();
-        let msgs = shaped_messages(scheme, &mut shaper, &frame, &mut rng);
+        let msgs = outline_wire::padding_frames::shaped_messages(
+            scheme,
+            &mut shaper,
+            &frame,
+            None,
+            &mut rng,
+        );
         assert!(msgs.len() >= 2, "seed {seed}: got {} messages", msgs.len());
         let mut decoded = Vec::new();
         let mut dec = PaddingDecoder::new();
@@ -114,7 +120,13 @@ fn shaped_messages_disabled_scheme_returns_plain_pieces() {
         let mut shaper =
             EarlyShaper::new(ShapeDirection::ServerToClient, false, &mut draw_in(&mut rng));
         let frame: Vec<u8> = (0..4499u32).map(|i| (i % 251) as u8).collect();
-        let msgs = shaped_messages(PaddingScheme::disabled(), &mut shaper, &frame, &mut rng);
+        let msgs = outline_wire::padding_frames::shaped_messages(
+            PaddingScheme::disabled(),
+            &mut shaper,
+            &frame,
+            None,
+            &mut rng,
+        );
         assert!(msgs.len() >= 2, "seed {seed}");
         assert_eq!(msgs.concat(), frame, "seed {seed}");
     }
@@ -198,7 +210,13 @@ fn shaped_capped_pieces_stay_within_the_h2_budget() {
         let mut decoder = PaddingDecoder::new();
         let mut out = Vec::new();
         for piece in data.chunks(cap) {
-            for m in shaped_messages(scheme, &mut shaper, piece, &mut rng) {
+            for m in outline_wire::padding_frames::shaped_messages(
+                scheme,
+                &mut shaper,
+                piece,
+                None,
+                &mut rng,
+            ) {
                 assert!(m.len() + H2_WS_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "seed {seed}");
                 decoder.push(&m, &mut out);
             }

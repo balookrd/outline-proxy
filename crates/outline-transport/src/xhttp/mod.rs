@@ -95,7 +95,7 @@ pub(crate) use stream::XhttpStream;
 // `outline_wire::{resume, xhttp}`.
 pub(super) use outline_wire::resume::{ACK_PREFIX_HEADER, SESSION_RESPONSE_HEADER};
 pub(super) use outline_wire::xhttp::{
-    FIN_HEADER, UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
+    FIN_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER, offers_udp_datagrams,
 };
 pub use outline_wire::xhttp::{SsPathKind, XhttpSubmode};
 
@@ -546,7 +546,7 @@ pub(super) fn parse_udp_records_echo(requested: bool, headers: &http::HeaderMap)
     expect(dead_code, reason = "only the h3 carrier offers UDP over HTTP/3 datagrams")
 )]
 pub(super) fn parse_udp_datagram_echo(requested: bool, headers: &http::HeaderMap) -> bool {
-    requested && headers.get(UDP_DATAGRAM_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
+    requested && offers_udp_datagrams(headers)
 }
 
 /// Reads the server-side echo of `X-Outline-Resume-Symmetric-Replay: 1`.

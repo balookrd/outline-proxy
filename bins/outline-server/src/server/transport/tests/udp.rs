@@ -1295,7 +1295,7 @@ async fn padded_datagram_ingest_and_reply_round_trip() -> Result<()> {
     use outline_wire::h3_datagram::{DatagramDemux, decode_datagram, encode_datagram};
     use outline_wire::padding::PaddingDecoder;
 
-    use crate::server::transport::carrier_padding::{CoverParams, frame_downlink_message};
+    use crate::server::transport::carrier_padding::{CoverParams, frame_message};
     use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
     use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
 
@@ -1342,10 +1342,12 @@ async fn padded_datagram_ingest_and_reply_round_trip() -> Result<()> {
         jitter_max_ms: 100,
     };
     pair.client
-        .send_datagram(encode_datagram(quarter_id, &cover.frame()))?;
+        .send_datagram(encode_datagram(quarter_id, &cover.frame(&mut rand::rng())))?;
     let packet = client_datagram(&user, upstream_addr, b"query")?;
-    pair.client
-        .send_datagram(encode_datagram(quarter_id, &frame_downlink_message(scheme, packet)))?;
+    pair.client.send_datagram(encode_datagram(
+        quarter_id,
+        &frame_message(scheme, packet, &mut rand::rng()),
+    ))?;
 
     let mut buf = [0_u8; 64];
     let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;

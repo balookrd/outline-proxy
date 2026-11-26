@@ -2,14 +2,13 @@
 //! the small `BoxedIo` enum that lets the h2 handshake hold either a
 //! plain TCP or TLS stream behind a single `TokioIo`.
 
-use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::{Sink, Stream};
-use outline_wire::udp_records::{UdpRecordDecoder, encode_record_into};
+use outline_wire::udp_records::{UdpRecordStream, encode_record};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
@@ -60,13 +59,10 @@ pub(crate) struct XhttpStream {
     /// `false` (TCP sessions, VLESS, an older server) leaves the wire
     /// byte-for-byte as it was.
     pub(super) udp_records: bool,
-    /// Reassembly state for [`Self::udp_records`]. `Some` iff framing is on;
-    /// `poll_next` is the only user, and it drains whole records into
-    /// `pending_in` so one poll yields one datagram.
-    pub(super) recv_records: Option<UdpRecordDecoder>,
-    /// Datagrams recovered from the last chunk but not yet handed to the
-    /// caller. Bounded by the chunk that produced them.
-    pub(super) pending_in: VecDeque<Bytes>,
+    /// Reassembly state for [`Self::udp_records`]. Enabled iff framing is on;
+    /// `poll_next` is the only user, and it drains whole records so one poll
+    /// yields one datagram.
+    pub(super) recv_records: UdpRecordStream,
     /// Loss counters for the carrier underneath, captured at dial time. The
     /// stream owns only channels and a driver task, so the socket (h1/h2) or
     /// the QUIC connection (h3) is unreachable from here afterwards — the
@@ -163,8 +159,7 @@ impl XhttpStream {
             carrier_is_h3,
             carrier_is_h2: false,
             udp_records,
-            recv_records: udp_records.then(UdpRecordDecoder::new),
-            pending_in: VecDeque::new(),
+            recv_records: UdpRecordStream::new(udp_records),
             loss_probe,
             _quic_carrier: quic_carrier,
             #[cfg(feature = "h3")]
@@ -220,8 +215,7 @@ impl XhttpStream {
             carrier_is_h3: false,
             carrier_is_h2: false,
             udp_records: false,
-            recv_records: None,
-            pending_in: Default::default(),
+            recv_records: UdpRecordStream::new(false),
             loss_probe,
             _quic_carrier: None,
             #[cfg(feature = "h3")]
@@ -239,7 +233,7 @@ impl Stream for XhttpStream {
         loop {
             // A datagram recovered from an earlier chunk goes out first, so
             // one poll always yields exactly one datagram.
-            if let Some(record) = this.pending_in.pop_front() {
+            if let Some(record) = this.recv_records.pop_datagram() {
                 return Poll::Ready(Some(Ok(Message::Binary(record))));
             }
             // Handing the frame to the reader releases its budget permit: the
@@ -249,18 +243,15 @@ impl Stream for XhttpStream {
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
             };
-            let Some(decoder) = this.recv_records.as_mut() else {
+            if !this.recv_records.is_enabled() {
                 return Poll::Ready(Some(item));
-            };
+            }
             // Framing negotiated: a `Binary` message is a slice of the record
             // stream, not a datagram. Everything else (control frames, errors)
             // rides above the framing and passes through untouched.
             match item {
                 Ok(Message::Binary(chunk)) => {
-                    decoder.push(&chunk);
-                    while let Some(record) = decoder.next_record() {
-                        this.pending_in.push_back(record);
-                    }
+                    this.recv_records.push_chunk(chunk);
                     // A chunk that completed no record yields nothing — poll
                     // again rather than surfacing a partial datagram.
                 },
@@ -341,9 +332,8 @@ impl Sink<Message> for XhttpStream {
 /// overflows the `u16` length field (logged once per occurrence — the caller
 /// drops the datagram).
 fn frame_datagram(payload: &[u8]) -> Option<Bytes> {
-    let mut out = Vec::with_capacity(payload.len() + 2);
-    match encode_record_into(payload, &mut out) {
-        Ok(()) => Some(Bytes::from(out)),
+    match encode_record(payload) {
+        Ok(record) => Some(record),
         Err(error) => {
             warn!(?error, len = payload.len(), "dropping oversized xhttp datagram record");
             outline_metrics::record_dropped_oversized_udp_packet("up", "xhttp_records");

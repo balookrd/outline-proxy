@@ -12,7 +12,7 @@ use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 use tokio::net::UdpSocket;
 use tokio::sync::{Notify, mpsc};
 
-use super::super::carrier_padding::frame_downlink_message;
+use super::super::carrier_padding::frame_message;
 use super::super::h3_datagram::tests::{QuicDatagramPair, quic_datagram_pair, target_on};
 use super::super::h3_datagram::{DatagramActivity, DatagramPeer, VLESS_PROTO_LABEL, WS_H3_CARRIER};
 use super::super::upstream_source::VlessUdpSink;
@@ -25,7 +25,7 @@ use outline_net::task::AbortOnDrop;
 const SCHEME: PaddingScheme = PaddingScheme::new(4, 16);
 
 fn padded(real: &'static [u8]) -> Bytes {
-    frame_downlink_message(SCHEME, Bytes::from_static(real))
+    frame_message(SCHEME, Bytes::from_static(real), &mut rand::rng())
 }
 
 /// Sum of the samples of `metric` whose labels include every `labels` pair.

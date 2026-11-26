@@ -23,15 +23,16 @@ use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 #[cfg(test)]
 use outline_wire::padding::PADDING_FRAME_HEADER_LEN;
 use outline_wire::padding::PaddingScheme;
-use rand::Rng;
 
 // Frame construction is shared with the client (`outline_wire::padding_frames`)
 // so the uplink and the downlink of one connection are sized by the same code.
 #[cfg(test)]
 pub(in crate::server) use outline_wire::padding_frames::H2_DATA_PAYLOAD_MAX;
-use outline_wire::padding_frames::draw_jitter;
+#[cfg(test)]
+pub(in crate::server) use outline_wire::padding_frames::frame_payload_into;
 pub(in crate::server) use outline_wire::padding_frames::{
-    H2_WS_SERVER_HEADER_LEN as H2_WS_HEADER_LEN, draw_in, even_piece_lens, frame_payload_into,
+    CoverParams, H2_WS_SERVER_HEADER_LEN as H2_WS_HEADER_LEN, draw_in, even_piece_lens,
+    frame_message,
 };
 
 use super::throughput_monitor::ThrottleDetectParams;
@@ -58,43 +59,17 @@ pub(in crate::server) fn scheme_for_path(path: &str) -> PaddingScheme {
         .unwrap_or_else(PaddingScheme::disabled)
 }
 
-/// Idle cover-traffic parameters for a path, or `None` when cover is off (not
-/// requested, padding disabled, or this path is unpadded). When `Some`, the
-/// downlink writer emits a pad-only frame after each idle gap drawn uniformly
-/// from `[jitter_min_ms, jitter_max_ms]`, so a quiet tunnel still produces
-/// random-sized writes at irregular intervals.
-#[derive(Clone, Copy, Debug)]
-pub(in crate::server) struct CoverParams {
-    pub scheme: PaddingScheme,
-    pub jitter_min_ms: u64,
-    pub jitter_max_ms: u64,
-}
-
-impl CoverParams {
-    /// Draws one idle gap before the next cover frame.
-    pub(in crate::server) fn next_gap(&self) -> Duration {
-        draw_jitter(self.jitter_min_ms, self.jitter_max_ms)
-    }
-
-    /// Builds one pad-only cover frame (`real_len = 0`): the peer's decoder
-    /// recovers no payload and drops it transparently.
-    pub(in crate::server) fn frame(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        frame_payload_into(self.scheme, &[], &mut rand::rng(), &mut out);
-        out
-    }
-}
-
 /// Resolves cover parameters for `path`: `Some` only when cover is enabled,
 /// padding is on, and this path is in the configured set (so cover never fires
 /// on an unpadded third-party path).
 pub(in crate::server) fn cover_for_path(path: &str) -> Option<CoverParams> {
     let p = PADDING.get()?;
-    (p.cover_enabled() && p.applies_to(path)).then(|| CoverParams {
-        scheme: p.scheme(),
-        jitter_min_ms: p.cover_jitter_min_ms,
-        jitter_max_ms: p.cover_jitter_max_ms,
-    })
+    CoverParams::new(
+        p.scheme(),
+        p.cover_enabled() && p.applies_to(path),
+        p.cover_jitter_min_ms,
+        p.cover_jitter_max_ms,
+    )
 }
 
 /// Resolves downstream-throttle detection parameters for `path`: `Some` only
@@ -115,31 +90,6 @@ pub(in crate::server) fn throttle_params_for_path(path: &str) -> Option<Throttle
         min_in_bytes_per_sec: p.throttle_min_bytes_per_sec,
         signal_cooldown: Duration::from_secs(p.throttle_signal_cooldown_secs.max(1)),
     })
-}
-
-/// Frames one discrete downlink message for `scheme`, or returns it unchanged
-/// when padding is disabled. Used by the message-oriented downlink paths where
-/// each buffer is framed individually rather than streamed through one
-/// `ChannelSink` (the SS-TCP downlink):
-///
-/// - **VLESS** emits several distinct downlink messages (the `[VERSION, 0x00]`
-///   response header, the v1 ack-prefix / v2 replay control frames, the relay
-///   payload, and UDP records). The client's streaming decoder treats the whole
-///   direction as one framed byte stream, so EVERY downlink buffer must be
-///   framed the same way or the decoder desyncs on the first unframed message.
-/// - **SS-UDP** emits one encrypted datagram per upstream packet; each is framed
-///   individually so the datagram size no longer tracks the SS payload (the
-///   client decodes each one back before SS decryption).
-///
-/// Callers route each downlink buffer through here before `make_binary`.
-pub(in crate::server) fn frame_downlink_message(scheme: PaddingScheme, bytes: Bytes) -> Bytes {
-    if scheme.is_enabled() {
-        let mut out = Vec::with_capacity(bytes.len() + 8);
-        frame_payload_into(scheme, &bytes, &mut rand::rng(), &mut out);
-        out.into()
-    } else {
-        bytes
-    }
 }
 
 /// The frame `record` takes as one HTTP/3 datagram of `room` payload bytes: the
@@ -213,19 +163,6 @@ pub(in crate::server) fn new_server_shaper(protocol: Protocol) -> Option<EarlySh
     shape_eligible(protocol).then(|| {
         EarlyShaper::new(ShapeDirection::ServerToClient, false, &mut draw_in(&mut rand::rng()))
     })
-}
-
-/// Cuts one downlink buffer into the messages the early-shape plan asks for:
-/// lead-in pad-only cover frames first (none for `ServerToClient`), then one
-/// padded message per piece. The h2 cap is applied by the callers on this
-/// side, so the shared planner runs without one.
-pub(in crate::server) fn shaped_messages<R: Rng>(
-    scheme: PaddingScheme,
-    shaper: &mut EarlyShaper,
-    data: &[u8],
-    rng: &mut R,
-) -> Vec<Vec<u8>> {
-    outline_wire::padding_frames::shaped_messages(scheme, shaper, data, None, rng)
 }
 
 #[cfg(test)]

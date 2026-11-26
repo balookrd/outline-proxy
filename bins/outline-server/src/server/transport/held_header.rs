@@ -71,15 +71,16 @@ pub(in crate::server::transport) async fn send_downlink<Msg>(
             let mut joined = BytesMut::with_capacity(h.len() + frame.len());
             joined.extend_from_slice(h);
             joined.extend_from_slice(&frame);
-            let message = carrier_padding::frame_downlink_message(padding, joined.freeze());
+            let message =
+                carrier_padding::frame_message(padding, joined.freeze(), &mut rand::rng());
             tx.send(make_binary(message)).await?;
             *slot = None;
             held.sent.store(true, Ordering::Release);
             return Ok(());
         }
     }
-    tx.send(make_binary(carrier_padding::frame_downlink_message(padding, frame)))
-        .await
+    let message = carrier_padding::frame_message(padding, frame, &mut rand::rng());
+    tx.send(make_binary(message)).await
 }
 
 #[cfg(test)]

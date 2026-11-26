@@ -67,8 +67,8 @@ use super::upstream_source::{
 };
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
-use outline_wire::early_shape::EarlyShaper;
 use outline_wire::padding::{PaddingDecoder, PaddingScheme};
+use outline_wire::padding_frames::OutboundFramer;
 
 /// Process-wide services shared by every TCP relay session.
 pub(in crate::server) struct WsTcpServerCtx {
@@ -271,20 +271,14 @@ struct ChannelSink<Msg: Send + 'static> {
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
     metrics: Arc<Metrics>,
-    /// Downlink carrier-padding scheme for this session (cloned from the
-    /// route). Disabled → ciphertext is sent verbatim (plain wire); enabled →
-    /// each ciphertext buffer is wrapped in padding frames before it hits the
-    /// WS writer, breaking the record-size correlation. The client decodes
-    /// symmetrically (config-synchronised gate).
-    padding: PaddingScheme,
+    /// Downlink carrier-padding and early-shape framer for this session.
+    /// Disabled scheme + `None` shaper forwards ciphertext verbatim; enabled
+    /// padding wraps each ciphertext buffer in padding frames, and an active
+    /// `EarlyShaper` cuts the first downlink buffers into several messages.
+    framer: OutboundFramer,
     /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
     /// with detection on. Fed the send backlog (data channel past half-full).
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
-    /// Early-shape state; `Some` only on an h1/h2 carrier, padded or not (see
-    /// [`carrier_padding::shape_eligible`]). While active, the first downlink
-    /// buffers are cut into several messages. On a mesh edge this sink sits on
-    /// the client-facing carrier, so shaping happens once, at the edge.
-    shaper: Option<EarlyShaper>,
     /// Plaintext bytes per SS chunk on an h2 carrier, so each downlink message
     /// fits one h2 DATA frame of one TLS record (see
     /// [`carrier_padding::h2_plaintext_cap`]); `None` elsewhere. On a mesh edge
@@ -317,7 +311,11 @@ fn encrypt_downlink_messages(
     for len in carrier_padding::even_piece_lens(plaintext.len(), piece_cap) {
         encryptor.encrypt_chunk(&plaintext[offset..offset + len], &mut out)?;
         offset += len;
-        messages.push(carrier_padding::frame_downlink_message(padding, out.split().freeze()));
+        messages.push(carrier_padding::frame_message(
+            padding,
+            out.split().freeze(),
+            &mut rand::rng(),
+        ));
     }
     Ok(messages)
 }
@@ -344,42 +342,14 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
         {
             m.note_backlog();
         }
-        if let Some(shaper) = self.shaper.as_mut() {
-            let msgs = carrier_padding::shaped_messages(
-                self.padding,
-                shaper,
-                &ciphertext,
-                &mut rand::rng(),
-            );
-            if !shaper.is_active() {
-                self.shaper = None;
-            }
-            for m in msgs {
-                self.tx
-                    .send((self.make_binary)(Bytes::from(m)))
-                    .await
-                    .map_err(|error| {
-                        anyhow!("failed to queue encrypted websocket frame: {error}")
-                    })?;
-            }
-            return Ok(());
+        let frames = self.framer.frame(ciphertext, &mut rand::rng());
+        for frame in frames {
+            self.tx
+                .send((self.make_binary)(frame))
+                .await
+                .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))?;
         }
-        let payload: Bytes = if self.padding.is_enabled() {
-            let mut out = Vec::with_capacity(ciphertext.len() + 8);
-            carrier_padding::frame_payload_into(
-                self.padding,
-                &ciphertext,
-                &mut rand::rng(),
-                &mut out,
-            );
-            out.into()
-        } else {
-            ciphertext
-        };
-        self.tx
-            .send((self.make_binary)(payload))
-            .await
-            .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))
+        Ok(())
     }
 
     async fn close(&mut self) {
@@ -901,7 +871,7 @@ where
             .encrypt_chunk(&payload, &mut out)
             .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
         let ciphertext =
-            carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
+            carrier_padding::frame_message(route.padding, out.split().freeze(), &mut rand::rng());
         let make_binary = outbound.make_binary;
         outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
             FrameError::Fatal(anyhow!(
@@ -939,9 +909,12 @@ where
                 make_binary,
                 make_close,
                 metrics: sink_metrics,
-                padding: sink_padding,
+                framer: OutboundFramer::new(
+                    sink_padding,
+                    carrier_padding::new_server_shaper(protocol),
+                    None,
+                ),
                 monitor: monitor_for_sink,
-                shaper: carrier_padding::new_server_shaper(protocol),
                 plaintext_cap: carrier_padding::h2_plaintext_cap(
                     protocol,
                     sink_padding,
@@ -1185,7 +1158,8 @@ where
     encryptor
         .encrypt_chunk(&payload, &mut out)
         .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-    let ciphertext = carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
+    let ciphertext =
+        carrier_padding::frame_message(route.padding, out.split().freeze(), &mut rand::rng());
     let make_binary = outbound.make_binary;
     outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
         FrameError::Fatal(anyhow!("ack-prefix control frame send failed: WS data channel closed"))
@@ -1341,9 +1315,12 @@ fn spawn_downlink_relay<Msg>(
                     make_binary,
                     make_close,
                     metrics: sink_metrics,
-                    padding: sink_padding,
+                    framer: OutboundFramer::new(
+                        sink_padding,
+                        carrier_padding::new_server_shaper(protocol),
+                        None,
+                    ),
                     monitor: monitor_for_sink,
-                    shaper: carrier_padding::new_server_shaper(protocol),
                     plaintext_cap: carrier_padding::h2_plaintext_cap(
                         protocol,
                         sink_padding,

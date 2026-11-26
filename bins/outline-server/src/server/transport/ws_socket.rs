@@ -314,7 +314,7 @@ impl ResponseSender for WebSocketResponseSender {
             let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
             m.note_datagram(data.len(), used, self.tx.max_capacity());
         }
-        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        let framed = carrier_padding::frame_message(self.padding, data, &mut rand::rng());
         Box::pin(async move { self.tx.send(Message::Binary(framed)).await.is_ok() })
     }
 
@@ -343,7 +343,7 @@ impl ResponseSender for Http3ResponseSender {
             let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
             m.note_datagram(data.len(), used, self.tx.max_capacity());
         }
-        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        let framed = carrier_padding::frame_message(self.padding, data, &mut rand::rng());
         Box::pin(async move { self.tx.send(H3Message::Binary(framed)).await.is_ok() })
     }
 

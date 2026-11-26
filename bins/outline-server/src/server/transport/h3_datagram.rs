@@ -24,12 +24,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
-use axum::http::{HeaderMap, HeaderValue};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use outline_wire::h3_datagram::{DatagramRegistration, datagram_overhead, encode_datagram};
 use outline_wire::padding::PaddingScheme;
-use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
+pub(in crate::server) use outline_wire::xhttp::{
+    apply_udp_datagram_header as apply_udp_datagram_echo, offers_udp_datagrams,
+};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
@@ -63,18 +64,6 @@ impl DatagramActivity {
     pub(in crate::server) fn sends(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
-}
-
-/// Whether a request offers UDP over HTTP/3 datagrams (`x-outline-udp-datagram:
-/// 1`).
-pub(in crate::server) fn offers_udp_datagrams(headers: &HeaderMap) -> bool {
-    headers.get(UDP_DATAGRAM_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
-}
-
-/// Confirms UDP over HTTP/3 datagrams in a response. Only called once the
-/// stream is registered, so an absent header keeps the response as before.
-pub(in crate::server) fn apply_udp_datagram_echo(headers: &mut HeaderMap) {
-    headers.insert(UDP_DATAGRAM_HEADER, HeaderValue::from_static("1"));
 }
 
 /// The datagram side of one agreed request stream: the QUIC connection to send

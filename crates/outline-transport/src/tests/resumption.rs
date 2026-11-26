@@ -1,4 +1,5 @@
 use super::*;
+use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
 
 #[test]
 fn round_trip_hex() {

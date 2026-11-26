@@ -627,10 +627,8 @@ where
         }
     }
     if let Some(h) = ctx.header.take() {
-        let _ = ctx
-            .tx
-            .send((ctx.make_binary)(carrier_padding::frame_downlink_message(ctx.padding, h)))
-            .await;
+        let framed = carrier_padding::frame_message(ctx.padding, h, &mut rand::rng());
+        let _ = ctx.tx.send((ctx.make_binary)(framed)).await;
     }
     let _ = ctx.tx.send((ctx.make_close)()).await;
     Ok(VlessRelayOutcome::Closed)
@@ -802,8 +800,8 @@ async fn send_downlink<Msg>(
     {
         return Ok(());
     }
-    tx.send(make_binary(carrier_padding::frame_downlink_message(padding, record)))
-        .await
+    let framed = carrier_padding::frame_message(padding, record, &mut rand::rng());
+    tx.send(make_binary(framed)).await
 }
 
 /// How [`send_downlink_or_stop`] ended.

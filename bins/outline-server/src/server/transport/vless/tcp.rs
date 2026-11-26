@@ -6,6 +6,7 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
 
 use outline_wire::padding::PaddingScheme;
+use outline_wire::padding_frames::OutboundFramer;
 
 use crate::{
     metrics::{AppProtocol, Metrics, Protocol, TcpUpstreamGuard},
@@ -912,7 +913,8 @@ where
     // nothing; it drops when this relay call returns on park or close.
     let mut downlink_buf = BytesMut::new();
     let mut header = response_header;
-    let mut shaper = carrier_padding::new_server_shaper(protocol);
+    let mut framer =
+        OutboundFramer::new(padding, carrier_padding::new_server_shaper(protocol), None);
     // Data bytes per downlink message on an h2 carrier (plain VLESS adds no
     // inner framing), so each message fits one h2 DATA frame of one TLS
     // record; `None` keeps one message per read elsewhere.
@@ -1002,8 +1004,8 @@ where
                     m.note_backlog();
                 }
                 // Zero-copy hand-off: the frozen slice shares the buffer's
-                // allocation; `frame_downlink_message` forwards it unchanged on
-                // the unpadded path. `split_to` keeps any spare tail capacity in
+                // allocation; `OutboundFramer` forwards it unchanged on the
+                // unpadded path. `split_to` keeps any spare tail capacity in
                 // `downlink_buf` for the next read.
                 let payload = downlink_buf.split_to(total).freeze();
                 // The header is prepended only to the outgoing message, after
@@ -1020,32 +1022,18 @@ where
                 // The bounded read guarantees this (header included); the
                 // shaper's pieces are never larger than their input.
                 debug_assert!(message_cap.is_none_or(|cap| payload.len() <= cap));
-                if let Some(s) = shaper.as_mut() {
-                    // Early shaping: the combined first message (header + data)
-                    // goes out as several padded pieces.
-                    let msgs =
-                        carrier_padding::shaped_messages(padding, s, &payload, &mut rand::rng());
-                    if !s.is_active() {
-                        shaper = None;
-                    }
-                    for m in msgs {
-                        tx.send(make_binary(Bytes::from(m))).await.map_err(|error| {
-                            anyhow!("failed to queue vless websocket frame: {error}")
-                        })?;
-                    }
-                    continue;
+                let frames = framer.frame(payload, &mut rand::rng());
+                for frame in frames {
+                    tx.send(make_binary(frame))
+                        .await
+                        .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
                 }
-                let frame = carrier_padding::frame_downlink_message(padding, payload);
-                tx.send(make_binary(frame))
-                    .await
-                    .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
             }
         }
     }
     if let Some(h) = header.take() {
-        let _ = tx
-            .send(make_binary(carrier_padding::frame_downlink_message(padding, h)))
-            .await;
+        let framed = carrier_padding::frame_message(padding, h, &mut rand::rng());
+        let _ = tx.send(make_binary(framed)).await;
     }
     let _ = tx.send(make_close()).await;
     Ok(VlessRelayOutcome::Closed)

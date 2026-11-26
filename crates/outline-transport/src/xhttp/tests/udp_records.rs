@@ -147,10 +147,12 @@ async fn passes_control_frames_through_unframed() {
 /// it answers an offer.
 #[test]
 fn udp_datagram_offer_and_echo() {
+    use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
+
     use crate::request_headers::{HttpVersion, RequestKind};
     use crate::xhttp::{
-        SessionOpen, SessionRequest, UDP_DATAGRAM_HEADER, UDP_RECORDS_HEADER,
-        build_session_request_headers, parse_udp_datagram_echo,
+        SessionOpen, SessionRequest, UDP_RECORDS_HEADER, build_session_request_headers,
+        parse_udp_datagram_echo,
     };
 
     let records_only = || SessionOpen {
