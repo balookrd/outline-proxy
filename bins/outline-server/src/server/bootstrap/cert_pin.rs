@@ -4,7 +4,7 @@
 //! pins peer certificates by fingerprint rather than going through webpki
 //! (there is no CA to distribute across cluster members).
 
-use ring::digest::{SHA256, digest};
+use aws_lc_rs::digest::{SHA256, digest};
 use rustls::pki_types::CertificateDer;
 
 /// SHA-256 fingerprint length in bytes.

@@ -1626,7 +1626,7 @@ async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
     let payload: Vec<u8> = (0..TOTAL)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
-    let sent_digest = ring::digest::digest(&ring::digest::SHA256, &payload);
+    let sent_digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &payload);
 
     let (socket, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(session_id), true).await?;
     let (mut sink, mut stream) = socket.split();
@@ -1654,7 +1654,7 @@ async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
 
     // Downlink: decrypt the echoed stream and hash it as it arrives.
     let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user].into_boxed_slice()));
-    let mut recv_ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut recv_ctx = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256);
     let mut plaintext = Vec::new();
     let mut received = 0usize;
     while received < TOTAL {

@@ -26,8 +26,6 @@ pub enum CryptoError {
     MissingResponseContext,
     #[error("cipher error")]
     Cipher,
-    #[error("randomness unavailable")]
-    Random,
     #[error("packet too short")]
     PacketTooShort,
     #[error("no configured key matched the incoming data")]
@@ -36,8 +34,16 @@ pub enum CryptoError {
     NonceExhausted,
 }
 
-impl From<ring::error::Unspecified> for CryptoError {
-    fn from(_: ring::error::Unspecified) -> Self {
-        Self::Cipher
+impl From<shadowsocks_crypto::CryptoError> for CryptoError {
+    fn from(err: shadowsocks_crypto::CryptoError) -> Self {
+        use shadowsocks_crypto::CryptoError as Sc;
+        match err {
+            Sc::InvalidLengthHeader => Self::InvalidLengthHeader,
+            Sc::InvalidChunkSize(n) => Self::InvalidChunkSize(n),
+            Sc::InvalidHeaderLength => Self::InvalidHeader,
+            Sc::NonceOverflow => Self::NonceExhausted,
+            Sc::HkdfExpandFailed => Self::KeyDerivation,
+            _ => Self::Cipher,
+        }
     }
 }

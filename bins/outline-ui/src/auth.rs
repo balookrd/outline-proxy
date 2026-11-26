@@ -20,7 +20,7 @@ pub struct AuthState {
 
 impl AuthState {
     pub fn new(token: &str) -> Self {
-        let digest = ring::digest::digest(&ring::digest::SHA256, token.as_bytes());
+        let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, token.as_bytes());
         let mut token_hash = [0u8; 32];
         token_hash.copy_from_slice(digest.as_ref());
         Self { token_hash }
@@ -32,7 +32,7 @@ impl AuthState {
 /// Hashing both inputs to a 32-byte digest eliminates early-exit timing leaks on
 /// mismatched token lengths before `subtle::ConstantTimeEq` checks the bytes.
 fn constant_time_eq_token(presented: &str, expected_hash: &[u8; 32]) -> bool {
-    let digest = ring::digest::digest(&ring::digest::SHA256, presented.as_bytes());
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, presented.as_bytes());
     digest.as_ref().ct_eq(expected_hash).into()
 }
 

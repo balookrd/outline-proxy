@@ -1,7 +1,7 @@
 //! Bounded LRU mapping `(user_index, salt) -> derived AEAD session key`.
 //!
-//! UDP decrypt is the hot path: `build_session_key` runs blake3 (or HKDF) plus
-//! a ring `UnboundKey` AES key schedule for every incoming datagram, even when
+//! UDP decrypt is the hot path: `AeadCipher::from_master_and_salt` runs blake3
+//! (or HKDF) plus an AES key schedule for every incoming datagram, even when
 //! the session is already authenticated. At hundreds of users × thousands of
 //! packets per second this becomes the dominant CPU cost. A hit here turns a
 //! key derivation into a hashmap lookup; a miss falls through to the existing
@@ -24,7 +24,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use lru::LruCache;
 use parking_lot::Mutex;
-use ring::aead::LessSafeKey;
+use shadowsocks_crypto::AeadCipher;
 
 /// Largest salt the cache key needs to hold. Covers every supported cipher:
 /// 16 B (AES-128 legacy), 32 B (AES-256 / ChaCha20 legacy), and 8 B (SS-2022
@@ -65,7 +65,7 @@ impl CacheKey {
 }
 
 /// Thread-safe bounded LRU cache of derived session keys. Cloning the
-/// `Arc<LessSafeKey>` is a refcount bump; the wrapped `UnboundKey` is read-only
+/// `Arc<AeadCipher>` is a refcount bump; the wrapped cipher is read-only
 /// and shareable across threads.
 ///
 /// Internally split into [`SHARD_COUNT`] LRU partitions, each guarded by its
@@ -74,7 +74,7 @@ impl CacheKey {
 /// `(user_fingerprint, salt[..8])` so the same `(user, salt)` always hits the same
 /// shard.
 pub struct SessionKeyCache {
-    shards: Box<[Mutex<LruCache<CacheKey, Arc<LessSafeKey>>>]>,
+    shards: Box<[Mutex<LruCache<CacheKey, Arc<AeadCipher>>>]>,
 }
 
 impl SessionKeyCache {
@@ -99,7 +99,7 @@ impl SessionKeyCache {
     /// distinguish SS-2022 8-byte session IDs as well as scattered legacy
     /// 16/32-byte salts.
     #[inline]
-    fn shard_for(&self, key: &CacheKey) -> &Mutex<LruCache<CacheKey, Arc<LessSafeKey>>> {
+    fn shard_for(&self, key: &CacheKey) -> &Mutex<LruCache<CacheKey, Arc<AeadCipher>>> {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
         let mut h = FNV_OFFSET;
@@ -116,12 +116,12 @@ impl SessionKeyCache {
         &self.shards[(h as usize) & (SHARD_COUNT - 1)]
     }
 
-    pub fn get(&self, user_fingerprint: u64, salt: &[u8]) -> Option<Arc<LessSafeKey>> {
+    pub fn get(&self, user_fingerprint: u64, salt: &[u8]) -> Option<Arc<AeadCipher>> {
         let key = CacheKey::new(user_fingerprint, salt)?;
         self.shard_for(&key).lock().get(&key).cloned()
     }
 
-    pub fn insert(&self, user_fingerprint: u64, salt: &[u8], value: Arc<LessSafeKey>) {
+    pub fn insert(&self, user_fingerprint: u64, salt: &[u8], value: Arc<AeadCipher>) {
         let Some(key) = CacheKey::new(user_fingerprint, salt) else {
             return;
         };

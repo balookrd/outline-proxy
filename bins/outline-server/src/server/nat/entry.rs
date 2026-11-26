@@ -319,11 +319,9 @@ impl NatEntry {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub(crate) fn random_session_id() -> Result<[u8; 8]> {
-    use ring::rand::{SecureRandom, SystemRandom};
+    use rand::Rng as _;
 
     let mut session_id = [0_u8; 8];
-    SystemRandom::new()
-        .fill(&mut session_id)
-        .map_err(|error| anyhow::anyhow!("failed to generate UDP session id: {error:?}"))?;
+    rand::rng().fill_bytes(&mut session_id);
     Ok(session_id)
 }

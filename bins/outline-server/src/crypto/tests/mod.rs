@@ -1,8 +1,8 @@
 //! Shared helpers for the per-submodule test files in this directory.
 //!
 //! The actual tests live next to each crypto submodule's source file via
-//! `#[path = "tests/<name>.rs"] mod tests;` — see `crypto/primitives.rs`,
-//! `crypto/stream.rs`, etc. This `mod.rs` only exposes helpers that several
+//! `#[path = "tests/<name>.rs"] mod tests;` — see `crypto/stream.rs`,
+//! `crypto/udp.rs`, etc. This `mod.rs` only exposes helpers that several
 //! of those test files share.
 
 use std::sync::Arc;

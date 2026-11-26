@@ -4,25 +4,18 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use aes::{Aes128, Aes256, cipher::KeyInit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chacha20poly1305::XChaCha20Poly1305;
 use outline_net::IpAliasTable;
 use outline_wire::MasterKeyError;
+use shadowsocks_crypto::{AesHeaderCipher, XChaChaCipher};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use super::error::CryptoError;
 use crate::config::CipherKind;
 
-#[allow(clippy::large_enum_variant)]
-pub(super) enum AesHeaderCipher {
-    Aes128(Aes128),
-    Aes256(Aes256),
-}
-
 struct CachedCiphers {
-    xchacha: OnceLock<XChaCha20Poly1305>,
+    xchacha: OnceLock<XChaChaCipher>,
     aes_header: OnceLock<AesHeaderCipher>,
 }
 
@@ -84,12 +77,11 @@ impl UserKey {
         h.wrapping_mul(FNV_PRIME)
     }
 
-    pub(super) fn xchacha_cipher(&self) -> Result<&XChaCha20Poly1305, CryptoError> {
+    pub(super) fn xchacha_cipher(&self) -> Result<&XChaChaCipher, CryptoError> {
         if let Some(c) = self.ciphers.xchacha.get() {
             return Ok(c);
         }
-        let cipher = XChaCha20Poly1305::new_from_slice(self.master_key())
-            .map_err(|_| CryptoError::Cipher)?;
+        let cipher = XChaChaCipher::new(self.master_key())?;
         Ok(self.ciphers.xchacha.get_or_init(|| cipher))
     }
 
@@ -97,15 +89,7 @@ impl UserKey {
         if let Some(c) = self.ciphers.aes_header.get() {
             return Ok(c);
         }
-        let cipher = match self.cipher {
-            CipherKind::Aes128Gcm2022 => AesHeaderCipher::Aes128(
-                Aes128::new_from_slice(self.master_key()).map_err(|_| CryptoError::Cipher)?,
-            ),
-            CipherKind::Aes256Gcm2022 => AesHeaderCipher::Aes256(
-                Aes256::new_from_slice(self.master_key()).map_err(|_| CryptoError::Cipher)?,
-            ),
-            _ => return Err(CryptoError::InvalidHeader),
-        };
+        let cipher = AesHeaderCipher::new(self.cipher, self.master_key())?;
         Ok(self.ciphers.aes_header.get_or_init(|| cipher))
     }
 

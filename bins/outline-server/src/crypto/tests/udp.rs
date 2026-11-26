@@ -62,7 +62,7 @@ fn encrypts_ss2022_chacha_udp_response() {
         0,
     )
     .unwrap();
-    assert!(packet.len() > super::super::primitives::XNONCE_LEN);
+    assert!(packet.len() > shadowsocks_crypto::SHADOWSOCKS_XNONCE_LEN);
 }
 
 #[test]

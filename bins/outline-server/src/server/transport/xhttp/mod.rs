@@ -1078,21 +1078,9 @@ pub(in crate::server) use outline_wire::xhttp::is_valid_session_id;
 /// keep working uniformly.
 pub(in crate::server) fn generate_anonymous_session_id() -> String {
     use outline_wire::xhttp::SESSION_ID_ALPHABET as ALPHABET;
-    use ring::rand::{SecureRandom, SystemRandom};
+    use rand::Rng as _;
     let mut raw = [0_u8; 16];
-    // Best-effort RNG: if the platform RNG fails (extremely unlikely
-    // outside of test mocks) we still need a non-empty, unique-ish
-    // id. Salt the timestamp into the alphabet so two callers in the
-    // same nanosecond don't necessarily collide.
-    if SystemRandom::new().fill(&mut raw).is_err() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        for (i, byte) in raw.iter_mut().enumerate() {
-            *byte = (now >> (i * 4)) as u8;
-        }
-    }
+    rand::rng().fill_bytes(&mut raw);
     raw.iter()
         .map(|b| char::from(ALPHABET[(*b as usize) % ALPHABET.len()]))
         .collect()

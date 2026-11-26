@@ -4,12 +4,10 @@
 //! re-encoded so downstream relay code keeps consuming
 //! `SOCKS5 address || payload` byte strings.
 
-use ring::aead::Nonce;
-
 #[cfg(test)]
 pub(super) use outline_wire::ss2022::SS2022_TCP_REQUEST_TYPE;
 pub(super) use outline_wire::ss2022::{
-    SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_TCP_RESPONSE_TYPE,
+    SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
     SS2022_UDP_SEPARATE_HEADER_LEN,
 };
 use outline_wire::ss2022::{Ss2022HeaderError, Ss2022Request};
@@ -27,10 +25,8 @@ impl From<Ss2022HeaderError> for CryptoError {
 }
 
 #[inline]
-pub(super) fn ss2022_udp_nonce(separate_header: &[u8; SS2022_UDP_SEPARATE_HEADER_LEN]) -> Nonce {
-    Nonce::assume_unique_for_key(outline_wire::ss2022::udp_nonce_from_separate_header(
-        separate_header,
-    ))
+pub(super) fn ss2022_udp_nonce(separate_header: &[u8; SS2022_UDP_SEPARATE_HEADER_LEN]) -> [u8; 12] {
+    outline_wire::ss2022::udp_nonce_from_separate_header(separate_header)
 }
 
 pub(super) fn validate_ss2022_request_fixed_header(header: &[u8]) -> Result<usize, CryptoError> {

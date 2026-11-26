@@ -86,10 +86,9 @@ impl Ipv6Prefix {
 }
 
 fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
-    use ring::rand::{SecureRandom, SystemRandom};
-    SystemRandom::new()
-        .fill(buf)
-        .map_err(|error| std::io::Error::other(format!("rng failure: {error:?}")))
+    use rand::Rng as _;
+    rand::rng().fill_bytes(buf);
+    Ok(())
 }
 
 fn prefix_keep_byte(byte_index: usize, prefix_len: u8) -> u8 {

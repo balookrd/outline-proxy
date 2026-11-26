@@ -2,12 +2,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use ring::aead::Aad;
+use shadowsocks_crypto::{AeadCipher, LEGACY_MAX_PAYLOAD_LEN, StreamNonce};
 
 use crate::config::CipherKind;
 use crate::crypto::tests::users;
 use crate::crypto::{
-    AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey, primitives, ss2022_header,
+    AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey, ss2022_header,
 };
 use crate::protocol::TargetAddr;
 
@@ -68,7 +68,7 @@ fn roundtrip_aes128_stream() {
 fn legacy_stream_encryptor_splits_large_responses() {
     let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
-    let plaintext = vec![0x5a; primitives::LEGACY_MAX_CHUNK_SIZE + 10_000];
+    let plaintext = vec![0x5a; LEGACY_MAX_PAYLOAD_LEN + 10_000];
     let mut buf = BytesMut::new();
     encryptor.encrypt_chunk(&plaintext, &mut buf).unwrap();
     let ciphertext = buf.freeze();
@@ -161,37 +161,25 @@ fn roundtrip_ss2022_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = primitives::build_session_key(
+    let key = AeadCipher::from_master_and_salt(
         CipherKind::Aes128Gcm2022,
         users[0].master_key(),
         &request_salt,
     )
     .unwrap();
-    let mut nonce_counter = 0;
+    let mut nonce = StreamNonce::new();
 
     let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
-    let mut fixed_ct = fixed_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut fixed_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&fixed_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &fixed_header, &mut request)
+        .unwrap();
 
     let mut var_header = target_bytes.clone();
     var_header.extend_from_slice(&1_u16.to_be_bytes());
     var_header.push(0xaa);
-    let mut var_ct = var_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut var_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&var_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &var_header, &mut request)
+        .unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     decryptor.feed_ciphertext(&request);
@@ -216,37 +204,25 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = primitives::build_session_key(
+    let key = AeadCipher::from_master_and_salt(
         CipherKind::Chacha20Poly13052022,
         users[0].master_key(),
         &request_salt,
     )
     .unwrap();
-    let mut nonce_counter = 0;
+    let mut nonce = StreamNonce::new();
 
     let mut fixed_header = vec![ss2022_header::SS2022_TCP_REQUEST_TYPE];
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
-    let mut fixed_ct = fixed_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut fixed_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&fixed_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &fixed_header, &mut request)
+        .unwrap();
 
     let mut var_header = target_bytes.clone();
     var_header.extend_from_slice(&1_u16.to_be_bytes());
     var_header.push(0xbb);
-    let mut var_ct = var_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut var_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&var_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &var_header, &mut request)
+        .unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     decryptor.feed_ciphertext(&request);
@@ -332,37 +308,25 @@ fn stream_user_hint_hit_on_ss2022() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = primitives::build_session_key(
+    let key = AeadCipher::from_master_and_salt(
         CipherKind::Aes128Gcm2022,
         users[1].master_key(),
         &request_salt,
     )
     .unwrap();
-    let mut nonce_counter = 0;
+    let mut nonce = StreamNonce::new();
 
     let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
-    let mut fixed_ct = fixed_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut fixed_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&fixed_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &fixed_header, &mut request)
+        .unwrap();
 
     let mut var_header = target_bytes.clone();
     var_header.extend_from_slice(&1_u16.to_be_bytes());
     var_header.push(0xee);
-    let mut var_ct = var_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut var_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&var_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &var_header, &mut request)
+        .unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     decryptor.set_user_hint(Some(1));
@@ -410,37 +374,25 @@ fn request_salt_exposed_after_ss2022_handshake() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = primitives::build_session_key(
+    let key = AeadCipher::from_master_and_salt(
         CipherKind::Aes128Gcm2022,
         users[0].master_key(),
         &request_salt,
     )
     .unwrap();
-    let mut nonce_counter = 0;
+    let mut nonce = StreamNonce::new();
 
     let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
-    let mut fixed_ct = fixed_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut fixed_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&fixed_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &fixed_header, &mut request)
+        .unwrap();
 
     let mut var_header = target_bytes.clone();
     var_header.extend_from_slice(&1_u16.to_be_bytes());
     var_header.push(0xaa);
-    let mut var_ct = var_header.clone();
-    key.seal_in_place_append_tag(
-        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
-        Aad::empty(),
-        &mut var_ct,
-    )
-    .unwrap();
-    request.extend_from_slice(&var_ct);
+    key.encrypt_into(&nonce.next().unwrap(), &var_header, &mut request)
+        .unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     decryptor.feed_ciphertext(&request);

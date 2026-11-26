@@ -443,14 +443,15 @@ impl UpdateInstaller {
             .map_err(|e| format!("Failed to create temporary file {}: {e}", tmp_path.display()))?;
         let mut writer = std::io::BufWriter::new(file);
 
-        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        use sha2::{Digest as _, Sha256};
+        let mut hasher = Sha256::new();
         let mut downloaded_bytes = 0u64;
 
         use std::io::Write;
         loop {
             match resp.chunk().await {
                 Ok(Some(chunk)) => {
-                    context.update(&chunk);
+                    hasher.update(&chunk);
                     if let Err(e) = writer.write_all(&chunk) {
                         let _ = std::fs::remove_file(&tmp_path);
                         return Err(format!("Failed to write to file: {e}"));
@@ -472,8 +473,8 @@ impl UpdateInstaller {
         }
         drop(writer);
 
-        let digest = context.finish();
-        let calculated_hash = to_hex(digest.as_ref());
+        let digest = hasher.finalize();
+        let calculated_hash = to_hex(&digest);
 
         if !calculated_hash.eq_ignore_ascii_case(&expected_sha256) {
             let _ = std::fs::remove_file(&tmp_path);

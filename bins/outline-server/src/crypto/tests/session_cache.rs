@@ -1,9 +1,8 @@
 use super::*;
-use ring::aead::{AES_128_GCM, LessSafeKey, UnboundKey};
+use shadowsocks_crypto::CipherKind;
 
-fn dummy_key() -> Arc<LessSafeKey> {
-    let unbound = UnboundKey::new(&AES_128_GCM, &[0u8; 16]).unwrap();
-    Arc::new(LessSafeKey::new(unbound))
+fn dummy_key() -> Arc<AeadCipher> {
+    Arc::new(AeadCipher::new(CipherKind::Aes128Gcm, &[0u8; 16]).unwrap())
 }
 
 #[test]

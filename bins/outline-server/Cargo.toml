@@ -7,14 +7,13 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-aes = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+aws-lc-rs = { workspace = true }
 axum = { workspace = true, features = ["ws", "http2"] }
 base64 = { workspace = true, features = ["std"] }
 blake3 = { workspace = true }
 bytes = { workspace = true }
-chacha20poly1305 = { workspace = true }
 clap = { workspace = true, default-features = true, features = ["derive", "env"] }
 dashmap = { workspace = true }
 futures-util = { workspace = true, features = ["sink", "std"] }
@@ -43,12 +42,10 @@ rand = { workspace = true }
 # CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the
 # cluster mesh to build its PSK-derived self-signed interconnect certificate.
 rcgen = { workspace = true, features = ["pem", "aws_lc_rs"] }
-# ring stays for the Shadowsocks AEAD / SHA-256 paths in `src/crypto/*`; it is
-# NOT the rustls CryptoProvider (that is aws-lc-rs, see `rustls` below).
-ring = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+shadowsocks-crypto = { path = "../../crates/shadowsocks-crypto" }
 socket2 = { workspace = true }
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
 subtle = { workspace = true }

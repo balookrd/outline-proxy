@@ -1,21 +1,16 @@
 use std::{cell::RefCell, sync::Arc};
 
-use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt};
-use chacha20poly1305::aead::AeadInOut as _;
-use ring::{
-    aead::{Aad, LessSafeKey},
-    rand::{SecureRandom, SystemRandom},
-};
+use rand::Rng as _;
+use shadowsocks_crypto::{AeadCipher, SHADOWSOCKS_TAG_LEN, SHADOWSOCKS_XNONCE_LEN};
 
 use super::{
     error::CryptoError,
-    primitives::{TAG_LEN, XNONCE_LEN, build_session_key, nonce_zero},
     session_cache::SessionKeyCache,
     ss2022_header::{
         SS2022_UDP_SEPARATE_HEADER_LEN, parse_ss2022_chacha_udp_request_body,
         parse_ss2022_udp_request_body, ss2022_udp_nonce,
     },
-    user_key::{AesHeaderCipher, UserKey},
+    user_key::UserKey,
 };
 use crate::{clock, config::CipherKind, protocol::TargetAddr};
 
@@ -66,7 +61,7 @@ pub fn decrypt_udp_packet_with_hint(
     preferred_user_index: Option<usize>,
     cache: Option<&SessionKeyCache>,
 ) -> Result<(UdpPacket, usize), CryptoError> {
-    if packet.len() < TAG_LEN {
+    if packet.len() < SHADOWSOCKS_TAG_LEN {
         return Err(CryptoError::PacketTooShort);
     }
 
@@ -90,22 +85,23 @@ pub fn decrypt_udp_packet_with_hint(
 }
 
 /// Resolve a derived session key for `(user_index, salt)` via cache lookup,
-/// falling back to `build_session_key`. The returned `Arc` is suitable for
-/// AEAD `open_in_place` either way; a fresh derivation is back-filled into
-/// the cache (when present) only after the caller verifies the AEAD tag —
-/// see the call sites below for the success-path `cache.insert(...)`.
+/// falling back to `AeadCipher::from_master_and_salt`. The returned `Arc` is
+/// suitable for AEAD `decrypt_detached_in_place` either way; a fresh derivation
+/// is back-filled into the cache (when present) only after the caller verifies
+/// the AEAD tag — see the call sites below for the success-path
+/// `cache.insert(...)`.
 fn resolve_session_key(
     user: &UserKey,
     _user_index: usize,
     salt: &[u8],
     cache: Option<&SessionKeyCache>,
-) -> Result<(Arc<LessSafeKey>, bool), CryptoError> {
+) -> Result<(Arc<AeadCipher>, bool), CryptoError> {
     if let Some(cache) = cache
         && let Some(key) = cache.get(user.key_fingerprint(), salt)
     {
         return Ok((key, true));
     }
-    let key = Arc::new(build_session_key(user.cipher(), user.master_key(), salt)?);
+    let key = Arc::new(AeadCipher::from_master_and_salt(user.cipher(), user.master_key(), salt)?);
     Ok((key, false))
 }
 
@@ -116,19 +112,20 @@ fn try_decrypt_udp_packet_for_user(
     cache: Option<&SessionKeyCache>,
 ) -> Result<Option<UdpPacket>, CryptoError> {
     if user.cipher() == CipherKind::Chacha20Poly13052022 {
-        if packet.len() < XNONCE_LEN + TAG_LEN {
+        if packet.len() < SHADOWSOCKS_XNONCE_LEN + SHADOWSOCKS_TAG_LEN {
             return Ok(None);
         }
 
-        let Some((nonce_bytes, ciphertext)) = packet.split_first_chunk::<XNONCE_LEN>() else {
+        let Some((nonce_bytes, ciphertext)) = packet.split_first_chunk::<SHADOWSOCKS_XNONCE_LEN>()
+        else {
             return Ok(None);
         };
         let cipher = user.xchacha_cipher()?;
         let parsed = with_scratch(ciphertext, |buf| {
-            if cipher.decrypt_in_place(nonce_bytes.into(), b"", buf).is_err() {
+            let Ok(pt_len) = cipher.decrypt_detached_in_place(nonce_bytes, buf) else {
                 return Ok(None);
-            }
-            parse_ss2022_chacha_udp_request_body(buf).map(Some)
+            };
+            parse_ss2022_chacha_udp_request_body(&buf[..pt_len]).map(Some)
         })?;
         if let Some((payload, client_session_id, packet_id)) = parsed {
             return Ok(Some(UdpPacket {
@@ -143,7 +140,7 @@ fn try_decrypt_udp_packet_for_user(
     }
 
     if user.cipher().is_ss2022_aes() {
-        if packet.len() < SS2022_UDP_SEPARATE_HEADER_LEN + TAG_LEN {
+        if packet.len() < SS2022_UDP_SEPARATE_HEADER_LEN + SHADOWSOCKS_TAG_LEN {
             return Ok(None);
         }
 
@@ -157,18 +154,17 @@ fn try_decrypt_udp_packet_for_user(
                 .try_into()
                 .map_err(|_| CryptoError::InvalidHeader)?,
         );
-        let (less_safe, from_cache) =
+        let (cipher, from_cache) =
             resolve_session_key(user, user_index, &client_session_id, cache)?;
         let nonce = ss2022_udp_nonce(&separate_header);
-        let payload = with_scratch(ciphertext, |buf| {
-            match less_safe.open_in_place(nonce, Aad::empty(), buf) {
-                Ok(body) => parse_ss2022_udp_request_body(body).map(Some),
+        let payload =
+            with_scratch(ciphertext, |buf| match cipher.decrypt_detached_in_place(&nonce, buf) {
+                Ok(pt_len) => parse_ss2022_udp_request_body(&buf[..pt_len]).map(Some),
                 Err(_) => Ok(None),
-            }
-        })?;
+            })?;
         if let Some(payload) = payload {
             if !from_cache && let Some(cache) = cache {
-                cache.insert(user.key_fingerprint(), &client_session_id, Arc::clone(&less_safe));
+                cache.insert(user.key_fingerprint(), &client_session_id, Arc::clone(&cipher));
             }
             return Ok(Some(UdpPacket {
                 user: user.clone(),
@@ -182,25 +178,24 @@ fn try_decrypt_udp_packet_for_user(
     }
 
     let salt_len = user.cipher().salt_len();
-    if packet.len() < salt_len + TAG_LEN {
+    if packet.len() < salt_len + SHADOWSOCKS_TAG_LEN {
         return Ok(None);
     }
 
     let (salt, ciphertext) = packet.split_at(salt_len);
-    let (less_safe, from_cache) = resolve_session_key(user, user_index, salt, cache)?;
+    let (cipher, from_cache) = resolve_session_key(user, user_index, salt, cache)?;
     // Copy the plaintext out of the thread-local scratch rather than taking the
     // buffer: `mem::take` would leave the thread-local empty and make the next
     // legacy datagram allocate a fresh scratch. Same discipline as the SS-2022
     // branches above, which return a copy through `with_scratch`.
-    let plaintext = with_scratch(ciphertext, |buf| {
-        match less_safe.open_in_place(nonce_zero(), Aad::empty(), buf) {
-            Ok(slice) => Some(slice.to_vec()),
+    let plaintext =
+        with_scratch(ciphertext, |buf| match cipher.decrypt_detached_in_place(&[0u8; 12], buf) {
+            Ok(pt_len) => Some(buf[..pt_len].to_vec()),
             Err(_) => None,
-        }
-    });
+        });
     if let Some(plaintext) = plaintext {
         if !from_cache && let Some(cache) = cache {
-            cache.insert(user.key_fingerprint(), salt, Arc::clone(&less_safe));
+            cache.insert(user.key_fingerprint(), salt, Arc::clone(&cipher));
         }
         // Zero-pad the salt (16 or 32 bytes) to the widest width for a fixed-size
         // replay-filter key. `salt_len <= 32` for every legacy cipher.
@@ -222,16 +217,12 @@ fn try_decrypt_udp_packet_for_user(
 #[cfg(test)]
 pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut salt = vec![0_u8; user.cipher().salt_len()];
-    SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
+    rand::rng().fill_bytes(&mut salt);
 
-    let less_safe = build_session_key(user.cipher(), user.master_key(), &salt)?;
+    let cipher = AeadCipher::from_master_and_salt(user.cipher(), user.master_key(), &salt)?;
 
     let mut output = salt;
-    let mut ciphertext = plaintext.to_vec();
-    less_safe
-        .seal_in_place_append_tag(nonce_zero(), Aad::empty(), &mut ciphertext)
-        .map_err(|_| CryptoError::Cipher)?;
-    output.extend_from_slice(&ciphertext);
+    cipher.encrypt_into(&[0u8; 12], plaintext, &mut output)?;
     Ok(output)
 }
 
@@ -248,20 +239,19 @@ pub fn encrypt_udp_packet_for_response(
             let header = source.to_wire_bytes().map_err(|_| CryptoError::InvalidHeader)?;
             let salt_len = user.cipher().salt_len();
             let plaintext_len = header.len() + payload.len();
-            let mut packet = Vec::with_capacity(salt_len + plaintext_len + TAG_LEN);
+            let mut packet = Vec::with_capacity(salt_len + plaintext_len + SHADOWSOCKS_TAG_LEN);
             packet.resize(salt_len, 0);
-            SystemRandom::new()
-                .fill(&mut packet[..salt_len])
-                .map_err(|_| CryptoError::Random)?;
+            rand::rng().fill_bytes(&mut packet[..salt_len]);
             packet.extend_from_slice(&header);
             packet.extend_from_slice(payload);
 
-            let less_safe =
-                build_session_key(user.cipher(), user.master_key(), &packet[..salt_len])?;
-            let tag = less_safe
-                .seal_in_place_separate_tag(nonce_zero(), Aad::empty(), &mut packet[salt_len..])
-                .map_err(|_| CryptoError::Cipher)?;
-            packet.extend_from_slice(tag.as_ref());
+            let cipher = AeadCipher::from_master_and_salt(
+                user.cipher(),
+                user.master_key(),
+                &packet[..salt_len],
+            )?;
+            let tag = cipher.seal_in_place_separate_tag(&[0u8; 12], &mut packet[salt_len..])?;
+            packet.extend_from_slice(&tag);
             Ok(packet)
         },
         UdpCipherMode::Aes2022 { client_session_id } => {
@@ -274,7 +264,7 @@ pub fn encrypt_udp_packet_for_response(
             let encrypted_header = encrypt_ss2022_separate_header(user, &separate_header)?;
 
             let mut packet =
-                Vec::with_capacity(SS2022_UDP_SEPARATE_HEADER_LEN + body_len + TAG_LEN);
+                Vec::with_capacity(SS2022_UDP_SEPARATE_HEADER_LEN + body_len + SHADOWSOCKS_TAG_LEN);
             packet.extend_from_slice(&encrypted_header);
             let body_start = packet.len();
             outline_wire::ss2022::write_udp_response_body(
@@ -285,16 +275,16 @@ pub fn encrypt_udp_packet_for_response(
                 payload,
             );
 
-            let less_safe =
-                build_session_key(user.cipher(), user.master_key(), &server_session_id)?;
-            let tag = less_safe
-                .seal_in_place_separate_tag(
-                    ss2022_udp_nonce(&separate_header),
-                    Aad::empty(),
-                    &mut packet[body_start..],
-                )
-                .map_err(|_| CryptoError::Cipher)?;
-            packet.extend_from_slice(tag.as_ref());
+            let cipher = AeadCipher::from_master_and_salt(
+                user.cipher(),
+                user.master_key(),
+                &server_session_id,
+            )?;
+            let tag = cipher.seal_in_place_separate_tag(
+                &ss2022_udp_nonce(&separate_header),
+                &mut packet[body_start..],
+            )?;
+            packet.extend_from_slice(&tag);
             Ok(packet)
         },
         UdpCipherMode::Chacha2022 { client_session_id } => {
@@ -302,12 +292,11 @@ pub fn encrypt_udp_packet_for_response(
             let target = source.to_wire_bytes().map_err(|_| CryptoError::InvalidHeader)?;
             let body_len = 8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len();
 
-            let mut nonce = [0_u8; XNONCE_LEN];
-            SystemRandom::new()
-                .fill(&mut nonce)
-                .map_err(|_| CryptoError::Random)?;
+            let mut nonce = [0_u8; SHADOWSOCKS_XNONCE_LEN];
+            rand::rng().fill_bytes(&mut nonce);
 
-            let mut packet = Vec::with_capacity(XNONCE_LEN + body_len + TAG_LEN);
+            let mut packet =
+                Vec::with_capacity(SHADOWSOCKS_XNONCE_LEN + body_len + SHADOWSOCKS_TAG_LEN);
             packet.extend_from_slice(&nonce);
             let body_start = packet.len();
             outline_wire::ss2022::write_chacha_udp_response_body(
@@ -322,9 +311,8 @@ pub fn encrypt_udp_packet_for_response(
 
             let tag = user
                 .xchacha_cipher()?
-                .encrypt_inout_detached((&nonce).into(), b"", (&mut packet[body_start..]).into())
-                .map_err(|_| CryptoError::Cipher)?;
-            packet.extend_from_slice(tag.as_slice());
+                .seal_in_place_separate_tag(&nonce, &mut packet[body_start..])?;
+            packet.extend_from_slice(&tag);
             Ok(packet)
         },
     }
@@ -334,25 +322,16 @@ fn encrypt_ss2022_separate_header(
     user: &UserKey,
     separate_header: &[u8; SS2022_UDP_SEPARATE_HEADER_LEN],
 ) -> Result<[u8; SS2022_UDP_SEPARATE_HEADER_LEN], CryptoError> {
-    let mut block = *separate_header;
-    match user.aes_header_cipher()? {
-        AesHeaderCipher::Aes128(c) => c.encrypt_block((&mut block).into()),
-        AesHeaderCipher::Aes256(c) => c.encrypt_block((&mut block).into()),
-    }
-    Ok(block)
+    Ok(user.aes_header_cipher()?.encrypt_header(separate_header))
 }
 
 pub(super) fn decrypt_ss2022_separate_header(
     user: &UserKey,
     encrypted: &[u8],
 ) -> Result<[u8; SS2022_UDP_SEPARATE_HEADER_LEN], CryptoError> {
-    let mut block: [u8; SS2022_UDP_SEPARATE_HEADER_LEN] =
+    let block: [u8; SS2022_UDP_SEPARATE_HEADER_LEN] =
         encrypted.try_into().map_err(|_| CryptoError::InvalidHeader)?;
-    match user.aes_header_cipher()? {
-        AesHeaderCipher::Aes128(c) => c.decrypt_block((&mut block).into()),
-        AesHeaderCipher::Aes256(c) => c.decrypt_block((&mut block).into()),
-    }
-    Ok(block)
+    Ok(user.aes_header_cipher()?.decrypt_header(&block)?)
 }
 
 #[cfg(test)]

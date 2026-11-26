@@ -24,8 +24,8 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+aws-lc-rs = { workspace = true }
 libc = { workspace = true, default-features = true }
-ring = { workspace = true }
 rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
 # aws-lc-rs only: a second provider in the graph panics the rustls default
 # provider with "exactly one of aws-lc-rs and ring".
