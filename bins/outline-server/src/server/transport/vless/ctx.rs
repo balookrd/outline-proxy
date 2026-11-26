@@ -12,8 +12,9 @@ use crate::{
     protocol::vless::VlessUser,
 };
 
+use outline_net::task::AbortOnDrop;
+
 use super::super::super::{
-    abort::AbortOnDrop,
     dns_cache::DnsCache,
     resumption::{OrphanRegistry, SessionId},
 };

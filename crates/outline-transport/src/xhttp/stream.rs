@@ -226,7 +226,7 @@ impl XhttpStream {
             _quic_carrier: None,
             #[cfg(feature = "h3")]
             h3_datagram: None,
-            _driver: crate::guards::AbortOnDrop::noop(),
+            _driver: AbortOnDrop::new(tokio::spawn(async {})),
         }
     }
 }

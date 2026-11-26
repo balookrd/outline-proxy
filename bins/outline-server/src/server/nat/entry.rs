@@ -13,12 +13,12 @@ use parking_lot::Mutex;
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
-use crate::server::abort::AbortOnDrop;
 use crate::{
     clock,
     crypto::{UdpCipherMode, UserKey},
     metrics::{AppProtocol, PerUserCounters, Protocol},
 };
+use outline_net::task::AbortOnDrop;
 
 /// Lookup key for a NAT entry.  Identifies the (user, routing mark, resolved
 /// upstream address) triple, optionally narrowed to a single resumable session

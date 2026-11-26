@@ -30,7 +30,6 @@ pub(in crate::server) mod carrier_padding;
 mod fallback;
 mod h3_datagram;
 mod held_header;
-mod jittered_ticker;
 pub(in crate::server) mod mesh_relay;
 mod proxy_protocol;
 mod resume_headers;

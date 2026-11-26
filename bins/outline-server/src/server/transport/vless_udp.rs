@@ -22,9 +22,10 @@ use crate::server::cluster::mesh::{MeshShape, read_datagram};
 use super::carrier_padding;
 use super::h3_datagram::{DatagramDownlink, DownlinkSend, VLESS_PROTO_LABEL};
 use super::upstream_source::{MeshDatagramHalves, MeshUpstreamSetup, VlessUdpSink};
+use outline_net::task::AbortOnDrop;
+
 use super::{
     super::{
-        abort::AbortOnDrop,
         connect::resolve_udp_target,
         constants::MAX_UDP_PAYLOAD_SIZE,
         nat::bind_nat_udp_socket,

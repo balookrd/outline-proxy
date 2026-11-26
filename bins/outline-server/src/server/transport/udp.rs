@@ -32,7 +32,8 @@ use crate::{
     server::replay::{self, ReplayCheck, ReplayStore},
 };
 
-use super::super::abort::AbortOnDrop;
+use outline_net::task::AbortOnDrop;
+
 use super::super::cluster::mesh::{CloseIntent, read_datagram, write_datagram};
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
@@ -1345,11 +1346,9 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     ));
     // Detection tick. Bounded: aborted when this handle drops at carrier
     // teardown, so it never outlives the carrier.
-    let _throttle_tick = throttle_monitor.clone().map(|m| {
-        crate::server::abort::AbortOnDrop::new(tokio::spawn(
-            super::throughput_monitor::run_throttle_tick(m),
-        ))
-    });
+    let _throttle_tick = throttle_monitor
+        .clone()
+        .map(|m| AbortOnDrop::new(tokio::spawn(super::throughput_monitor::run_throttle_tick(m))));
 
     // Strip carrier padding from inbound datagrams before SS decryption when
     // this path pads. One WS Binary frame carries exactly one padding frame

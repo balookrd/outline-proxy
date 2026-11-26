@@ -28,7 +28,6 @@ use super::super::xhttp::handlers::XhttpEdge;
 use super::*;
 use crate::config::CipherKind;
 use crate::protocol::TargetAddr;
-use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
@@ -38,6 +37,7 @@ use crate::server::nat::UdpResponseSender;
 use crate::server::peer_user_cache::PeerUserCache;
 use crate::server::resumption::ResumptionConfig;
 use crate::server::tests::sample_config;
+use outline_net::task::AbortOnDrop;
 
 /// One scripted inbound event on the client side of the carrier.
 enum Step {

@@ -12,8 +12,9 @@ use crate::{
     protocol::vless::{self, VlessUser},
 };
 
+use outline_net::task::AbortOnDrop;
+
 use super::super::super::{
-    abort::AbortOnDrop,
     connect::connect_tcp_target,
     relay::{GREEDY_DRAIN_TARGET, UpstreamRead, try_read_bounded},
     resumption::{PARK_HARVEST_WAIT, Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId},

@@ -477,5 +477,5 @@ mod tests;
 /// the wire on a timer — keepalive pings, probes — sleeps for this instead of
 /// the bare interval, so the gaps between its packets are not constant.
 pub fn jittered(interval: std::time::Duration) -> std::time::Duration {
-    outline_wire::jitter::jitter_down(interval, rand::random())
+    outline_net::time::jittered_period(interval)
 }

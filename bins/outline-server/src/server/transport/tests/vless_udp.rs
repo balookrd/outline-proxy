@@ -19,8 +19,8 @@ use super::super::upstream_source::VlessUdpSink;
 use super::super::vless::{UdpUpstream, VlessRelayOutcome, VlessWsRouteCtx};
 use super::{DatagramDownlink, forward_vless_udp_datagram, send_downlink};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
-use crate::server::abort::AbortOnDrop;
 use crate::server::tests::sample_config;
+use outline_net::task::AbortOnDrop;
 
 const SCHEME: PaddingScheme = PaddingScheme::new(4, 16);
 

@@ -43,7 +43,8 @@ use crate::{
     protocol::parse_target_addr,
 };
 
-use super::super::abort::AbortOnDrop;
+use outline_net::{task::AbortOnDrop, time::JitteredTicker};
+
 use super::super::connect::connect_tcp_target;
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, ws_keepalive_interval,
@@ -51,7 +52,6 @@ use super::super::constants::{
 use super::super::dns_cache::DnsCache;
 use super::super::relay::UpstreamRelayOutcome;
 use super::super::salt_replay::{SaltReplayCheck, SaltReplayStore};
-use super::jittered_ticker::JitteredTicker;
 use outline_wire::resume::build_v1_payload;
 
 use super::super::resumption::{
@@ -436,11 +436,9 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     ));
     // Detection tick. Bounded: aborted when this handle drops at carrier
     // teardown, so it never outlives the carrier.
-    let _throttle_tick = throttle_monitor.clone().map(|m| {
-        crate::server::abort::AbortOnDrop::new(tokio::spawn(
-            super::throughput_monitor::run_throttle_tick(m),
-        ))
-    });
+    let _throttle_tick = throttle_monitor
+        .clone()
+        .map(|m| AbortOnDrop::new(tokio::spawn(super::throughput_monitor::run_throttle_tick(m))));
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     // Try last-seen user first when this peer reconnects: cache hit avoids

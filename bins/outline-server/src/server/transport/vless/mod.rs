@@ -14,6 +14,8 @@ use crate::{
     protocol::vless::{self, VlessCommand, VlessUser, mask_uuid},
 };
 
+use outline_net::{task::AbortOnDrop, time::JitteredTicker};
+
 use super::super::{
     constants::{WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, ws_keepalive_interval},
     resumption::{Parked, ResumeOutcome, SessionId},
@@ -23,7 +25,6 @@ use super::h3_datagram::{
     DatagramAnchor, DatagramDownlink, DatagramLink, DatagramTarget, H3DatagramRoute, LinkPolicy,
     VLESS_PROTO_LABEL, next_link_datagram,
 };
-use super::jittered_ticker::JitteredTicker;
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::throughput_monitor;
@@ -32,7 +33,6 @@ use super::vless_mux::{self, MuxAccounting, MuxRouteCtx, MuxServerCtx, MuxState}
 use super::vless_udp::{self, forward_vless_udp_client_frames, forward_vless_udp_datagram};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
-use crate::server::abort::AbortOnDrop;
 
 mod ctx;
 mod tcp;

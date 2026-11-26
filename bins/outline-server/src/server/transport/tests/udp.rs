@@ -25,7 +25,6 @@ use crate::config::CipherKind;
 use crate::crypto::{SessionKeyCache, UserKey, decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::protocol::TargetAddr;
-use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
@@ -47,6 +46,7 @@ use crate::server::transport::resume_headers::{
 };
 use crate::server::transport::upstream_source::UpstreamSource;
 use crate::server::transport::ws_socket::{WsFrame, WsSocket};
+use outline_net::task::AbortOnDrop;
 
 fn key(port: u16) -> NatKey {
     let target: SocketAddr = format!("127.0.0.1:{port}").parse().expect("valid target");

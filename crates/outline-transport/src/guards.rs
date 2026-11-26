@@ -1,47 +1,12 @@
 use std::sync::Arc;
-use tokio::task::JoinHandle;
+
+pub use outline_net::task::AbortOnDrop;
 
 use outline_metrics::{
     add_transport_connects_active, add_uplink_open_connections, add_upstream_transports_active,
     current_active_uplink, record_transport_connect, record_uplink_connection_close,
     record_upstream_transport,
 };
-
-/// `JoinHandle` newtype that aborts the task on `Drop`.
-///
-/// Tokio's bare `JoinHandle` only detaches the task on drop — it keeps
-/// running. For tasks whose lifetime should be bounded by the owning
-/// struct (UDP relay readers, NAT entry pumps, per-connection reader
-/// loops) that detachment is a leak vector: any early `?`-return or
-/// panic in the parent silently orphans the task, and the task then
-/// keeps holding sockets, buffers and `Arc`-shared state for as long as
-/// it can find anything to await on (UDP `recv` waits forever).
-///
-/// Stash one of these in a struct field and the field's natural drop
-/// runs `abort()` on every exit path — no manual cleanup needed.
-pub struct AbortOnDrop(JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl AbortOnDrop {
-    pub fn new(handle: JoinHandle<()>) -> Self {
-        Self(handle)
-    }
-
-    /// Test-only: a handle over a task that does nothing, for tests that
-    /// need to fill an `AbortOnDrop` field without standing up a real driver.
-    /// Its only caller today (`XhttpStream::for_loss_probe_test`) is exercised
-    /// from a Linux-gated test, so this is gated the same way to avoid a
-    /// dead-code warning on other dev platforms.
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn noop() -> Self {
-        Self::new(tokio::spawn(async {}))
-    }
-}
 
 pub(crate) struct TransportConnectGuard {
     source: &'static str,

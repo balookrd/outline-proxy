@@ -11,6 +11,8 @@ pub mod dns_cache;
 pub mod fs_util;
 pub mod ip_alias;
 pub mod relay_buf;
+pub mod task;
+pub mod time;
 
 pub use dns_cache::{AddrPreference, DnsCache};
 pub use ip_alias::{IpAliasError, IpAliasTable};

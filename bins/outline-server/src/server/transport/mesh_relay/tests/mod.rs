@@ -623,7 +623,7 @@ fn v5_udp_header(id: SessionId) -> OpenHeader {
 struct UdpEcho {
     addr: SocketAddr,
     sources: mpsc::UnboundedReceiver<SocketAddr>,
-    _task: crate::server::abort::AbortOnDrop<()>,
+    _task: outline_net::task::AbortOnDrop<()>,
 }
 
 impl UdpEcho {
@@ -650,7 +650,7 @@ async fn spawn_udp_echo() -> UdpEcho {
     UdpEcho {
         addr,
         sources,
-        _task: crate::server::abort::AbortOnDrop::new(task),
+        _task: outline_net::task::AbortOnDrop::new(task),
     }
 }
 

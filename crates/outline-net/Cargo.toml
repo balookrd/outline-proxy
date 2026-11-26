@@ -8,8 +8,10 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
 hashbrown = { workspace = true }
 libc = { workspace = true, default-features = true }
+outline-wire = { path = "../outline-wire" }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 socket2 = { workspace = true }
@@ -17,4 +19,4 @@ tokio = { workspace = true, features = ["net", "rt", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "test-util", "time"] }
