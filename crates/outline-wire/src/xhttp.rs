@@ -7,6 +7,9 @@
 
 use std::fmt;
 
+use http::{HeaderMap, HeaderName, HeaderValue};
+use rand::{Rng, RngExt};
+
 /// HTTP request header carrying the in-order seq number for an uplink
 /// POST. Lower-cased to match hyper's normalised headers. Our client
 /// puts the seq into the URL path (`<base>/<id>/<seq>`, the xray /
@@ -175,6 +178,58 @@ pub fn decode_kind(token: &str) -> SsPathKind {
         Some(index) if index % 2 == 1 => SsPathKind::Udp,
         _ => SsPathKind::Tcp,
     }
+}
+
+/// Minimum length (in bytes) of a random `X-Padding` header value.
+pub const PADDING_MIN_LEN: usize = 100;
+
+/// Maximum length (in bytes) of a random `X-Padding` header value.
+pub const PADDING_MAX_LEN: usize = 1024;
+
+/// Builds an `x-padding` header with a random alphanumeric value in
+/// [`PADDING_MIN_LEN..=PADDING_MAX_LEN`].
+pub fn generate_padding_header<R: Rng + ?Sized>(rng: &mut R) -> (HeaderName, HeaderValue) {
+    let len = rng.random_range(PADDING_MIN_LEN..=PADDING_MAX_LEN);
+    let mut raw = vec![0u8; len];
+    rng.fill_bytes(&mut raw);
+    for byte in &mut raw {
+        *byte = SESSION_ID_ALPHABET[(*byte as usize) % SESSION_ID_ALPHABET.len()];
+    }
+    let value = HeaderValue::from_bytes(&raw)
+        .expect("SESSION_ID_ALPHABET contains only visible ASCII header bytes");
+    (HeaderName::from_static(PADDING_HEADER), value)
+}
+
+/// Static browser-streamed SSE masquerade headers for XHTTP GET responses.
+pub fn masquerade_response_headers() -> [(HeaderName, HeaderValue); 4] {
+    [
+        (
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("text/event-stream"),
+        ),
+        (
+            HeaderName::from_static("cache-control"),
+            HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+        ),
+        (HeaderName::from_static("pragma"), HeaderValue::from_static("no-cache")),
+        (HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no")),
+    ]
+}
+
+/// Static headers for a 200 POST upload response.
+pub fn post_response_headers() -> [(HeaderName, HeaderValue); 2] {
+    [
+        (
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/octet-stream"),
+        ),
+        (HeaderName::from_static("cache-control"), HeaderValue::from_static("no-store")),
+    ]
+}
+
+/// Checks whether `name` in `headers` equals `"1"` (after ASCII whitespace trimming).
+pub fn header_flag_enabled(headers: &HeaderMap, name: &str) -> bool {
+    crate::resume::header_is_one(headers, name)
 }
 
 #[cfg(test)]

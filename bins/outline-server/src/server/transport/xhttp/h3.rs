@@ -29,11 +29,10 @@ use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::handlers::{
     XhttpEdge, XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge,
 };
-use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, SessionSlot, UPLINK_ROOM_PATIENCE, UplinkIngestError,
     XhttpRegistry, XhttpSession, XhttpSubmode, generate_padding_header,
-    masquerade_response_headers,
+    masquerade_response_headers, post_response_headers,
 };
 
 const MAX_POST_BYTES: usize = 256 * 1024;
@@ -449,9 +448,8 @@ async fn xhttp_h3_post(
     for (name, value) in post_response_headers() {
         resp_headers.insert(name, value);
     }
-    if let Some((name, value)) = generate_padding_header() {
-        resp_headers.insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    resp_headers.insert(name, value);
     session
         .relayed_echo
         .unwrap_or(ResumeResponseEcho {
@@ -791,9 +789,8 @@ fn apply_response_masquerade(headers: &mut HeaderMap) {
     for (name, value) in masquerade_response_headers() {
         headers.insert(name, value);
     }
-    if let Some((name, value)) = generate_padding_header() {
-        headers.insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    headers.insert(name, value);
 }
 
 async fn finish_with_status(
@@ -807,9 +804,8 @@ async fn finish_with_status(
     response
         .headers_mut()
         .insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
-    if let Some((name, value)) = generate_padding_header() {
-        response.headers_mut().insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    response.headers_mut().insert(name, value);
     stream
         .send_response(response)
         .await

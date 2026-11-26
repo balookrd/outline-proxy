@@ -1,8 +1,9 @@
 //! Tests for the XHTTP submode selector and session-id rules.
 
 use super::{
-    SESSION_ID_ALPHABET, SsPathKind, XhttpSubmode, decode_kind, encode_kind_first_byte,
-    is_valid_session_id,
+    PADDING_HEADER, PADDING_MAX_LEN, PADDING_MIN_LEN, SESSION_ID_ALPHABET, SsPathKind,
+    UDP_RECORDS_HEADER, XhttpSubmode, decode_kind, encode_kind_first_byte, generate_padding_header,
+    header_flag_enabled, is_valid_session_id, masquerade_response_headers, post_response_headers,
 };
 
 #[test]
@@ -127,4 +128,30 @@ fn decode_defaults_to_tcp_for_non_alphabet_or_empty() {
 fn kind_labels() {
     assert_eq!(SsPathKind::Tcp.as_str(), "tcp");
     assert_eq!(SsPathKind::Udp.as_str(), "udp");
+}
+
+#[test]
+fn generate_padding_header_respects_bounds_and_alphabet() {
+    let mut rng = rand::rng();
+    for _ in 0..64 {
+        let (name, value) = generate_padding_header(&mut rng);
+        assert_eq!(name.as_str(), PADDING_HEADER);
+        let s = value.to_str().unwrap();
+        assert!(
+            (PADDING_MIN_LEN..=PADDING_MAX_LEN).contains(&s.len()),
+            "unexpected X-Padding length {}",
+            s.len()
+        );
+        assert!(s.bytes().all(|b| SESSION_ID_ALPHABET.contains(&b)));
+    }
+}
+
+#[test]
+fn response_header_sets_and_flag_helper() {
+    assert_eq!(masquerade_response_headers().len(), 4);
+    assert_eq!(post_response_headers().len(), 2);
+    let mut map = http::HeaderMap::new();
+    assert!(!header_flag_enabled(&map, UDP_RECORDS_HEADER));
+    map.insert(UDP_RECORDS_HEADER, http::HeaderValue::from_static(" 1 "));
+    assert!(header_flag_enabled(&map, UDP_RECORDS_HEADER));
 }

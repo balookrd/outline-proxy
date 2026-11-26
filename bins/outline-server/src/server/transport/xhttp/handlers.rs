@@ -37,12 +37,11 @@ use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::upstream_source::UpstreamSource;
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink, unmatched_route_response};
-use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, SessionSlot, UDP_RECORDS_ENABLED,
     UDP_RECORDS_HEADER, UPLINK_ROOM_PATIENCE, UplinkIngestError, XhttpDuplex, XhttpRegistry,
     XhttpSession, XhttpSubmode, generate_anonymous_session_id, generate_padding_header,
-    is_valid_session_id, masquerade_response_headers,
+    is_valid_session_id, masquerade_response_headers, post_response_headers,
 };
 
 /// Cap on the bytes a single POST may carry, to bound memory per
@@ -585,9 +584,8 @@ async fn xhttp_post(
     for (name, value) in post_response_headers() {
         resp_headers.insert(name, value);
     }
-    if let Some((name, value)) = generate_padding_header() {
-        resp_headers.insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    resp_headers.insert(name, value);
     session
         .relayed_echo
         .unwrap_or(ResumeResponseEcho {
@@ -1268,16 +1266,14 @@ fn apply_response_masquerade(headers: &mut HeaderMap) {
     for (name, value) in masquerade_response_headers() {
         headers.insert(name, value);
     }
-    if let Some((name, value)) = generate_padding_header() {
-        headers.insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    headers.insert(name, value);
 }
 
 fn short_status(status: StatusCode) -> Response {
     let mut response = status.into_response();
-    if let Some((name, value)) = generate_padding_header() {
-        response.headers_mut().insert(name, value);
-    }
+    let (name, value) = generate_padding_header();
+    response.headers_mut().insert(name, value);
     response
 }
 

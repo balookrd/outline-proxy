@@ -45,7 +45,6 @@ use crate::server::resumption::SessionId;
 mod duplex;
 mod h3;
 pub(in crate::server) mod handlers;
-mod padding;
 
 #[cfg(test)]
 mod tests;
@@ -57,13 +56,20 @@ pub(in crate::server) use handlers::{
     XhttpAppProtocol, XhttpAxumState, XhttpRoute, is_malformed_xhttp_request, xhttp_handler,
     xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
-pub(in crate::server) use padding::{generate_padding_header, masquerade_response_headers};
 
-// XHTTP wire vocabulary (header names, `?mode=` submode selector) is
-// shared with the client and lives in `outline_wire::xhttp`.
+// XHTTP wire vocabulary (header names, `?mode=` submode selector,
+// masquerade/padding response headers) is shared with the client and
+// lives in `outline_wire::xhttp`.
 pub(in crate::server) use outline_wire::xhttp::{
-    FIN_HEADER, PADDING_HEADER, SEQ_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER, XhttpSubmode,
+    FIN_HEADER, SEQ_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER, XhttpSubmode,
+    masquerade_response_headers, post_response_headers,
 };
+
+/// Builds a random `x-padding` header using the process RNG.
+pub(in crate::server) fn generate_padding_header()
+-> (axum::http::HeaderName, axum::http::HeaderValue) {
+    outline_wire::xhttp::generate_padding_header(&mut rand::rng())
+}
 
 /// Soft cap on the bytes the per-session downlink ring may hold.
 /// The relay's `push_downlink` parks (awaits) once the ring sits
