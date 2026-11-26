@@ -8,10 +8,12 @@
 
 use tracing::debug;
 
+#[cfg(test)]
 pub(in crate::server) use outline_wire::resume::{
     ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
-    SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+    SYMMETRIC_REPLAY_HEADER,
 };
+use outline_wire::resume::{ResumeRequestHeaders, ResumeResponseHeaders};
 
 use super::super::cluster::{RouteDecision, decide};
 use super::super::resumption::{ClusterIdentity, OrphanRegistry, SessionId};
@@ -68,14 +70,9 @@ impl ResumeContext {
         headers: &axum::http::HeaderMap,
         registry: &OrphanRegistry,
     ) -> Self {
-        let requested_resume_raw = headers
-            .get(RESUME_REQUEST_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(SessionId::parse_hex);
-        let resume_capable = headers
-            .get(RESUME_CAPABLE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.trim() == "1");
+        let raw = ResumeRequestHeaders::parse_raw(headers);
+        let requested_resume_raw = raw.resume_request;
+        let resume_capable = raw.resume_capable;
         // Cluster edge routing: a resume id whose shard is not ours belongs to
         // another home. Reaching it is the mesh relay's job, and that decision is
         // taken separately by [`edge_route`] before this local negotiation runs —
@@ -107,22 +104,14 @@ impl ResumeContext {
         // read is safe: only the boolean capability bit is exposed, no
         // session-id existence is leaked. The actual control-frame emit
         // gates on the post-auth orphan-take hit + this flag.
-        let ack_prefix_requested = registry.enabled()
-            && headers
-                .get(ACK_PREFIX_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.trim() == "1");
+        let ack_prefix_requested = registry.enabled() && raw.ack_prefix;
         // v2 Symmetric Downlink Replay capability. Per spec, v2 cannot
         // exist without v1, and the server side must have a non-zero
         // `downlink_buffer_bytes` to participate. Both gates are
         // applied here so downstream code can trust a `true` flag
         // unconditionally.
-        let symmetric_replay_requested = ack_prefix_requested
-            && registry.symmetric_replay_enabled()
-            && headers
-                .get(SYMMETRIC_REPLAY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.trim() == "1");
+        let symmetric_replay_requested =
+            ack_prefix_requested && registry.symmetric_replay_enabled() && raw.symmetric_replay;
         // Client-reported downstream-ack offset. Only meaningful on a
         // resume request that also advertises v2; all other paths see
         // `0`. Per spec a malformed value is treated as `0` (replay
@@ -130,25 +119,13 @@ impl ResumeContext {
         // avoid a noisy WARN on a header an old proxy might forward
         // unfiltered, but the parse failure is observable.
         let client_acked_offset = if symmetric_replay_requested && requested_resume.is_some() {
-            match headers
-                .get(DOWN_ACKED_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.trim())
-            {
-                Some(value) if !value.is_empty() => match value.parse::<u64>() {
-                    Ok(n) => n,
-                    Err(error) => {
-                        debug!(
-                            ?error,
-                            value,
-                            "malformed X-Outline-Resume-Down-Acked; \
-                             treating as 0 per spec",
-                        );
-                        0
-                    },
-                },
-                _ => 0,
+            if raw.malformed_down_acked {
+                debug!(
+                    "malformed X-Outline-Resume-Down-Acked; \
+                     treating as 0 per spec",
+                );
             }
+            raw.down_acked
         } else {
             0
         };
@@ -210,26 +187,18 @@ pub(in crate::server) fn edge_route(
     headers: &axum::http::HeaderMap,
     identity: Option<&ClusterIdentity>,
 ) -> (RouteDecision, Option<EdgeResumeAdvert>) {
-    let requested = headers
-        .get(RESUME_REQUEST_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(SessionId::parse_hex);
+    let raw = ResumeRequestHeaders::parse_raw(headers);
+    let requested = raw.resume_request;
     match decide(identity, requested) {
         RouteDecision::Relay(shard) => {
             let session_id =
                 requested.expect("a Relay decision implies the client presented a resume id");
             let advert = EdgeResumeAdvert {
                 session_id,
-                resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),
-                ack_prefix: header_is_one(headers, ACK_PREFIX_HEADER),
-                symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
-                down_acked: headers
-                    .get(DOWN_ACKED_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0),
+                resume_capable: raw.resume_capable,
+                ack_prefix: raw.ack_prefix,
+                symmetric_replay: raw.symmetric_replay,
+                down_acked: raw.down_acked,
                 home_affinity: false,
             };
             (RouteDecision::Relay(shard), Some(advert))
@@ -237,18 +206,15 @@ pub(in crate::server) fn edge_route(
         RouteDecision::Local => {
             if requested.is_none()
                 && let Some(id) = identity
-                && let Some(affinity_id) = headers
-                    .get(outline_wire::resume::HOME_AFFINITY_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(SessionId::parse_hex)
+                && let Some(affinity_id) = raw.home_affinity
                 && let RouteDecision::Relay(shard) = decide(Some(id), Some(affinity_id))
             {
                 let fresh_id = SessionId::random_with_shard(&mut rand::rng(), &id.key, shard);
                 let advert = EdgeResumeAdvert {
                     session_id: fresh_id,
-                    resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),
-                    ack_prefix: header_is_one(headers, ACK_PREFIX_HEADER),
-                    symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
+                    resume_capable: raw.resume_capable,
+                    ack_prefix: raw.ack_prefix,
+                    symmetric_replay: raw.symmetric_replay,
                     down_acked: 0,
                     home_affinity: true,
                 };
@@ -257,15 +223,6 @@ pub(in crate::server) fn edge_route(
             (RouteDecision::Local, None)
         },
     }
-}
-
-/// Whether `name`'s value is the ASCII flag `1` (after trimming). Mirrors the
-/// capability gating in [`ResumeContext::from_request_headers`].
-fn header_is_one(headers: &axum::http::HeaderMap, name: &str) -> bool {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim() == "1")
 }
 
 /// Response-side resume echo, captured by value (the fields are `Copy`)
@@ -281,17 +238,13 @@ pub(in crate::server) struct ResumeResponseEcho {
 
 impl ResumeResponseEcho {
     pub(in crate::server) fn apply(&self, headers: &mut axum::http::HeaderMap) {
-        if let Some(id) = self.session_id
-            && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-        {
-            headers.insert(SESSION_RESPONSE_HEADER, value);
+        ResumeResponseHeaders {
+            session_id: self.session_id,
+            ack_prefix: self.ack_prefix,
+            symmetric_replay: self.symmetric_replay,
+            ..Default::default()
         }
-        if self.ack_prefix {
-            headers.insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-        }
-        if self.symmetric_replay {
-            headers.insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-        }
+        .write_to(headers);
     }
 }
 

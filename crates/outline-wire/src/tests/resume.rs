@@ -7,7 +7,9 @@
 //! consumes (previously each side tested against a private copy).
 
 use super::{
-    FLAGS_NONE, FRAME_LEN_V1, MAGIC, ParseResult, SessionId, VERSION_V1, build_v1_payload, parse_v1,
+    ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, FLAGS_NONE, FRAME_LEN_V1, MAGIC, ParseResult,
+    ResumeRequestHeaders, ResumeResponseHeaders, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+    SessionId, VERSION_V1, build_v1_payload, parse_v1,
 };
 
 #[test]
@@ -254,4 +256,67 @@ fn session_id_shard_round_trips_all_shards() {
         let parsed = SessionId::parse_hex(&id.to_hex()).unwrap();
         assert_eq!(parsed.shard(&key), shard);
     }
+}
+
+#[test]
+fn resume_request_headers_round_trip_and_mutual_exclusion() {
+    let resume_id = SessionId::from_bytes([0x11; 16]);
+    let affinity_id = SessionId::from_bytes([0x22; 16]);
+    let req = ResumeRequestHeaders {
+        resume_capable: true,
+        resume_request: Some(resume_id),
+        home_affinity: Some(affinity_id),
+        ack_prefix: true,
+        symmetric_replay: true,
+        down_acked: 4096,
+        udp_datagram: true,
+        udp_records: true,
+    };
+    let mut map = http::HeaderMap::new();
+    req.write_to(&mut map);
+
+    let parsed = ResumeRequestHeaders::parse_raw(&map);
+    assert!(parsed.resume_capable);
+    assert_eq!(parsed.resume_request, Some(resume_id));
+    // home_affinity is suppressed when resume_request is present.
+    assert_eq!(parsed.home_affinity, None);
+    assert!(parsed.ack_prefix);
+    assert!(parsed.symmetric_replay);
+    assert_eq!(parsed.down_acked, 4096);
+    assert!(!parsed.malformed_down_acked);
+    assert!(parsed.udp_datagram);
+    assert!(parsed.udp_records);
+}
+
+#[test]
+fn resume_request_parse_raw_handles_malformed_down_acked_and_trimmed_flags() {
+    let mut map = http::HeaderMap::new();
+    map.insert(ACK_PREFIX_HEADER, http::HeaderValue::from_static(" 1 "));
+    map.insert(DOWN_ACKED_HEADER, http::HeaderValue::from_static("not-a-u64"));
+    let parsed = ResumeRequestHeaders::parse_raw(&map);
+    assert!(parsed.ack_prefix);
+    assert_eq!(parsed.down_acked, 0);
+    assert!(parsed.malformed_down_acked);
+}
+
+#[test]
+fn resume_response_echo_masks_unrequested_and_enforces_v2_on_v1() {
+    let id = SessionId::from_bytes([0x55; 16]);
+    let mut resp_map = http::HeaderMap::new();
+    resp_map.insert(SESSION_RESPONSE_HEADER, id.to_hex().parse().unwrap());
+    resp_map.insert(SYMMETRIC_REPLAY_HEADER, http::HeaderValue::from_static(" 1 "));
+    resp_map.insert(crate::xhttp::UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("1"));
+
+    // Request asked for v1 + v2, but server echoed ONLY v2 (missing v1) and unrequested datagram.
+    let requested = ResumeRequestHeaders {
+        ack_prefix: true,
+        symmetric_replay: true,
+        udp_datagram: false,
+        ..Default::default()
+    };
+    let echo = ResumeResponseHeaders::parse_echo(&resp_map, &requested);
+    assert_eq!(echo.session_id, Some(id));
+    assert!(!echo.ack_prefix);
+    assert!(!echo.symmetric_replay, "v2 without v1 echo must be rejected");
+    assert!(!echo.udp_datagram, "unrequested datagram echo must be ignored");
 }

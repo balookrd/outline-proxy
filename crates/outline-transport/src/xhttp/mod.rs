@@ -93,10 +93,7 @@ pub(crate) use stream::XhttpStream;
 // Resume negotiation and XHTTP submode literals are wire vocabulary
 // shared with the server; the single definition lives in
 // `outline_wire::{resume, xhttp}`.
-pub(super) use outline_wire::resume::{
-    ACK_PREFIX_HEADER, HOME_AFFINITY_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
-    SESSION_RESPONSE_HEADER,
-};
+pub(super) use outline_wire::resume::{ACK_PREFIX_HEADER, SESSION_RESPONSE_HEADER};
 pub(super) use outline_wire::xhttp::{
     FIN_HEADER, UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
 };
@@ -468,43 +465,17 @@ pub(crate) fn build_session_request_headers(
         &slots,
         &mut headers,
     );
-    headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
-    if let Some(id) = open.resume_request {
-        headers.insert(
-            RESUME_REQUEST_HEADER,
-            HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
-        );
-    } else if let Some(affinity_id) = open.home_affinity {
-        headers.insert(
-            HOME_AFFINITY_HEADER,
-            HeaderValue::try_from(affinity_id.to_hex())
-                .expect("hex Session ID is a valid header value"),
-        );
+    outline_wire::resume::ResumeRequestHeaders {
+        resume_capable: true,
+        resume_request: open.resume_request,
+        home_affinity: open.home_affinity,
+        ack_prefix: open.ack_prefix_requested,
+        symmetric_replay: open.symmetric_replay_requested,
+        down_acked: open.client_acked_offset,
+        udp_datagram,
+        udp_records: open.datagram_records,
     }
-    if open.ack_prefix_requested {
-        headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
-    }
-    if open.symmetric_replay_requested {
-        headers.insert(crate::resumption::SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
-    }
-    if open.symmetric_replay_requested && open.client_acked_offset > 0 {
-        headers.insert(
-            crate::resumption::DOWN_ACKED_HEADER,
-            HeaderValue::from(open.client_acked_offset),
-        );
-    }
-    if open.datagram_records {
-        headers.insert(
-            http::HeaderName::from_static(UDP_RECORDS_HEADER),
-            HeaderValue::from_static(UDP_RECORDS_ENABLED),
-        );
-    }
-    if udp_datagram {
-        headers.insert(
-            http::HeaderName::from_static(UDP_DATAGRAM_HEADER),
-            HeaderValue::from_static("1"),
-        );
-    }
+    .write_to(&mut headers);
     Ok(headers)
 }
 

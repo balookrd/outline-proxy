@@ -11,9 +11,11 @@
 
 use std::fmt;
 
+use http::{HeaderMap, HeaderName, HeaderValue};
 use rand::Rng;
 
 use crate::cluster::{ObfuscationKey, ShardId, decode_shard, encode_session_id};
+use crate::xhttp::{UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
 
 /// Lower-cased name of the request header carrying the Session ID a
 /// client wishes to resume.
@@ -366,6 +368,176 @@ const fn hex_value(c: u8) -> Option<u8> {
         b'a'..=b'f' => Some(c - b'a' + 10),
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
+    }
+}
+
+/// Whether `name` in `headers` equals `"1"` after ASCII whitespace trimming.
+pub fn header_is_one(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == "1")
+}
+
+/// Client → server negotiation headers for session resumption and UDP framing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResumeRequestHeaders {
+    pub resume_capable: bool,
+    pub resume_request: Option<SessionId>,
+    /// Emitted only when `resume_request` is `None`.
+    pub home_affinity: Option<SessionId>,
+    pub ack_prefix: bool,
+    pub symmetric_replay: bool,
+    /// Emitted only when `symmetric_replay && down_acked > 0`.
+    pub down_acked: u64,
+    pub udp_datagram: bool,
+    pub udp_records: bool,
+}
+
+/// Raw parsed request headers before server-side registry / cluster policy gating.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RawResumeRequest {
+    pub resume_capable: bool,
+    pub resume_request: Option<SessionId>,
+    pub home_affinity: Option<SessionId>,
+    pub ack_prefix: bool,
+    pub symmetric_replay: bool,
+    pub down_acked: u64,
+    pub malformed_down_acked: bool,
+    pub udp_datagram: bool,
+    pub udp_records: bool,
+}
+
+impl ResumeRequestHeaders {
+    pub fn write_to(&self, headers: &mut HeaderMap) {
+        if self.resume_capable {
+            headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
+        }
+        if let Some(id) = self.resume_request {
+            headers.insert(
+                RESUME_REQUEST_HEADER,
+                HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
+            );
+        } else if let Some(affinity_id) = self.home_affinity {
+            headers.insert(
+                HOME_AFFINITY_HEADER,
+                HeaderValue::try_from(affinity_id.to_hex())
+                    .expect("hex Session ID is a valid header value"),
+            );
+        }
+        if self.ack_prefix {
+            headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
+        }
+        if self.symmetric_replay {
+            headers.insert(SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
+        }
+        if self.symmetric_replay && self.down_acked > 0 {
+            headers.insert(DOWN_ACKED_HEADER, HeaderValue::from(self.down_acked));
+        }
+        if self.udp_records {
+            headers.insert(
+                HeaderName::from_static(UDP_RECORDS_HEADER),
+                HeaderValue::from_static(UDP_RECORDS_ENABLED),
+            );
+        }
+        if self.udp_datagram {
+            headers.insert(
+                HeaderName::from_static(UDP_DATAGRAM_HEADER),
+                HeaderValue::from_static("1"),
+            );
+        }
+    }
+
+    pub fn parse_raw(headers: &HeaderMap) -> RawResumeRequest {
+        let resume_request = headers
+            .get(RESUME_REQUEST_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        let home_affinity = headers
+            .get(HOME_AFFINITY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        let (down_acked, malformed_down_acked) = match headers
+            .get(DOWN_ACKED_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+        {
+            Some(value) if !value.is_empty() => match value.parse::<u64>() {
+                Ok(n) => (n, false),
+                Err(_) => (0, true),
+            },
+            _ => (0, false),
+        };
+        RawResumeRequest {
+            resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),
+            resume_request,
+            home_affinity,
+            ack_prefix: header_is_one(headers, ACK_PREFIX_HEADER),
+            symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
+            down_acked,
+            malformed_down_acked,
+            udp_datagram: header_is_one(headers, UDP_DATAGRAM_HEADER),
+            udp_records: header_is_one(headers, UDP_RECORDS_HEADER),
+        }
+    }
+}
+
+/// Server → client echo headers confirming session id and negotiated capabilities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResumeResponseHeaders {
+    pub session_id: Option<SessionId>,
+    pub ack_prefix: bool,
+    pub symmetric_replay: bool,
+    pub udp_datagram: bool,
+    pub udp_records: bool,
+}
+
+impl ResumeResponseHeaders {
+    pub fn write_to(&self, headers: &mut HeaderMap) {
+        if let Some(id) = self.session_id {
+            headers.insert(
+                SESSION_RESPONSE_HEADER,
+                HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
+            );
+        }
+        if self.ack_prefix {
+            headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
+        }
+        if self.symmetric_replay {
+            headers.insert(SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
+        }
+        if self.udp_records {
+            headers.insert(
+                HeaderName::from_static(UDP_RECORDS_HEADER),
+                HeaderValue::from_static(UDP_RECORDS_ENABLED),
+            );
+        }
+        if self.udp_datagram {
+            headers.insert(
+                HeaderName::from_static(UDP_DATAGRAM_HEADER),
+                HeaderValue::from_static("1"),
+            );
+        }
+    }
+
+    pub fn parse_echo(headers: &HeaderMap, requested: &ResumeRequestHeaders) -> Self {
+        let session_id = headers
+            .get(SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        let ack_prefix = requested.ack_prefix && header_is_one(headers, ACK_PREFIX_HEADER);
+        let symmetric_replay = requested.symmetric_replay
+            && ack_prefix
+            && header_is_one(headers, SYMMETRIC_REPLAY_HEADER);
+        let udp_datagram = requested.udp_datagram && header_is_one(headers, UDP_DATAGRAM_HEADER);
+        let udp_records = requested.udp_records && header_is_one(headers, UDP_RECORDS_HEADER);
+        Self {
+            session_id,
+            ack_prefix,
+            symmetric_replay,
+            udp_datagram,
+            udp_records,
+        }
     }
 }
 

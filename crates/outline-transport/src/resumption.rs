@@ -44,46 +44,17 @@ pub(crate) fn apply_resume_request_headers(
     resume: &crate::dial_plan::DialResumeOptions,
     headers: &mut http::HeaderMap,
 ) {
-    headers.insert(RESUME_CAPABLE_HEADER, http::HeaderValue::from_static("1"));
-    if let Some(id) = resume.resume_request {
-        headers.insert(
-            RESUME_REQUEST_HEADER,
-            id.to_hex().parse().expect("hex Session ID is a valid header value"),
-        );
-    } else if let Some(affinity_id) = resume.home_affinity {
-        headers.insert(
-            HOME_AFFINITY_HEADER,
-            affinity_id
-                .to_hex()
-                .parse()
-                .expect("hex Session ID is a valid header value"),
-        );
+    outline_wire::resume::ResumeRequestHeaders {
+        resume_capable: true,
+        resume_request: resume.resume_request,
+        home_affinity: resume.home_affinity,
+        ack_prefix: resume.ack_prefix_requested,
+        symmetric_replay: resume.symmetric_replay_requested,
+        down_acked: resume.client_acked_offset,
+        udp_datagram: false,
+        udp_records: false,
     }
-    if resume.ack_prefix_requested {
-        // Capability advertise for Ack-Prefix Protocol v1. The server
-        // only emits the 14-byte control frame when it sees this header
-        // AND the resume hits; old servers ignore it.
-        headers.insert(ACK_PREFIX_HEADER, http::HeaderValue::from_static("1"));
-    }
-    if resume.symmetric_replay_requested {
-        // v2 Symmetric Downlink Replay capability advertise. Spec gates
-        // v2 on v1; the orchestrator enforces that invariant before the
-        // options reach a dial path.
-        headers.insert(SYMMETRIC_REPLAY_HEADER, http::HeaderValue::from_static("1"));
-    }
-    // v2 client-reported downstream-acked offset. Sent only on retry
-    // redials that also advertise v2 AND when the offset is non-zero
-    // (a fresh session has no prior bytes to claim).
-    if resume.symmetric_replay_requested && resume.client_acked_offset > 0 {
-        headers.insert(
-            DOWN_ACKED_HEADER,
-            resume
-                .client_acked_offset
-                .to_string()
-                .parse()
-                .expect("decimal u64 is a valid header value"),
-        );
-    }
+    .write_to(headers);
 }
 
 /// Writes the HTTP/3 datagram offer (`x-outline-udp-datagram: 1`) when the
@@ -133,22 +104,18 @@ pub(crate) fn parse_resume_response_echo(
     resume: &crate::dial_plan::DialResumeOptions,
     headers: &http::HeaderMap,
 ) -> NegotiatedResume {
-    let issued_session_id = headers
-        .get(SESSION_RESPONSE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(SessionId::parse_hex);
-    let ack_prefix_advertised_by_server = resume.ack_prefix_requested
-        && headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
-    let symmetric_replay_advertised_by_server = resume.symmetric_replay_requested
-        && ack_prefix_advertised_by_server
-        && headers.get(SYMMETRIC_REPLAY_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
-    let udp_datagram_accepted = resume.udp_datagram_requested
-        && headers.get(UDP_DATAGRAM_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+    let requested = outline_wire::resume::ResumeRequestHeaders {
+        ack_prefix: resume.ack_prefix_requested,
+        symmetric_replay: resume.symmetric_replay_requested,
+        udp_datagram: resume.udp_datagram_requested,
+        ..Default::default()
+    };
+    let echo = outline_wire::resume::ResumeResponseHeaders::parse_echo(headers, &requested);
     NegotiatedResume {
-        issued_session_id,
-        ack_prefix_advertised_by_server,
-        symmetric_replay_advertised_by_server,
-        udp_datagram_accepted,
+        issued_session_id: echo.session_id,
+        ack_prefix_advertised_by_server: echo.ack_prefix,
+        symmetric_replay_advertised_by_server: echo.symmetric_replay,
+        udp_datagram_accepted: echo.udp_datagram,
     }
 }
 
