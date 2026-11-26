@@ -281,7 +281,9 @@ fn reassemble_crypto(frames: &[u8]) -> Option<Vec<u8>> {
         if offset > next {
             break; // gap — the ClientHello prefix is incomplete
         }
-        let skip = (next - offset) as usize;
+        let Ok(skip) = usize::try_from(next - offset) else {
+            break;
+        };
         if let Some(slice) = data.get(skip..) {
             out.extend_from_slice(slice);
             next += slice.len() as u64;

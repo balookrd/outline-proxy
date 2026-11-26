@@ -202,7 +202,6 @@ impl TunDefragmenter {
             .build_packet()?;
         maybe_shrink_hash_map(&mut self.ipv4_sets);
         self.recalculate_total_buffered_bytes();
-        self.recalculate_total_buffered_bytes();
         self.set_active_fragment_sets_metric(IpVersion::V4);
         metrics::record_tun_ip_reassembly("ipv4", "success");
         Ok(DefragmentedPacket::ReadyOwned(packet))
@@ -365,7 +364,6 @@ impl TunDefragmenter {
     fn remove_ipv4_set(&mut self, key: Ipv4Key) {
         self.ipv4_sets.remove(&key);
         maybe_shrink_hash_map(&mut self.ipv4_sets);
-        self.recalculate_total_buffered_bytes();
         self.recalculate_total_buffered_bytes();
         self.set_active_fragment_sets_metric(IpVersion::V4);
     }

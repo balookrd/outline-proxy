@@ -56,7 +56,7 @@ impl UplinkWindow {
     }
 
     fn try_admit(&self, seq: u64) -> bool {
-        let mut posts = self.posts.lock().expect("uplink window lock poisoned");
+        let mut posts = self.posts.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((&low, _)) = posts.first_key_value()
             && seq - low >= self.max_posts
         {
@@ -67,7 +67,7 @@ impl UplinkWindow {
     }
 
     fn complete(&self, seq: u64) {
-        let mut posts = self.posts.lock().expect("uplink window lock poisoned");
+        let mut posts = self.posts.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(done) = posts.get_mut(&seq) {
             *done = true;
         }

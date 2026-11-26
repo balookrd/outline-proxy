@@ -219,6 +219,15 @@ fn empty_buffer_is_incomplete() {
     assert_eq!(sniff_host(&[]), SniffOutcome::Incomplete);
 }
 
+#[test]
+fn host_matches_any_handles_non_ascii_without_panicking() {
+    let list: Vec<Box<str>> = vec![Box::from("example.com")];
+    // Multi-byte UTF-8 character landing across `host.len() - suffix.len()` must
+    // not panic on a non-char-boundary slice.
+    assert!(!super::host_matches_any("тестexample.com", &list));
+    assert!(!super::host_matches_any("пример.com", &list));
+}
+
 proptest::proptest! {
     #![proptest_config(crate::wire::test_utils::parser_fuzz_config())]
 

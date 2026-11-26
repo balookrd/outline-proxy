@@ -585,17 +585,10 @@ pub(crate) fn note_first_use(url: &Url, profile: &'static Profile) -> bool {
     // Fast path: read lock is enough when the entry is already there,
     // so the hot dial path costs at most one shared read after the
     // first observation per host.
-    if map
-        .read()
-        .expect("fingerprint-profile log set lock poisoned")
-        .contains(&key)
-    {
+    if map.read().unwrap_or_else(|p| p.into_inner()).contains(&key) {
         return false;
     }
-    let inserted = map
-        .write()
-        .expect("fingerprint-profile log set lock poisoned")
-        .insert(key);
+    let inserted = map.write().unwrap_or_else(|p| p.into_inner()).insert(key);
     if inserted {
         tracing::info!(
             host = %url.host_str().unwrap_or_default(),

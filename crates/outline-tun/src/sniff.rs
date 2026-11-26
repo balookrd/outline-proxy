@@ -301,7 +301,8 @@ pub(crate) fn host_matches_any(host: &str, list: &[Box<str>]) -> bool {
             host.eq_ignore_ascii_case(s)
         } else if host.len() > s.len() {
             let at = host.len() - s.len();
-            host.as_bytes()[at - 1] == b'.' && host[at..].eq_ignore_ascii_case(s)
+            host.as_bytes()[at - 1] == b'.'
+                && host.as_bytes()[at..].eq_ignore_ascii_case(s.as_bytes())
         } else {
             false
         }
