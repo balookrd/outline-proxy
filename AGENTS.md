@@ -41,12 +41,13 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   SOCKS5 и TUN через драйвер Wintun). Edition 2024.
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
   wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
-  SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
-  логика, без tokio и без AEAD-backend'ов) и `shadowsocks-crypto` — единый
-  AEAD / SS2022 / потоковый кодек поверх `aws-lc-rs`. Ныне в основном
-  client-side: `outline-transport`,
-  `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
-  `outline-routing`, `socks5-proto`.
+  SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек, `OutboundFramer`,
+  `CoverParams`, `UdpRecordStream`; чистая логика, без безусловного tokio и без
+  AEAD-backend'ов), `shadowsocks-crypto` — единый AEAD / SS2022 / потоковый кодек
+  поверх `aws-lc-rs`, и `outline-net` — общие сокетные хелперы, `dns_cache`,
+  `relay_buf`, `task::AbortOnDrop` и `time::{JitteredTicker, CoverTimer}`. Ныне в
+  основном client-side: `outline-transport`, `outline-uplink`, `outline-tun`,
+  `outline-metrics`, `outline-routing`, `socks5-proto`.
 - `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/quinn-udp`, `vendor/rustls`, `vendor/hyper` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 - `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
