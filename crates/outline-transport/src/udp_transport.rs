@@ -409,6 +409,39 @@ impl UdpWsTransport {
         resume_request: Option<SessionId>,
         combined_ss_kind: Option<SsPathKind>,
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
+        Self::connect_with_resume_and_affinity(
+            cache,
+            url,
+            mode,
+            cipher,
+            password,
+            network,
+            source,
+            keepalive_interval,
+            resume_request,
+            None,
+            combined_ss_kind,
+        )
+        .await
+    }
+
+    /// Same as [`Self::connect_with_resume`] with an optional `home_affinity`
+    /// template [`SessionId`] sent as `X-Outline-Home-Affinity` when
+    /// `resume_request` is `None`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_with_resume_and_affinity(
+        cache: &DnsCache,
+        url: &Url,
+        mode: TransportMode,
+        cipher: CipherKind,
+        password: &str,
+        network: DialNetworkOptions,
+        source: &'static str,
+        keepalive_interval: Option<Duration>,
+        resume_request: Option<SessionId>,
+        home_affinity: Option<SessionId>,
+        combined_ss_kind: Option<SsPathKind>,
+    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(network)
@@ -428,6 +461,7 @@ impl UdpWsTransport {
                     // No prior downstream offset to claim on UDP transports.
                     client_acked_offset: 0,
                     udp_datagram_requested: udp_datagram_requested(mode),
+                    home_affinity,
                 }),
         )
         .await

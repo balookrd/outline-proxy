@@ -652,7 +652,7 @@ fn keep_mesh_upstream_for(state: &mut VlessRelayState, want: MeshShape, command:
     if state
         .mesh_upstream
         .as_ref()
-        .is_some_and(|setup| setup.shape() != want)
+        .is_some_and(|setup| !setup.is_home_affinity() && setup.shape() != want)
     {
         release_mesh_upstream(state, command);
     }

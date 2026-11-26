@@ -98,8 +98,8 @@ impl fmt::Display for SessionId {
 // The `X-Outline-*` header names are wire vocabulary shared with the
 // server; the single definition lives in `outline_wire::resume`.
 pub use outline_wire::resume::{
-    ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
-    SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+    ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, HOME_AFFINITY_HEADER, RESUME_CAPABLE_HEADER,
+    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
 };
 use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
 
@@ -119,6 +119,14 @@ pub(crate) fn apply_resume_request_headers(
         headers.insert(
             RESUME_REQUEST_HEADER,
             id.to_hex().parse().expect("hex Session ID is a valid header value"),
+        );
+    } else if let Some(affinity_id) = resume.home_affinity {
+        headers.insert(
+            HOME_AFFINITY_HEADER,
+            affinity_id
+                .to_hex()
+                .parse()
+                .expect("hex Session ID is a valid header value"),
         );
     }
     if resume.ack_prefix_requested {

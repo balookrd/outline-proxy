@@ -570,6 +570,54 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 /// `disable_udp_gso` wraps the socket in [`super::no_gso::NoGsoUdpSocket`] so
 /// quinn never issues a segmented (`UDP_SEGMENT`) send on it — see that module
 /// for the egress devices that need it.
+#[derive(Debug)]
+struct RxCountingUdpSocket {
+    inner: Arc<dyn quinn::AsyncUdpSocket>,
+    rx_datagrams: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl quinn::AsyncUdpSocket for RxCountingUdpSocket {
+    fn create_io_poller(self: Arc<Self>) -> std::pin::Pin<Box<dyn quinn::UdpPoller>> {
+        Arc::clone(&self.inner).create_io_poller()
+    }
+
+    fn try_send(&self, transmit: &quinn::udp::Transmit) -> std::io::Result<()> {
+        self.inner.try_send(transmit)
+    }
+
+    fn poll_recv(
+        &self,
+        cx: &mut std::task::Context,
+        bufs: &mut [std::io::IoSliceMut<'_>],
+        meta: &mut [quinn::udp::RecvMeta],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = self.inner.poll_recv(cx, bufs, meta);
+        if let std::task::Poll::Ready(Ok(n)) = poll
+            && n > 0
+        {
+            self.rx_datagrams
+                .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        poll
+    }
+
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+
+    fn max_receive_segments(&self) -> usize {
+        self.inner.max_receive_segments()
+    }
+
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
+}
+
 pub(crate) fn client_endpoint(
     bind_addr: std::net::SocketAddr,
     mark: crate::SocketMark,
@@ -584,6 +632,11 @@ pub(crate) fn client_endpoint(
     if disable_udp_gso {
         udp = Arc::new(super::no_gso::NoGsoUdpSocket::new(udp));
     }
+    let rx_datagrams = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    udp = Arc::new(RxCountingUdpSocket {
+        inner: udp,
+        rx_datagrams: Arc::clone(&rx_datagrams),
+    });
     let endpoint = quinn::Endpoint::new_with_abstract_socket(
         crate::quic::h3_endpoint_config(),
         None,
@@ -591,7 +644,7 @@ pub(crate) fn client_endpoint(
         runtime,
     )
     .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?;
-    Ok(TrackedEndpoint::new(endpoint, kind))
+    Ok(TrackedEndpoint::new(endpoint, kind, rx_datagrams))
 }
 
 /// A [`quinn::Endpoint`] counted while it lives.
@@ -608,12 +661,21 @@ pub(crate) fn client_endpoint(
 pub(crate) struct TrackedEndpoint {
     endpoint: quinn::Endpoint,
     kind: &'static str,
+    rx_datagrams: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl TrackedEndpoint {
-    fn new(endpoint: quinn::Endpoint, kind: &'static str) -> Self {
+    fn new(
+        endpoint: quinn::Endpoint,
+        kind: &'static str,
+        rx_datagrams: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
         metrics::record_h3_endpoint_opened(kind);
-        Self { endpoint, kind }
+        Self { endpoint, kind, rx_datagrams }
+    }
+
+    pub(crate) fn rx_datagrams_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.rx_datagrams)
     }
 }
 

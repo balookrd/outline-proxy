@@ -323,6 +323,7 @@ fn resume() -> DialResumeOptions {
         // The h2 carrier must ignore the HTTP/3 datagram offer: the exact
         // header lists below then prove it never reaches the wire.
         udp_datagram_requested: true,
+        home_affinity: None,
     }
 }
 
@@ -440,6 +441,7 @@ async fn xhttp_h2_session_requests_send_the_browser_fetch_request() {
                     symmetric_replay_requested: r.symmetric_replay_requested,
                     client_acked_offset: r.client_acked_offset,
                     datagram_records: true,
+                    home_affinity: None,
                 },
                 false,
             )

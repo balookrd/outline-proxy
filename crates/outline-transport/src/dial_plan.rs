@@ -58,6 +58,10 @@ pub struct DialResumeOptions {
     /// h3 -> h2 / h1 fallback of the same dial) ignores it, so the wire there
     /// stays as before.
     pub udp_datagram_requested: bool,
+    /// Optional template [`SessionId`] identifying the pinned home exit shard
+    /// for brand-new sessions after an automatic cluster failover. Ignored
+    /// when `resume_request` is `Some`.
+    pub home_affinity: Option<SessionId>,
 }
 
 impl DialResumeOptions {
@@ -82,6 +86,7 @@ impl DialResumeOptions {
             symmetric_replay_requested: true,
             client_acked_offset: 0,
             udp_datagram_requested: false,
+            home_affinity: None,
         }
     }
 }
@@ -120,6 +125,7 @@ impl<'a> TransportDialOptions<'a> {
             symmetric_replay_requested: self.resume.symmetric_replay_requested,
             client_acked_offset: self.resume.client_acked_offset,
             datagram_records: self.datagram_records,
+            home_affinity: self.resume.home_affinity,
         }
     }
 
@@ -247,7 +253,9 @@ impl DialPlan {
 
     async fn connect_ws_h1(self, options: TransportDialOptions<'_>) -> Result<TransportStream> {
         let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-            connect_websocket_http1(options).await?;
+            connect_websocket_http1(options)
+                .await
+                .map_err(tag_endpoint_unreachable_if_l4)?;
         debug!(url = %options.url, selected_mode = "http1", "websocket transport connected");
         ws_mode_cache::record_success(options.url, TransportMode::WsH1).await;
         Ok(TransportStream::new_http1_with_session(ws_stream, issued)
@@ -275,6 +283,9 @@ impl DialPlan {
                 Ok(stream.with_downgraded_from(self.downgrade_marker(TransportMode::WsH2)))
             },
             Err(h2_error) => {
+                if crate::find_typed::<crate::L4ConnectError>(&h2_error).is_some() {
+                    return Err(tag_endpoint_unreachable_if_l4(h2_error));
+                }
                 warn!(
                     url = %options.url,
                     error = %format!("{h2_error:#}"),
@@ -283,7 +294,9 @@ impl DialPlan {
                 );
                 ws_mode_cache::record_failure(options.url, TransportMode::WsH2).await;
                 let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                    connect_websocket_http1(options).await?;
+                    connect_websocket_http1(options)
+                        .await
+                        .map_err(tag_endpoint_unreachable_if_l4)?;
                 debug!(url = %options.url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                     .with_downgraded_from(self.downgrade_marker(TransportMode::WsH1))
@@ -337,6 +350,9 @@ impl DialPlan {
                         Ok(stream.with_downgraded_from(self.downgrade_marker(TransportMode::WsH2)))
                     },
                     Err(h2_error) => {
+                        if crate::find_typed::<crate::L4ConnectError>(&h2_error).is_some() {
+                            return Err(tag_endpoint_unreachable_if_l4(h2_error));
+                        }
                         warn!(
                             url = %options.url,
                             error = %format!("{h2_error:#}"),
@@ -345,7 +361,9 @@ impl DialPlan {
                         );
                         ws_mode_cache::record_failure(options.url, TransportMode::WsH2).await;
                         let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                            connect_websocket_http1(options).await?;
+                            connect_websocket_http1(options)
+                                .await
+                                .map_err(tag_endpoint_unreachable_if_l4)?;
                         debug!(url = %options.url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                             .with_downgraded_from(self.downgrade_marker(TransportMode::WsH1))
@@ -379,10 +397,15 @@ impl DialPlan {
                 Ok(stream.with_downgraded_from(self.downgrade_marker(TransportMode::WsH2)))
             },
             Err(h2_error) => {
+                if crate::find_typed::<crate::L4ConnectError>(&h2_error).is_some() {
+                    return Err(tag_endpoint_unreachable_if_l4(h2_error));
+                }
                 warn!(url = %options.url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
                 ws_mode_cache::record_failure(options.url, TransportMode::WsH2).await;
                 let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                    connect_websocket_http1(options).await?;
+                    connect_websocket_http1(options)
+                        .await
+                        .map_err(tag_endpoint_unreachable_if_l4)?;
                 debug!(url = %options.url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                 Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                     .with_downgraded_from(self.downgrade_marker(TransportMode::WsH1))
@@ -474,6 +497,12 @@ impl DialPlan {
                     .with_symmetric_replay_advertised(symmetric_replay_advertised))
             },
             Err(h2_error) => {
+                if crate::find_typed::<crate::DownstreamThrottle>(&h2_error).is_some() {
+                    return Err(h2_error);
+                }
+                if crate::find_typed::<crate::L4ConnectError>(&h2_error).is_some() {
+                    return Err(tag_endpoint_unreachable_if_l4(h2_error));
+                }
                 warn!(
                     url = %options.url,
                     error = %format!("{h2_error:#}"),
@@ -496,7 +525,8 @@ impl DialPlan {
                     options.combined_ss_kind,
                     false,
                 )
-                .await?;
+                .await
+                .map_err(tag_endpoint_unreachable_if_l4)?;
                 debug!(
                     url = %options.url,
                     selected_mode = "xhttp_h1",
@@ -527,13 +557,24 @@ impl DialPlan {
             options.combined_ss_kind,
             false,
         )
-        .await?;
+        .await
+        .map_err(tag_endpoint_unreachable_if_l4)?;
         debug!(url = %options.url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
         xhttp_mode_cache::record_success(options.url, self.selected).await;
         Ok(TransportStream::new_xhttp(stream, issued)
             .with_downgraded_from(self.downgrade_marker(self.selected))
             .with_ack_prefix_advertised(ack_prefix_advertised)
             .with_symmetric_replay_advertised(symmetric_replay_advertised))
+    }
+}
+
+fn tag_endpoint_unreachable_if_l4(err: anyhow::Error) -> anyhow::Error {
+    if crate::find_typed::<crate::L4ConnectError>(&err).is_some()
+        && crate::find_typed::<crate::EndpointUnreachable>(&err).is_none()
+    {
+        err.context(crate::EndpointUnreachable)
+    } else {
+        err
     }
 }
 
@@ -698,3 +739,7 @@ async fn connect_websocket_http1(
         symmetric_replay_advertised_by_server,
     ))
 }
+
+#[cfg(test)]
+#[path = "tests/dial_plan.rs"]
+mod tests;

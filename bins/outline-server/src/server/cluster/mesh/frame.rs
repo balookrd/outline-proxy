@@ -397,6 +397,9 @@ const FLAG_HAS_PEER_ADDR: u8 = 0x08;
 /// necessarily an SS edge, since SS migrated to v5 first — still parses, and its
 /// cleared bit reads as [`MeshProtocol::Ss`], which is what it is.
 const FLAG_VLESS: u8 = 0x10;
+/// When set, this mesh stream opens a brand-new session on the home node
+/// (Exit Affinity) rather than claiming an existing parked session.
+const FLAG_HOME_AFFINITY: u8 = 0x20;
 
 /// Second-phase frame: the user the edge authenticated, sent after the home's
 /// setup ack.
@@ -529,6 +532,10 @@ pub(in crate::server) struct OpenHeader {
     pub(in crate::server) client_down_acked: u64,
     /// Optional client address hint (for logging / routing scope).
     pub(in crate::server) peer_addr: Option<SocketAddr>,
+    /// When `true`, this mesh stream opens a brand-new session on the home
+    /// node (Exit Affinity) rather than claiming an existing parked session
+    /// from `OrphanRegistry`.
+    pub(in crate::server) home_affinity: bool,
 }
 
 impl OpenHeader {
@@ -570,6 +577,9 @@ impl OpenHeader {
         }
         if self.protocol == MeshProtocol::Vless {
             flags |= FLAG_VLESS;
+        }
+        if self.home_affinity {
+            flags |= FLAG_HOME_AFFINITY;
         }
 
         let mut out = Vec::with_capacity(27 + 19);
@@ -633,7 +643,104 @@ impl OpenHeader {
             symmetric_replay: flags & FLAG_SYMMETRIC_REPLAY != 0,
             client_down_acked,
             peer_addr,
+            home_affinity: flags & FLAG_HOME_AFFINITY != 0,
         })
+    }
+}
+
+/// Target and session shape sent by the edge in Phase 2 when
+/// [`OpenHeader::home_affinity`] is `true`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::server) enum FreshSessionKind {
+    /// SS-TCP or VLESS-TCP connection to `target`.
+    Tcp(outline_wire::TargetAddr),
+    /// SS-UDP session (each datagram carries its own SOCKS5 target header).
+    SsUdp,
+    /// Single-target VLESS-UDP session to `target`.
+    VlessUdp(outline_wire::TargetAddr),
+    /// Multiplexed VLESS-Mux (XUDP) session.
+    VlessMux,
+}
+
+const FRESH_KIND_TCP: u8 = 1;
+const FRESH_KIND_SS_UDP: u8 = 2;
+const FRESH_KIND_VLESS_UDP: u8 = 3;
+const FRESH_KIND_VLESS_MUX: u8 = 4;
+const MAX_FRESH_TARGET_BYTES: usize = 512;
+
+impl FreshSessionKind {
+    pub(in crate::server) fn encode(&self) -> Result<Vec<u8>> {
+        match self {
+            FreshSessionKind::Tcp(target) => {
+                let wire = target.to_wire_bytes()?;
+                let len = u16::try_from(wire.len())
+                    .map_err(|_| anyhow::anyhow!("fresh target wire bytes too large"))?;
+                let mut out = Vec::with_capacity(3 + wire.len());
+                out.push(FRESH_KIND_TCP);
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(&wire);
+                Ok(out)
+            },
+            FreshSessionKind::SsUdp => Ok(vec![FRESH_KIND_SS_UDP]),
+            FreshSessionKind::VlessUdp(target) => {
+                let wire = target.to_wire_bytes()?;
+                let len = u16::try_from(wire.len())
+                    .map_err(|_| anyhow::anyhow!("fresh target wire bytes too large"))?;
+                let mut out = Vec::with_capacity(3 + wire.len());
+                out.push(FRESH_KIND_VLESS_UDP);
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(&wire);
+                Ok(out)
+            },
+            FreshSessionKind::VlessMux => Ok(vec![FRESH_KIND_VLESS_MUX]),
+        }
+    }
+}
+
+pub(in crate::server) async fn write_fresh_target_frame<W>(
+    writer: &mut W,
+    kind: &FreshSessionKind,
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let bytes = kind.encode()?;
+    writer.write_all(&bytes).await.map_err(Into::into)
+}
+
+pub(in crate::server) async fn read_fresh_target_frame<R>(
+    reader: &mut R,
+) -> Result<FreshSessionKind>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut tag = [0u8; 1];
+    reader.read_exact(&mut tag).await?;
+    match tag[0] {
+        FRESH_KIND_TCP | FRESH_KIND_VLESS_UDP => {
+            let mut len_buf = [0u8; 2];
+            reader.read_exact(&mut len_buf).await?;
+            let len = u16::from_be_bytes(len_buf) as usize;
+            if len == 0 || len > MAX_FRESH_TARGET_BYTES {
+                bail!("invalid fresh target frame length: {len}");
+            }
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).await?;
+            let (target, consumed) = outline_wire::TargetAddr::from_wire_bytes(&buf)?;
+            if consumed != len {
+                bail!("trailing bytes in fresh target frame: consumed {consumed} of {len}");
+            }
+            if tag[0] == FRESH_KIND_TCP {
+                Ok(FreshSessionKind::Tcp(target))
+            } else {
+                Ok(FreshSessionKind::VlessUdp(target))
+            }
+        },
+        FRESH_KIND_SS_UDP => Ok(FreshSessionKind::SsUdp),
+        FRESH_KIND_VLESS_MUX => Ok(FreshSessionKind::VlessMux),
+        other => bail!("unknown fresh session kind tag {other}"),
     }
 }
 

@@ -212,6 +212,7 @@ pub async fn run(config: Config) -> Result<()> {
     }
     // Mesh cluster listener (home side): accept relayed sessions from edge peers
     // and splice them onto the parks this node owns. Only when clustered.
+    let _ = built.services.routes.set(Arc::clone(&built.routes));
     if let Some(cluster) = built.cluster.clone() {
         let services = Arc::clone(&built.services);
         let shutdown = shutdown_signal.clone();

@@ -191,6 +191,9 @@ pub(in crate::server) struct EdgeResumeAdvert {
     pub(in crate::server) symmetric_replay: bool,
     /// Client-reported downstream-acked offset (v2), else `0`.
     pub(in crate::server) down_acked: u64,
+    /// `true` when this relay was triggered by `x-outline-home-affinity` for a
+    /// brand-new session rather than `x-outline-resume` for a parked session.
+    pub(in crate::server) home_affinity: bool,
 }
 
 /// Routes an incoming carrier by the shard embedded in its resume id and, when
@@ -227,10 +230,33 @@ pub(in crate::server) fn edge_route(
                     .filter(|v| !v.is_empty())
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(0),
+                home_affinity: false,
             };
             (RouteDecision::Relay(shard), Some(advert))
         },
-        RouteDecision::Local => (RouteDecision::Local, None),
+        RouteDecision::Local => {
+            if requested.is_none()
+                && let Some(id) = identity
+                && let Some(affinity_id) = headers
+                    .get(outline_wire::resume::HOME_AFFINITY_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(SessionId::parse_hex)
+                && let RouteDecision::Relay(shard) = decide(Some(id), Some(affinity_id))
+                && let Ok(fresh_id) =
+                    SessionId::random_with_shard(&ring::rand::SystemRandom::new(), &id.key, shard)
+            {
+                let advert = EdgeResumeAdvert {
+                    session_id: fresh_id,
+                    resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),
+                    ack_prefix: header_is_one(headers, ACK_PREFIX_HEADER),
+                    symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
+                    down_acked: 0,
+                    home_affinity: true,
+                };
+                return (RouteDecision::Relay(shard), Some(advert));
+            }
+            (RouteDecision::Local, None)
+        },
     }
 }
 

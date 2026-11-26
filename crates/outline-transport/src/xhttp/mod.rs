@@ -94,7 +94,8 @@ pub(crate) use stream::XhttpStream;
 // shared with the server; the single definition lives in
 // `outline_wire::{resume, xhttp}`.
 pub(super) use outline_wire::resume::{
-    ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
+    ACK_PREFIX_HEADER, HOME_AFFINITY_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
+    SESSION_RESPONSE_HEADER,
 };
 pub(super) use outline_wire::xhttp::{
     FIN_HEADER, UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
@@ -361,6 +362,10 @@ pub(crate) struct SessionOpen {
     pub(crate) client_acked_offset: u64,
     /// Ask for length-prefixed UDP records on the stream.
     pub(crate) datagram_records: bool,
+    /// Optional template [`SessionId`] identifying the pinned home exit shard
+    /// for brand-new sessions after an automatic cluster failover. Ignored
+    /// when `resume_request` is `Some`.
+    pub(crate) home_affinity: Option<SessionId>,
 }
 
 /// Dials an XHTTP session against `url`. The host and port come from
@@ -468,6 +473,12 @@ pub(crate) fn build_session_request_headers(
         headers.insert(
             RESUME_REQUEST_HEADER,
             HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
+        );
+    } else if let Some(affinity_id) = open.home_affinity {
+        headers.insert(
+            HOME_AFFINITY_HEADER,
+            HeaderValue::try_from(affinity_id.to_hex())
+                .expect("hex Session ID is a valid header value"),
         );
     }
     if open.ack_prefix_requested {

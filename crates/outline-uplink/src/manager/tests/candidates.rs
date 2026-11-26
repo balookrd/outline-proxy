@@ -1042,3 +1042,89 @@ async fn active_latency_ignores_what_a_dial_cost() {
         "an unmeasured path reports nothing rather than borrowing the dial's number",
     );
 }
+
+#[tokio::test]
+async fn failover_order_prefers_same_host_isp_backup_before_cluster_neighbor_of_equal_weight() {
+    let mut exit_a_msk = healthy_uplink("exit-a-msk", 1.0);
+    exit_a_msk.tcp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/tcp").unwrap());
+    exit_a_msk.udp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/udp").unwrap());
+
+    let mut exit_b_msk = healthy_uplink("exit-b-msk", 1.0);
+    exit_b_msk.tcp_ws_url = Some(Url::parse("wss://exit-b.fleet.example/tcp").unwrap());
+    exit_b_msk.udp_ws_url = Some(Url::parse("wss://exit-b.fleet.example/udp").unwrap());
+
+    let mut exit_a_bee = healthy_uplink("exit-a-bee", 1.0);
+    exit_a_bee.tcp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/tcp").unwrap());
+    exit_a_bee.udp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/udp").unwrap());
+
+    let manager = UplinkManager::new_for_test(
+        "main",
+        vec![exit_a_msk, exit_b_msk, exit_a_bee],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+
+    manager
+        .set_active_uplink_by_name("exit-a-msk", None, false)
+        .await
+        .unwrap();
+    // Make exit-b-msk faster (10 ms) than exit-a-bee (80 ms); same-host must still win!
+    manager.test_set_tcp_health(1, true, 10).await;
+    manager.test_set_tcp_health(2, true, 80).await;
+    manager.test_set_tcp_health(0, false, 20).await;
+
+    let target = TargetAddr::Domain("target.example".to_string(), 443);
+    let selected = manager.tcp_candidates(&target).await;
+    assert_eq!(selected[0].uplink.name, "exit-a-bee");
+}
+
+#[tokio::test]
+async fn home_affinity_activates_on_failover_and_clears_on_operator_and_reselect_switches() {
+    let mut exit_a = healthy_uplink("exit-a", 1.0);
+    exit_a.tcp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/tcp").unwrap());
+    exit_a.udp_ws_url = Some(Url::parse("wss://exit-a.fleet.example/udp").unwrap());
+
+    let mut exit_b = healthy_uplink("exit-b", 1.0);
+    exit_b.tcp_ws_url = Some(Url::parse("wss://exit-b.fleet.example/tcp").unwrap());
+    exit_b.udp_ws_url = Some(Url::parse("wss://exit-b.fleet.example/udp").unwrap());
+
+    let mut lb = lb_global();
+    lb.shared_resume = true;
+
+    let manager =
+        UplinkManager::new_for_test("cluster", vec![exit_a, exit_b], probe_enabled(), lb).unwrap();
+
+    manager
+        .set_active_uplink_by_name("exit-a", None, false)
+        .await
+        .unwrap();
+    let home_sid = outline_transport::SessionId::from_bytes([0x11; 16]);
+    manager.record_issued_session_id(Some(home_sid));
+    assert_eq!(manager.current_home_affinity(), None);
+
+    // Automatic failover from exit-a to exit-b activates home affinity.
+    manager.test_set_tcp_health(0, false, 20).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    let target = TargetAddr::Domain("target.example".to_string(), 443);
+    let selected = manager.tcp_candidates(&target).await;
+    assert_eq!(selected[0].uplink.name, "exit-b");
+    assert_eq!(manager.current_home_affinity(), Some(home_sid));
+
+    // Manual operator switch clears home affinity even if switching to the same uplink.
+    manager.set_active_uplink_by_name("exit-b", None, true).await.unwrap();
+    assert_eq!(manager.current_home_affinity(), None);
+
+    // Re-arm and verify scheduled/operator reselect also clears home affinity.
+    let sid2 = outline_transport::SessionId::from_bytes([0x22; 16]);
+    manager.record_issued_session_id(Some(sid2));
+    manager.test_set_tcp_health(0, true, 10).await;
+    manager.test_set_tcp_health(1, false, 20).await;
+    let selected = manager.tcp_candidates(&target).await;
+    assert_eq!(selected[0].uplink.name, "exit-a");
+    assert_eq!(manager.current_home_affinity(), Some(sid2));
+
+    manager.test_set_tcp_health(1, true, 15).await;
+    let _ = manager.reselect_active_uplink("scheduled", true).await;
+    assert_eq!(manager.current_home_affinity(), None);
+}

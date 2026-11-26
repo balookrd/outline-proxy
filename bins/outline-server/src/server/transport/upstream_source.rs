@@ -30,8 +30,9 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::crypto::MAX_CHUNK_SIZE;
 use crate::metrics::Metrics;
 use crate::server::cluster::mesh::{
-    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshShape, MeshStream, PooledRelay,
-    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, write_datagram,
+    CloseIntent, CloseReason, FreshSessionKind, MAX_USER_LEN, MeshFraming, MeshShape, MeshStream,
+    PooledRelay, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, write_datagram,
+    write_fresh_target_frame,
 };
 use crate::server::relay::UpstreamRead;
 
@@ -75,6 +76,9 @@ pub(in crate::server) struct MeshUpstreamSetup {
     /// Whether the OPEN advertised the ACK-PREFIX capability, and therefore
     /// whether the home prefixes the downlink with an [`UpstreamAckFrame`].
     ack_prefix: bool,
+    /// `true` when this relay opens a brand-new session on the home node
+    /// (`x-outline-home-affinity`) rather than claiming a parked session.
+    home_affinity: bool,
     /// Bounds every mesh operation: the setup exchange below, and each uplink
     /// write once the relay runs.
     budget: Duration,
@@ -162,6 +166,7 @@ impl MeshUpstreamSetup {
     pub(in crate::server) fn new(
         pooled: PooledRelay,
         ack_prefix: bool,
+        home_affinity: bool,
         budget: Duration,
         shape: MeshShape,
         metrics: &Arc<Metrics>,
@@ -171,10 +176,15 @@ impl MeshUpstreamSetup {
             stream: MeshStream { send, recv },
             permit: Arc::new(permit),
             ack_prefix,
+            home_affinity,
             budget,
             shape,
             metrics: Arc::clone(metrics),
         }
+    }
+
+    pub(in crate::server::transport) fn is_home_affinity(&self) -> bool {
+        self.home_affinity
     }
 
     /// The shape of the park the home is holding for this relay.
@@ -223,6 +233,7 @@ impl MeshUpstreamSetup {
         send: &mut SendStream,
         recv: &mut RecvStream,
         user: &str,
+        fresh_kind: Option<&FreshSessionKind>,
         ack_prefix: bool,
         budget: Duration,
     ) -> Result<u64> {
@@ -236,6 +247,13 @@ impl MeshUpstreamSetup {
             .await
             .context("timed out sending the mesh USER frame")?
             .context("sending the mesh USER frame")?;
+
+        if let Some(kind) = fresh_kind {
+            tokio::time::timeout(budget, write_fresh_target_frame(send, kind))
+                .await
+                .context("timed out sending the mesh fresh-target frame")?
+                .context("sending the mesh fresh-target frame")?;
+        }
 
         if !ack_prefix {
             return Ok(0);
@@ -254,16 +272,36 @@ impl MeshUpstreamSetup {
         self,
         user: &str,
     ) -> Result<MeshUpstreamHalves> {
+        self.attach_with_fresh(user, None).await
+    }
+
+    /// Variant of [`Self::attach`] for a brand-new `x-outline-home-affinity`
+    /// session, sending [`FreshSessionKind`] right after the [`UserFrame`].
+    pub(in crate::server::transport) async fn attach_fresh(
+        self,
+        user: &str,
+        kind: &FreshSessionKind,
+    ) -> Result<MeshUpstreamHalves> {
+        self.attach_with_fresh(user, Some(kind)).await
+    }
+
+    async fn attach_with_fresh(
+        self,
+        user: &str,
+        fresh_kind: Option<&FreshSessionKind>,
+    ) -> Result<MeshUpstreamHalves> {
         let MeshUpstreamSetup {
             stream: MeshStream { mut send, mut recv },
             permit,
             ack_prefix,
+            home_affinity: _,
             budget,
             shape,
             metrics,
         } = self;
         let counters = MeshRelayCounters::new(shape.framing(), &metrics);
-        let upstream_acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
+        let upstream_acked =
+            Self::exchange(&mut send, &mut recv, user, fresh_kind, ack_prefix, budget).await?;
 
         Ok(MeshUpstreamHalves {
             writer: UpstreamWriter::Mesh {
@@ -295,16 +333,36 @@ impl MeshUpstreamSetup {
         self,
         user: &str,
     ) -> Result<MeshDatagramHalves> {
+        self.attach_datagrams_with_fresh(user, None).await
+    }
+
+    /// Variant of [`Self::attach_datagrams`] for a brand-new
+    /// `x-outline-home-affinity` datagram session.
+    pub(in crate::server::transport) async fn attach_fresh_datagrams(
+        self,
+        user: &str,
+        kind: &FreshSessionKind,
+    ) -> Result<MeshDatagramHalves> {
+        self.attach_datagrams_with_fresh(user, Some(kind)).await
+    }
+
+    async fn attach_datagrams_with_fresh(
+        self,
+        user: &str,
+        fresh_kind: Option<&FreshSessionKind>,
+    ) -> Result<MeshDatagramHalves> {
         let MeshUpstreamSetup {
             stream: MeshStream { mut send, mut recv },
             permit,
             ack_prefix,
+            home_affinity: _,
             budget,
             shape,
             metrics,
         } = self;
         let counters = MeshRelayCounters::new(shape.framing(), &metrics);
-        let _acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
+        let _acked =
+            Self::exchange(&mut send, &mut recv, user, fresh_kind, ack_prefix, budget).await?;
         Ok(MeshDatagramHalves {
             send,
             recv,

@@ -120,3 +120,65 @@ async fn carrier_read_failure_still_caps_and_stamps_cooldown() {
         "a carrier-level read failure must still feed the runtime-failure streak",
     );
 }
+
+#[tokio::test]
+async fn endpoint_unreachable_flips_single_endpoint_uplink_unhealthy_immediately() {
+    let mut uplink = vless_xhttp_primary();
+    uplink.shuffle_wires = true;
+    uplink.fallbacks = vec![crate::config::FallbackTransport {
+        transport: crate::config::UplinkTransport::Ss,
+        tcp_ws_url: uplink.tcp_xhttp_url.clone(),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH2,
+        udp_ws_url: uplink.udp_xhttp_url.clone(),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH2,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH2,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: uplink.cipher,
+        password: uplink.password.clone(),
+        fwmark: None,
+        dscp: None,
+        disable_udp_gso: false,
+        ipv6_first: false,
+        ipv4_only: false,
+        fingerprint_profile: None,
+    }];
+    let manager = manager_with_uplink(uplink, 3);
+    let err = anyhow::anyhow!("L4 dead").context(outline_transport::EndpointUnreachable);
+
+    manager.report_runtime_failure(0, TransportKind::Tcp, &err).await;
+
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.healthy,
+        Some(false),
+        "EndpointUnreachable on a single-endpoint uplink must immediately mark it unhealthy despite shuffle_wires and min_failures=3"
+    );
+    assert!(status.tcp.cooldown_until.is_some());
+    assert!(status.tcp.consecutive_runtime_failures >= 3);
+}
+
+#[tokio::test]
+async fn probe_wakeup_min_interval_is_2s_for_desktop_and_15s_for_mobile() {
+    use std::time::Duration;
+
+    let desktop_manager = manager_with_uplink(vless_xhttp_primary(), 1);
+    assert_eq!(desktop_manager.probe_wakeup_min_interval(), Duration::from_secs(2));
+
+    let mut mobile_probe = crate::tests::fallback::make_probe(1);
+    mobile_probe.interval = Duration::from_secs(300);
+    let mobile_manager = crate::types::UplinkManager::new_for_test(
+        "mobile",
+        vec![vless_xhttp_primary()],
+        mobile_probe,
+        crate::tests::fallback::make_lb(Duration::from_secs(60)),
+    )
+    .unwrap();
+    assert_eq!(mobile_manager.probe_wakeup_min_interval(), Duration::from_secs(15));
+}

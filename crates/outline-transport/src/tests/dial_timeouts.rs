@@ -85,6 +85,7 @@ static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// open, well short of the 7 s a fresh stream open may take.
 #[test]
 fn a_reused_open_on_a_fast_path_gets_the_floor() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let ceiling = h3_stream_from(DEFAULT_DIAL_TIMEOUT);
     assert_eq!(
         reused_h3_open_budget_within(Duration::from_millis(1), ceiling),
@@ -112,4 +113,37 @@ fn a_reused_open_never_exceeds_the_stream_open_bound() {
     assert_eq!(reused_h3_open_budget_within(Duration::from_secs(2), ceiling), ceiling);
     let tight = h3_stream_from(MIN_DIAL_TIMEOUT);
     assert_eq!(reused_h3_open_budget_within(Duration::from_millis(1), tight), tight);
+}
+
+#[test]
+fn l4_connect_timeout_is_2s_at_default_10s_budget() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_dial_timeout(None);
+    assert_eq!(l4_connect_timeout(), Duration::from_secs(2));
+}
+
+#[test]
+fn l4_connect_timeout_scales_for_mobile_3g_and_2g() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_dial_timeout(Some(Duration::from_secs(30)));
+    assert_eq!(l4_connect_timeout(), Duration::from_secs(6));
+    set_dial_timeout(Some(Duration::from_secs(60)));
+    assert_eq!(l4_connect_timeout(), Duration::from_secs(12));
+    set_dial_timeout(Some(Duration::from_secs(120)));
+    assert_eq!(l4_connect_timeout(), Duration::from_secs(15));
+    set_dial_timeout(Some(Duration::from_secs(2)));
+    assert_eq!(l4_connect_timeout(), Duration::from_millis(1500));
+    set_dial_timeout(None);
+}
+
+#[test]
+fn reused_h3_open_floor_is_1500ms_at_default_and_3s_on_slow_links() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_dial_timeout(None);
+    assert_eq!(reused_h3_open_floor(), Duration::from_millis(1500));
+    set_dial_timeout(Some(Duration::from_secs(30)));
+    assert_eq!(reused_h3_open_floor(), Duration::from_secs(3));
+    set_dial_timeout(Some(Duration::from_secs(60)));
+    assert_eq!(reused_h3_open_floor(), Duration::from_secs(3));
+    set_dial_timeout(None);
 }

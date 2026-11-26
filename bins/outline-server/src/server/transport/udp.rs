@@ -1037,6 +1037,16 @@ impl MeshUdpEdge {
         response_sender: &UdpResponseSender,
         user_id: &Arc<str>,
     ) -> Result<AttachedMeshUdp> {
+        let attach_res = if setup.is_home_affinity() {
+            setup
+                .attach_fresh_datagrams(
+                    user_id,
+                    &crate::server::cluster::mesh::FreshSessionKind::SsUdp,
+                )
+                .await
+        } else {
+            setup.attach_datagrams(user_id).await
+        };
         let MeshDatagramHalves {
             send,
             recv,
@@ -1046,10 +1056,7 @@ impl MeshUdpEdge {
             down_bytes,
             down_datagrams,
             permit,
-        } = setup
-            .attach_datagrams(user_id)
-            .await
-            .context("attesting the ss-udp user to the home")?;
+        } = attach_res.context("attesting the ss-udp user to the home")?;
         let user_counters = server.metrics.user_counters(user_id);
         debug!(
             user = %user_id,

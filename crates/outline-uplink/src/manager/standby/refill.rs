@@ -35,11 +35,16 @@ impl<'a> StandbyCtx<'a> {
     /// rides the request headers, so a pooled carrier that skipped it could
     /// never use them.
     pub(super) fn pool_resume_options(&self) -> outline_transport::DialResumeOptions {
+        let home_affinity = self.manager.current_home_affinity();
         match self.transport {
-            TransportKind::Tcp => outline_transport::DialResumeOptions::new_session(),
+            TransportKind::Tcp => outline_transport::DialResumeOptions {
+                home_affinity,
+                ..outline_transport::DialResumeOptions::new_session()
+            },
             TransportKind::Udp => outline_transport::DialResumeOptions {
                 udp_datagram_requested: self.dial_datagram_records()
                     && outline_transport::udp_datagram_requested(self.mode),
+                home_affinity,
                 ..outline_transport::DialResumeOptions::default()
             },
         }

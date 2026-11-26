@@ -69,6 +69,36 @@ impl fmt::Display for TryAgain {
 
 impl std::error::Error for TryAgain {}
 
+/// Typed error marker attached when an L4 connection attempt (TCP `connect()`
+/// or QUIC initial packet exchange before the peer sends a single UDP
+/// datagram) times out or fails with an immediate OS reachability error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct L4ConnectError;
+
+impl fmt::Display for L4ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("L4 transport connect failed or timed out before peer response")
+    }
+}
+
+impl std::error::Error for L4ConnectError {}
+
+/// Typed error marker attached when a target `host:port` is unreachable at L4
+/// across transport families (e.g. QUIC initial received 0 datagrams and TCP
+/// `connect()` also failed at L4, or the highest configured TCP mode failed at
+/// L4). Signals `outline-uplink` to skip remaining wires sharing the same
+/// `host:port` and immediately trigger uplink failover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointUnreachable;
+
+impl fmt::Display for EndpointUnreachable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("endpoint host:port is unreachable at L4")
+    }
+}
+
+impl std::error::Error for EndpointUnreachable {}
+
 /// Typed marker for the high-level operation that produced a transport error.
 /// Placed as an `anyhow` context layer at the failure site so classifiers can
 /// identify the operation via `downcast_ref` rather than grepping the
@@ -119,7 +149,7 @@ pub fn find_typed<T: std::error::Error + Send + Sync + 'static>(
         .or_else(|| error.chain().find_map(|e| e.downcast_ref::<T>()))
 }
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::net::TcpStream;
 
 // Re-export resumption surface so callers in outline-uplink (and any
@@ -192,6 +222,17 @@ pub(crate) use ws_stream::SharedConnectionHealth;
 
 pub use outline_net::SocketMark;
 
+fn is_l4_io_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::NetworkUnreachable
+            | std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::AddrNotAvailable
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
 /// Local wrapper around `outline_net::connect_tcp_socket` that layers the
 /// transport-level `TransportOperation::Connect` context onto the error so
 /// classifiers in `outline-uplink` / `outline-tun` can recognise connect
@@ -203,9 +244,22 @@ pub use outline_net::SocketMark;
 /// socket the same way a real carrier dial would (same fwmark/dscp handling,
 /// same error attribution) without reaching around this crate into `outline-net`.
 pub async fn connect_tcp_socket(addr: SocketAddr, mark: SocketMark) -> Result<TcpStream> {
-    outline_net::connect_tcp_socket(addr, mark)
-        .await
-        .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })
+    let budget = dial_timeouts::l4_connect_timeout();
+    match tokio::time::timeout(budget, outline_net::connect_tcp_socket(addr, mark)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(err)) => {
+            let classify_l4 = err
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                .is_some_and(is_l4_io_error);
+            let err = if classify_l4 { err.context(L4ConnectError) } else { err };
+            Err(err
+                .context(TransportOperation::Connect { target: format!("TCP socket to {addr}") }))
+        },
+        Err(_elapsed) => Err(anyhow::anyhow!("TCP connect to {addr} timed out after {budget:?}")
+            .context(L4ConnectError)
+            .context(TransportOperation::Connect { target: format!("TCP socket to {addr}") })),
+    }
 }
 
 // --- Public surface kept intentionally narrow. Group by concern so it's

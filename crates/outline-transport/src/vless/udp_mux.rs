@@ -35,7 +35,7 @@ use socks5_proto::TargetAddr;
 use url::Url;
 
 use crate::{
-    DnsCache, TransportOperation, UplinkConnectionBinding, config::TransportMode,
+    DnsCache, SessionId, TransportOperation, UplinkConnectionBinding, config::TransportMode,
     resumption::UdpResumeStore,
 };
 
@@ -144,6 +144,10 @@ struct WsVlessUdpDialer {
     /// target's carrier penalises the uplink. `None` keeps the transports
     /// inert. Set via [`VlessUdpSessionMux::with_throttle_handle`].
     throttle: Option<crate::ThrottleSignalHandle>,
+    /// Optional provider for `x-outline-home-affinity` on brand-new dials.
+    home_affinity_fn: Option<Arc<dyn Fn() -> Option<SessionId> + Send + Sync>>,
+    /// Optional sink for recording server-issued `X-Outline-Session` IDs.
+    on_session_id_fn: Option<Arc<dyn Fn(Option<SessionId>) + Send + Sync>>,
 }
 
 impl VlessUdpMuxDial for WsVlessUdpDialer {
@@ -164,7 +168,12 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
         let resume_request = resume_key
             .as_deref()
             .and_then(|key| self.resume_store.vless().get(key));
-        let connect = VlessUdpWsTransport::connect_with_resume(
+        let home_affinity = if resume_request.is_none() {
+            self.home_affinity_fn.as_ref().and_then(|f| f())
+        } else {
+            None
+        };
+        let connect = VlessUdpWsTransport::connect_with_resume_and_affinity(
             &self.dns_cache,
             &self.url,
             self.mode,
@@ -174,6 +183,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             self.source,
             self.keepalive_interval,
             resume_request,
+            home_affinity,
         );
         // Apply the per-uplink padding override around the dial + transport
         // build (VLESS-UDP pads per-datagram, and `connect_with_resume` builds
@@ -187,6 +197,9 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             dial_result.with_context(|| TransportOperation::Connect {
                 target: format!("vless udp session to {target}"),
             })?;
+        if let Some(ref on_session) = self.on_session_id_fn {
+            on_session(issued);
+        }
         if let Some(key) = resume_key {
             self.resume_store.vless().store_if_issued(key, issued);
         }
@@ -286,6 +299,8 @@ impl VlessUdpSessionMux {
             downgrade_reported: AtomicBool::new(false),
             padding_override: None,
             throttle: None,
+            home_affinity_fn: None,
+            on_session_id_fn: None,
         };
         Self {
             core: VlessUdpMuxCore::new(dialer, limits, "vless udp", source),
@@ -299,6 +314,22 @@ impl VlessUdpSessionMux {
     /// VLESS-UDP resume — the manager always sets it on a real acquire.
     pub fn with_resume_scope(mut self, scope: impl Into<String>) -> Self {
         self.core.dial.resume_scope = Some(scope.into());
+        self
+    }
+
+    pub fn with_home_affinity_fn(
+        mut self,
+        f: Arc<dyn Fn() -> Option<SessionId> + Send + Sync>,
+    ) -> Self {
+        self.core.dial.home_affinity_fn = Some(f);
+        self
+    }
+
+    pub fn with_on_session_id_fn(
+        mut self,
+        f: Arc<dyn Fn(Option<SessionId>) + Send + Sync>,
+    ) -> Self {
+        self.core.dial.on_session_id_fn = Some(f);
         self
     }
 

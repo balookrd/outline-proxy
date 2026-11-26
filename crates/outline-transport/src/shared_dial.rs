@@ -162,7 +162,8 @@ async fn resolve_and_dial<D: WsDialer>(
         &server_addrs[..1]
     };
 
-    let mut last_error = None;
+    let mut errors = Vec::new();
+    let mut all_l4_errors = true;
     for &addr in addrs {
         let mut guard = TransportConnectGuard::new(source, label);
         match dialer.establish(addr, server_name, network, cache_key.clone()).await {
@@ -171,16 +172,35 @@ async fn resolve_and_dial<D: WsDialer>(
                     guard.finish("success");
                     return Ok((conn, ws));
                 },
-                Err(e) => last_error = Some(format!("{addr}: {e}")),
+                Err(e) => {
+                    if crate::find_typed::<crate::L4ConnectError>(&e).is_none() {
+                        all_l4_errors = false;
+                    }
+                    errors.push(format!("{addr}: {e:#}"));
+                },
             },
-            Err(e) => last_error = Some(format!("{addr}: {e}")),
+            Err(e) => {
+                if crate::find_typed::<crate::L4ConnectError>(&e).is_none() {
+                    all_l4_errors = false;
+                }
+                errors.push(format!("{addr}: {e:#}"));
+            },
         }
     }
 
-    Err(anyhow::Error::new(TransportOperation::Connect {
+    let base_err = anyhow::Error::new(TransportOperation::Connect {
         target: format!(
             "to any resolved {label} address for {server_name}:{server_port}: {}",
-            last_error.unwrap_or_else(|| "unknown error".to_string())
+            if errors.is_empty() {
+                "unknown error".to_string()
+            } else {
+                errors.join("; ")
+            }
         ),
-    }))
+    });
+    if all_l4_errors && !errors.is_empty() {
+        Err(base_err.context(crate::L4ConnectError))
+    } else {
+        Err(base_err)
+    }
 }

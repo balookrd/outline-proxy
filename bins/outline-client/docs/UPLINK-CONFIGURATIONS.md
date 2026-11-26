@@ -2814,3 +2814,49 @@ creates an (empty) group; PATCH merges policy into an existing group by name
 stage the change to `config.toml`; `POST /control/apply` hot-applies the new
 group set (`registry.apply_new_groups`) without a restart. Per-group LB/reselect
 policy is validated on every mutation with the same loader used at startup.
+
+## Fast L4 Unreachability Detection & Wire Cascade Collapse
+
+To avoid 30–120 s stalls when an upstream `host:port` is blackholed at L4 while
+preserving browser-like traffic shape:
+
+- **Two-phase L4 connect budget (`l4_connect_timeout`)**: bare L4 reachability
+  (TCP `connect()` or receiving the first UDP datagram of a QUIC handshake) is
+  bounded to `2/10` of `fresh_connect_timeout()` clamped to `[1500ms, 15s]`
+  (`2.0 s` at the default `10 s` budget; `6.0 s` on Android 3G; `12.0 s` on 2G).
+  Once the peer responds at L4, the full `fresh_connect_timeout()` remains
+  available for TLS/HTTP handshakes.
+- **QUIC soft hedge & H2→H1 skip**: QUIC dial racing uses a single soft hedge at
+  `800 ms` (`HEDGE_SCHEDULE`). When an H2/H1 dial fails at L4 (`L4ConnectError`),
+  the meaningless HTTP/1.1 retry to the same `host:port` is skipped and the
+  error is tagged with `EndpointUnreachable`.
+- **Wire cascade collapse**: `UplinkManager::dial_over_wires` tracks unreachable
+  `(host, port, fwmark, dscp, ipv6_first, ipv4_only)` keys per dial and skips
+  remaining fallback wires pointing to the same dead endpoint, reducing a
+  4-wire dead uplink failure from ~120 s to `2–4 s`.
+- **Immediate health flip & parallel probe watchdog**: `EndpointUnreachable` on
+  a single-endpoint uplink bypasses `shuffle_wires` round gating and
+  `min_failures`, immediately marking the plane unhealthy. The background probe
+  runs a parallel `endpoint_check` watchdog after `endpoint_check_timeout` to
+  abort wedged probes, and probe wakeup debounce adapts to `probe.interval`
+  (`2 s` when `interval < 60s`, `15 s` on battery-safe mobile profiles).
+
+## Two-Level Exit Affinity
+
+When automatic failover (`SwitchIntent::Failover`) switches away from a failing
+uplink, Exit Affinity preserves the exit server where possible:
+
+1. **Level 1 (same host, different ISP/route)**: `failover_order` prefers a
+   healthy uplink sharing the failed uplink's primary `host` before other
+   equal-weight cluster neighbors, regardless of RTT differences.
+2. **Level 2 (cluster mesh `X-Outline-Home-Affinity`)**: in a `shared_resume`
+   cluster group, after an automatic failover to a neighbor node `B`, brand-new
+   sessions send `X-Outline-Home-Affinity: <pinned_home_id>`. Edge `B` mints a
+   unique `SessionId` carrying home shard `A` and opens the new session over the
+   cluster mesh (`9443/udp`) so egress stays on `A` (with a `1.2 s` Phase-1
+   fallback to local egress on `B` if `A` is completely dead on mesh).
+3. **Reset on manual or scheduled switch**: manual switches
+   (`/control/activate`, `/switch`) and scheduled/manual reselects
+   (`reselect_at`, `reselect_interval`, `/control/reselect`) clear
+   `home_affinity_active` and `pinned_home_id`, routing new sessions directly
+   from the newly selected server.

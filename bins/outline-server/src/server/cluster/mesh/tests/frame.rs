@@ -12,6 +12,7 @@ fn sample(peer_addr: Option<SocketAddr>) -> OpenHeader {
         symmetric_replay: false,
         client_down_acked: 123_456,
         peer_addr,
+        home_affinity: false,
     }
 }
 
@@ -127,6 +128,7 @@ fn a_udp_vless_header_roundtrips_at_the_field_extremes() {
         symmetric_replay: true,
         client_down_acked: u64::MAX,
         peer_addr: Some("198.51.100.7:443".parse().unwrap()),
+        home_affinity: false,
     };
     let parsed = OpenHeader::parse(&header.encode()).expect("the header parses");
     assert_eq!(parsed, header);
@@ -231,6 +233,7 @@ fn a_header_without_the_vless_flag_reads_as_shadowsocks() {
         symmetric_replay: false,
         client_down_acked: 0,
         peer_addr: None,
+        home_affinity: false,
     };
     let mut encoded = vless.encode();
     // Byte 2 is the flag byte; clearing FLAG_VLESS is exactly what an older
@@ -333,4 +336,34 @@ fn every_close_intent_has_its_own_metric_label() {
     let count = labels.len();
     labels.dedup();
     assert_eq!(labels.len(), count, "two intents share a metric label: {labels:?}");
+}
+
+#[test]
+fn open_header_roundtrips_home_affinity_flag() {
+    let mut header = sample(None);
+    header.home_affinity = true;
+    let parsed = OpenHeader::parse(&header.encode()).unwrap();
+    assert_eq!(parsed, header);
+    assert!(parsed.home_affinity);
+}
+
+#[tokio::test]
+async fn fresh_target_frame_roundtrips_all_variants() {
+    let variants = [
+        FreshSessionKind::Tcp(outline_wire::TargetAddr::Domain("target.example".to_string(), 443)),
+        FreshSessionKind::Tcp(outline_wire::TargetAddr::IpV4(Ipv4Addr::new(198, 51, 100, 10), 80)),
+        FreshSessionKind::SsUdp,
+        FreshSessionKind::VlessUdp(outline_wire::TargetAddr::IpV6(
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
+            53,
+        )),
+        FreshSessionKind::VlessMux,
+    ];
+    for kind in variants {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        write_fresh_target_frame(&mut client, &kind).await.unwrap();
+        drop(client);
+        let decoded = read_fresh_target_frame(&mut server).await.unwrap();
+        assert_eq!(decoded, kind);
+    }
 }

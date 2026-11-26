@@ -88,6 +88,10 @@ pub(super) struct Services {
     /// (h1/h2) and h3 entry points so a session opened over one
     /// transport version is not split-brain with the other.
     pub(super) xhttp_registry: Arc<XhttpRegistry>,
+    /// Snapshot of live routing state, populated once at server startup so
+    /// the mesh home handler can look up user `fwmark` / `VlessUser` for
+    /// `x-outline-home-affinity` brand-new sessions.
+    pub(super) routes: std::sync::OnceLock<RoutesSnapshot>,
 }
 
 impl Services {
@@ -171,6 +175,7 @@ impl Services {
             vless_server,
             orphan_registry,
             xhttp_registry: XhttpRegistry::with_limits(xhttp_limits),
+            routes: std::sync::OnceLock::new(),
         }
     }
 }

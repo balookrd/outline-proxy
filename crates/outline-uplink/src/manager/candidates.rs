@@ -506,11 +506,23 @@ impl UplinkManager {
     // Without this, `score = (EWMA + penalty) / weight` could let a
     // low-weight, low-EWMA uplink outrank a higher-weight one with similar
     // health, defeating the operator's intent.
+    pub(super) fn uplink_primary_host(
+        uplink: &crate::config::UplinkConfig,
+        transport: TransportKind,
+    ) -> Option<&str> {
+        let primary_url = match transport {
+            TransportKind::Tcp => uplink.tcp_dial_url().or_else(|| uplink.udp_dial_url()),
+            TransportKind::Udp => uplink.udp_dial_url().or_else(|| uplink.tcp_dial_url()),
+        };
+        primary_url.and_then(|u| u.host_str())
+    }
+
     fn failover_order(
         &self,
         left: &CandidateState,
         right: &CandidateState,
         gate_transport: TransportKind,
+        failed_host: Option<&str>,
         now: Instant,
     ) -> Ordering {
         let left_remaining = cooldown_remaining(&left.status, gate_transport, now);
@@ -529,6 +541,14 @@ impl UplinkManager {
             now,
             &self.inner.load_balancing,
         );
+        let left_same_host = failed_host.is_some_and(|h| {
+            Self::uplink_primary_host(&self.inner.uplinks[left.index], gate_transport)
+                .is_some_and(|lh| lh.eq_ignore_ascii_case(h))
+        });
+        let right_same_host = failed_host.is_some_and(|h| {
+            Self::uplink_primary_host(&self.inner.uplinks[right.index], gate_transport)
+                .is_some_and(|rh| rh.eq_ignore_ascii_case(h))
+        });
         healthy_first(left.healthy)
             .cmp(&healthy_first(right.healthy))
             .reverse()
@@ -539,6 +559,7 @@ impl UplinkManager {
                     self.inner.uplinks[right.index].weight,
                 )
             })
+            .then_with(|| left_same_host.cmp(&right_same_host).reverse())
             .then_with(|| {
                 left_score
                     .unwrap_or(Duration::MAX)
@@ -1144,7 +1165,12 @@ impl UplinkManager {
         // penalties are ignored to preserve the intent that strict-mode
         // selection is EWMA-driven.
         if switching_from_cooldown {
-            candidates.sort_by(|left, right| self.failover_order(left, right, gate_transport, now));
+            let failed_host = current_active
+                .and_then(|idx| self.inner.uplinks.get(idx))
+                .and_then(|u| Self::uplink_primary_host(u, gate_transport));
+            candidates.sort_by(|left, right| {
+                self.failover_order(left, right, gate_transport, failed_host, now)
+            });
         }
 
         if commit_selection {
@@ -1306,6 +1332,7 @@ impl UplinkManager {
         // would be overridden by `strict_transport_candidates` on the next
         // dispatch.
         self.reset_all_uplink_statuses();
+        self.clear_home_affinity();
         // Drop sticky routes too — they may pin traffic to the previous active
         // uplink for sessions that already cached a routing decision. We
         // re-seed the relevant keys below.
@@ -1384,6 +1411,7 @@ impl UplinkManager {
         for slot in self.inner.statuses.iter() {
             *slot.lock() = Default::default();
         }
+        self.clear_home_affinity();
     }
 
     pub(crate) async fn set_active_uplink_index_for_transport(
@@ -1397,10 +1425,12 @@ impl UplinkManager {
         let uplink_name = self.inner.uplinks[uplink_index].name.as_str();
         let group_name = self.inner.group_name.as_str();
 
-        {
+        let changed = {
             let mut active = self.inner.active_uplinks.write().await;
+            let mut slot_changed = false;
             if self.strict_global_active_uplink() {
                 let changed = active.global != Some(uplink_index);
+                slot_changed = changed;
                 active.global = Some(uplink_index);
                 if changed || active.global_reason.is_none() || reason == "manual switch" {
                     active.global_reason = Some(reason.clone());
@@ -1415,6 +1445,7 @@ impl UplinkManager {
                 match transport {
                     TransportKind::Tcp => {
                         let changed = active.tcp != Some(uplink_index);
+                        slot_changed = changed;
                         active.tcp = Some(uplink_index);
                         if changed || active.tcp_reason.is_none() || reason == "manual switch" {
                             active.tcp_reason = Some(reason.clone());
@@ -1427,6 +1458,7 @@ impl UplinkManager {
                     },
                     TransportKind::Udp => {
                         let changed = active.udp != Some(uplink_index);
+                        slot_changed = changed;
                         active.udp = Some(uplink_index);
                         if changed || active.udp_reason.is_none() || reason == "manual switch" {
                             active.udp_reason = Some(reason.clone());
@@ -1457,7 +1489,31 @@ impl UplinkManager {
                     true
                 }
             });
+            slot_changed
         };
+
+        if changed {
+            match intent {
+                crate::types::SwitchIntent::Failover => {
+                    if self.inner.load_balancing.shared_resume
+                        && self.inner.pinned_home_id.lock().is_some()
+                    {
+                        self.inner
+                            .home_affinity_active
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        // Clear warm-standby on the newly promoted uplink so
+                        // pre-dialed carriers without `x-outline-home-affinity`
+                        // are not handed to brand-new sessions.
+                        self.clear_standby(uplink_index, TransportKind::Tcp).await;
+                        self.clear_standby(uplink_index, TransportKind::Udp).await;
+                    }
+                },
+                crate::types::SwitchIntent::OperatorHard
+                | crate::types::SwitchIntent::OperatorSoft => {
+                    self.clear_home_affinity();
+                },
+            }
+        }
 
         if let Some(store) = &self.inner.state_store {
             let uplink_name_owned = uplink_name.to_string();

@@ -100,6 +100,40 @@ pub(crate) fn fresh_connect_timeout() -> Duration {
     }
 }
 
+/// Share of the fresh-connect budget granted to bare L4 reachability
+/// (TCP `connect()` or receiving the first UDP datagram of a QUIC handshake):
+/// 2/10 of `fresh_connect_timeout()`, clamped to `[1500ms, 15s]`.
+///
+/// At the default 10s budget this is 2.0s; on Android 3G (30s) it scales to
+/// 6.0s; on 2G (60s) to 12.0s.
+const L4_CONNECT_NUMERATOR: u32 = 2;
+const L4_CONNECT_DENOMINATOR: u32 = 10;
+const MIN_L4_CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+const MAX_L4_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Minimum floor for opening a stream on an existing shared H3 connection on
+/// desktop/server (10s dial budget), scaling up to 3s on slow mobile links.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+const MIN_REUSED_H3_OPEN_FLOOR: Duration = Duration::from_millis(1500);
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+const MAX_REUSED_H3_OPEN_FLOOR: Duration = Duration::from_secs(3);
+
+/// Bound for bare L4 reachability (TCP `connect()` or QUIC initial peer
+/// response), scaled proportionally to [`fresh_connect_timeout`].
+pub(crate) fn l4_connect_timeout() -> Duration {
+    let base = fresh_connect_timeout();
+    let scaled = (base * L4_CONNECT_NUMERATOR) / L4_CONNECT_DENOMINATOR;
+    scaled.clamp(MIN_L4_CONNECT_TIMEOUT, MAX_L4_CONNECT_TIMEOUT)
+}
+
+/// Adaptive floor for opening a stream on an existing shared H3 connection.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+pub(crate) fn reused_h3_open_floor() -> Duration {
+    let base = fresh_connect_timeout();
+    let scaled = (base * 3) / 20;
+    scaled.clamp(MIN_REUSED_H3_OPEN_FLOOR, MAX_REUSED_H3_OPEN_FLOOR)
+}
+
 /// Bound for issuing a CONNECT/upgrade request on an already-established H2
 /// connection and reading its response.
 pub(crate) fn open_stream_timeout() -> Duration {
@@ -117,8 +151,8 @@ pub(crate) fn h3_open_stream_timeout() -> Duration {
 /// round trip plus server-side bookkeeping that never waits on the upstream, so
 /// this sits far above any healthy path while still being well short of the
 /// whole dial budget.
-#[cfg_attr(not(feature = "h3"), allow(dead_code))]
-const REUSED_H3_OPEN_FLOOR: Duration = Duration::from_secs(3);
+#[allow(dead_code)]
+pub const REUSED_H3_OPEN_FLOOR: Duration = Duration::from_millis(1500);
 
 /// Round trips a pooled H3 connection gets to open a session, on top of the
 /// floor's worth for slow links where the floor alone would be too tight.
@@ -142,7 +176,7 @@ pub(crate) fn reused_h3_open_budget(rtt: Duration) -> Duration {
 
 #[cfg_attr(not(feature = "h3"), allow(dead_code))]
 fn reused_h3_open_budget_within(rtt: Duration, ceiling: Duration) -> Duration {
-    (rtt * REUSED_H3_OPEN_RTTS).max(REUSED_H3_OPEN_FLOOR).min(ceiling)
+    (rtt * REUSED_H3_OPEN_RTTS).max(reused_h3_open_floor()).min(ceiling)
 }
 
 fn clamp_dial_timeout(configured: Duration) -> Duration {

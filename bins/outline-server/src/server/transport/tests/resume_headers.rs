@@ -103,3 +103,31 @@ fn malformed_down_acked_is_zero() {
     let (_, advert) = edge_route(&headers, Some(&me));
     assert_eq!(advert.unwrap().down_acked, 0);
 }
+
+#[test]
+fn edge_route_relays_home_affinity_header_and_mints_unique_session_ids_with_home_shard() {
+    let me = identity(2);
+    let home_shard = ShardId::new(9).unwrap();
+    let pinned_home = id_for(9);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
+    headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
+    headers.insert(
+        outline_wire::resume::HOME_AFFINITY_HEADER,
+        HeaderValue::from_str(&pinned_home.to_hex()).unwrap(),
+    );
+
+    let (d1, a1) = edge_route(&headers, Some(&me));
+    let (d2, a2) = edge_route(&headers, Some(&me));
+    assert_eq!(d1, RouteDecision::Relay(home_shard));
+    assert_eq!(d2, RouteDecision::Relay(home_shard));
+    let a1 = a1.unwrap();
+    let a2 = a2.unwrap();
+    assert!(a1.home_affinity);
+    assert!(a2.home_affinity);
+    assert_ne!(a1.session_id, pinned_home);
+    assert_ne!(a1.session_id, a2.session_id);
+    assert_eq!(a1.session_id.shard(&me.key), home_shard);
+    assert_eq!(a2.session_id.shard(&me.key), home_shard);
+}

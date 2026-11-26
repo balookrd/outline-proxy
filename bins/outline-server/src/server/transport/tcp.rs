@@ -863,6 +863,7 @@ async fn attach_mesh_upstream<Msg>(
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
     outbound: &WsTcpFrameOutput<'_, Msg>,
+    target: outline_wire::TargetAddr,
     target_display: Arc<str>,
 ) -> Result<(), FrameError>
 where
@@ -873,10 +874,15 @@ where
     // so it gets a "try again" close and reconnects, and the next attempt finds
     // no park and is served locally. `Fatal` would instead run the
     // anti-fingerprinting inbound sink, which exists for unauthenticated probes.
-    let MeshUpstreamHalves { writer, reader, upstream_acked } =
-        setup.attach(&user_id).await.map_err(|error| {
-            FrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
-        })?;
+    let attach_res = if setup.is_home_affinity() {
+        let kind = crate::server::cluster::mesh::FreshSessionKind::Tcp(target);
+        setup.attach_fresh(&user_id, &kind).await
+    } else {
+        setup.attach(&user_id).await
+    };
+    let MeshUpstreamHalves { writer, reader, upstream_acked } = attach_res.map_err(|error| {
+        FrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
+    })?;
     let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
         .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
 
@@ -1571,6 +1577,7 @@ where
                 server,
                 route,
                 &outbound,
+                target,
                 target_display,
             )
             .await?;

@@ -224,6 +224,9 @@ pub(super) async fn serve_relayed(
     services: &Services,
 ) -> Result<()> {
     let session_id = SessionId::from_bytes(header.session_id);
+    if header.home_affinity {
+        return serve_home_affinity_fresh(header, stream, session_id, cluster, services).await;
+    }
     let registry = &services.orphan_registry;
     let Some(query) = park_query(&header) else {
         // A datagram-framed VLESS OPEN: no edge builds one, because the framing
@@ -538,4 +541,227 @@ pub(super) async fn serve_relayed(
     // return, including every early bail inside the splice.
     let _relay_active = cluster.metrics.open_mesh_relay();
     splice_plaintext_tcp(stream, parked, &header, session_id, cluster, registry).await
+}
+
+fn find_ss_user_fwmark(services: &Services, user: &str) -> Option<u32> {
+    let routes = services.routes.get()?.load_full();
+    for map in [&routes.tcp, &routes.udp, &routes.xhttp_ss, &routes.xhttp_ss_udp] {
+        for route in map.values() {
+            if let Some(uk) = route.users.iter().find(|u| u.id_arc().as_ref() == user) {
+                return uk.fwmark();
+            }
+        }
+    }
+    None
+}
+
+fn find_vless_user(services: &Services, user: &str) -> Option<crate::protocol::vless::VlessUser> {
+    let routes = services.routes.get()?.load_full();
+    for map in [&routes.vless, &routes.xhttp_vless] {
+        for route in map.values() {
+            if let Some(vu) = route.users.iter().find(|u| u.label() == user) {
+                return Some(vu.clone());
+            }
+        }
+    }
+    None
+}
+
+async fn serve_home_affinity_fresh(
+    header: OpenHeader,
+    mut stream: MeshStream,
+    session_id: SessionId,
+    cluster: &ClusterCtx,
+    services: &Services,
+) -> Result<()> {
+    let registry = &services.orphan_registry;
+    let ack_shape = header.committed_shape().unwrap_or(MeshShape::Stream);
+    if let Err(error) = write_open_ack(&mut stream.send, header.committed_shape(), ack_shape).await
+    {
+        cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+        return Err(error);
+    }
+
+    let setup = tokio::time::timeout(USER_FRAME_WAIT, async {
+        let user = read_user_frame(&mut stream.recv).await?;
+        let kind = crate::server::cluster::mesh::read_fresh_target_frame(&mut stream.recv).await?;
+        Ok::<_, anyhow::Error>((user, kind))
+    })
+    .await;
+
+    let (user, fresh_kind) = match setup {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(error)) => {
+            cluster.metrics.record_mesh_relay_rejected("bad_setup");
+            cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+            debug!(?error, "refusing a home-affinity relay with invalid setup frames");
+            refuse_relay(stream, CloseReason::Abort);
+            return Ok(());
+        },
+        Err(_elapsed) => {
+            cluster.metrics.record_mesh_relay_rejected("bad_setup");
+            cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+            refuse_relay(stream, CloseReason::Abort);
+            return Ok(());
+        },
+    };
+
+    let owner: Arc<str> = Arc::from(user.user.as_str());
+    let user_counters = services.tcp_server.metrics.user_counters(&owner);
+    let vless_user = match header.protocol {
+        MeshProtocol::Vless => find_vless_user(services, &user.user),
+        MeshProtocol::Ss => None,
+    };
+    let fwmark = match header.protocol {
+        MeshProtocol::Ss => find_ss_user_fwmark(services, &user.user),
+        MeshProtocol::Vless => vless_user.as_ref().and_then(|u| u.fwmark()),
+    };
+
+    match fresh_kind {
+        crate::server::cluster::mesh::FreshSessionKind::Tcp(target) => {
+            let tcp_stream = match crate::server::connect::connect_tcp_target(
+                &services.tcp_server.dns_cache,
+                &target,
+                fwmark,
+                services.tcp_server.prefer_ipv4_upstream,
+                services.tcp_server.outbound_ipv6.as_deref(),
+                &services.tcp_server.outbound_filter,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(error) => {
+                    debug!(?error, %target, "home-affinity tcp target connect failed");
+                    cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+                    refuse_relay(stream, CloseReason::Abort);
+                    return Ok(());
+                },
+            };
+            let (upstream_reader, upstream_writer) = tcp_stream.into_split();
+            let app_proto = match header.protocol {
+                MeshProtocol::Ss => crate::metrics::AppProtocol::Shadowsocks,
+                MeshProtocol::Vless => crate::metrics::AppProtocol::Vless,
+            };
+            let parked = ParkedTcp {
+                upstream_writer,
+                upstream_reader,
+                target_display: Arc::from(target.to_string()),
+                owner: Arc::clone(&owner),
+                protocol: match header.protocol {
+                    MeshProtocol::Ss => crate::server::resumption::ParkedProtocol::Ss,
+                    MeshProtocol::Vless => crate::server::resumption::ParkedProtocol::Vless,
+                },
+                user_counters,
+                upstream_guard: services.tcp_server.metrics.open_tcp_upstream_connection(
+                    owner,
+                    crate::metrics::Protocol::Http3,
+                    app_proto,
+                ),
+                upstream_bytes_acked: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                downlink_ring: header.symmetric_replay.then(|| {
+                    Arc::new(parking_lot::Mutex::new(
+                        crate::server::resumption::downlink_ring::DownlinkRing::new(
+                            registry.downlink_buffer_bytes(),
+                        ),
+                    ))
+                }),
+            };
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            splice_plaintext_tcp(stream, parked, &header, session_id, cluster, registry).await
+        },
+        crate::server::cluster::mesh::FreshSessionKind::SsUdp => {
+            let identity = super::splice_udp::RelayedUdpIdentity {
+                user_id: owner,
+                fwmark,
+                scope: Some(*session_id.as_bytes()),
+            };
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            super::splice_udp::splice_plaintext_udp_with_identity(
+                stream,
+                identity,
+                Vec::new(),
+                0,
+                &header,
+                session_id,
+                cluster,
+                services,
+            )
+            .await
+        },
+        crate::server::cluster::mesh::FreshSessionKind::VlessUdp(target) => {
+            let Some(vu) = vless_user else {
+                cluster.metrics.record_mesh_relay_rejected("unknown_user");
+                cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            };
+            let addr = match crate::server::connect::resolve_udp_target(
+                &services.vless_server.dns_cache,
+                &target,
+                services.vless_server.prefer_ipv4_upstream,
+                &services.vless_server.outbound_filter,
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(error) => {
+                    debug!(?error, %target, "home-affinity vless udp resolve failed");
+                    cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+                    refuse_relay(stream, CloseReason::Abort);
+                    return Ok(());
+                },
+            };
+            let socket = match crate::server::nat::bind_nat_udp_socket(
+                addr,
+                services.vless_server.outbound_ipv6.as_deref(),
+            ) {
+                Ok(s) => s,
+                Err(error) => {
+                    debug!(?error, "home-affinity vless udp bind failed");
+                    cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+                    refuse_relay(stream, CloseReason::Abort);
+                    return Ok(());
+                },
+            };
+            if let Err(error) = crate::fwmark::apply_fwmark_if_needed(&socket, fwmark) {
+                debug!(?error, "home-affinity vless udp fwmark failed");
+                cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            }
+            if let Err(error) = socket.connect(&addr).await {
+                debug!(?error, %addr, "home-affinity vless udp connect failed");
+                cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            }
+            let parked = ParkedVlessUdpSingle {
+                socket: Arc::new(socket),
+                target_display: Arc::from(target.to_string()),
+                owner,
+                user: vu,
+                user_counters,
+                udp_client_buffer: bytes::BytesMut::new(),
+            };
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            splice_plaintext_vless_udp(stream, parked, &header, session_id, cluster, registry).await
+        },
+        crate::server::cluster::mesh::FreshSessionKind::VlessMux => {
+            let Some(vu) = vless_user else {
+                cluster.metrics.record_mesh_relay_rejected("unknown_user");
+                cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            };
+            let parked = ParkedVlessMux {
+                sub_conns: std::collections::HashMap::new(),
+                buffer: bytes::BytesMut::new(),
+                user: vu,
+                owner,
+                user_counters,
+            };
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            splice_plaintext_vless_mux(stream, parked, &header, session_id, cluster, services).await
+        },
+    }
 }

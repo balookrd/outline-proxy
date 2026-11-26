@@ -251,6 +251,38 @@ impl VlessUdpTransport {
         resume_request: Option<SessionId>,
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>, Option<crate::CarrierLossProbe>)>
     {
+        Self::connect_with_resume_and_affinity(
+            cache,
+            url,
+            mode,
+            uuid,
+            target,
+            network,
+            source,
+            keepalive_interval,
+            resume_request,
+            None,
+        )
+        .await
+    }
+
+    /// Same as [`Self::connect_with_resume`] with an optional `home_affinity`
+    /// template [`SessionId`] sent as `X-Outline-Home-Affinity` when
+    /// `resume_request` is `None`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_with_resume_and_affinity(
+        cache: &DnsCache,
+        url: &Url,
+        mode: TransportMode,
+        uuid: &[u8; 16],
+        target: &TargetAddr,
+        network: DialNetworkOptions,
+        source: &'static str,
+        keepalive_interval: Option<Duration>,
+        resume_request: Option<SessionId>,
+        home_affinity: Option<SessionId>,
+    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>, Option<crate::CarrierLossProbe>)>
+    {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(network)
@@ -267,6 +299,7 @@ impl VlessUdpTransport {
                     client_acked_offset: 0,
                     // Offered on the HTTP/3 carriers, as on SS-UDP.
                     udp_datagram_requested: udp_datagram_requested(mode),
+                    home_affinity,
                 }),
         )
         .await

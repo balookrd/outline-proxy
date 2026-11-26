@@ -349,6 +349,27 @@ impl OrphanRegistry {
         }
     }
 
+    /// Mint a fresh unique [`SessionId`] stamped with a specific foreign
+    /// `shard` (used when an edge node honours `x-outline-home-affinity` and
+    /// relays a brand-new session to the client's pinned home shard).
+    #[allow(dead_code)]
+    pub(crate) fn mint_session_id_for_shard(
+        &self,
+        shard: outline_wire::cluster::ShardId,
+    ) -> Option<SessionId> {
+        if !self.enabled() {
+            return None;
+        }
+        let id = self.cluster.as_ref()?;
+        match SessionId::random_with_shard(&self.rng, &id.key, shard) {
+            Ok(sid) => Some(sid),
+            Err(error) => {
+                warn!(?error, "csprng failure minting home-affinity session id");
+                None
+            },
+        }
+    }
+
     /// Reserves `id` for an imminent park, returning an RAII guard the parking
     /// side holds across its reader harvest (which awaits). While the guard is
     /// live, a concurrent [`Self::take_for_resume`] for `id` that finds no

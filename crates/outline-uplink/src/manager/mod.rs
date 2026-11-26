@@ -303,6 +303,8 @@ impl UplinkManager {
                 shutdown_tx,
                 active_uplinks_tx,
                 admin_enabled,
+                pinned_home_id: parking_lot::Mutex::new(None),
+                home_affinity_active: std::sync::atomic::AtomicBool::new(false),
             }),
         })
     }

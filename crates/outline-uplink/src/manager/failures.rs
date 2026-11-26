@@ -14,7 +14,45 @@ use super::super::penalty::{add_penalty, current_penalty};
 use super::super::types::{TransportKind, UplinkManager};
 use super::mode_downgrade::ModeDowngradeTrigger;
 
-const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
+const FAST_PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(2);
+const BATTERY_SAFE_PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
+const BATTERY_SAFE_PROBE_INTERVAL_THRESHOLD: Duration = Duration::from_secs(60);
+
+fn uplink_shares_single_endpoint(
+    uplink: &crate::config::UplinkConfig,
+    transport: TransportKind,
+) -> bool {
+    let plane = match transport {
+        TransportKind::Tcp => crate::wire_spec::Plane::Tcp,
+        TransportKind::Udp => crate::wire_spec::Plane::Udp,
+    };
+    let total_wires = 1 + uplink.fallbacks.len();
+    let mut expected: Option<(String, u16)> = None;
+    for wire_idx in 0..total_wires {
+        let Ok(wire) = u8::try_from(wire_idx) else {
+            return false;
+        };
+        let Some(spec) = crate::wire_spec::WireSpec::of(uplink, wire) else {
+            continue;
+        };
+        let Some(url) = spec.dial_url(plane) else {
+            continue;
+        };
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        let Some(port) = url.port_or_known_default() else {
+            return false;
+        };
+        let key = (host.to_ascii_lowercase(), port);
+        match &expected {
+            Some(prev) if prev != &key => return false,
+            None => expected = Some(key),
+            _ => {},
+        }
+    }
+    expected.is_some()
+}
 
 /// How much a liveness report is allowed to undo.
 ///
@@ -336,6 +374,16 @@ impl UplinkManager {
         let uplink_total_wires = 1 + self.inner.uplinks[index].fallbacks.len();
         let shuffle_wires = self.inner.uplinks[index].shuffle_wires;
         let shuffle_wires_round_mode = shuffle_wires && uplink_total_wires > 1;
+        let endpoint_unreachable =
+            outline_transport::find_typed::<outline_transport::EndpointUnreachable>(error)
+                .is_some();
+        let single_endpoint_uplink = endpoint_unreachable
+            && self
+                .inner
+                .uplinks
+                .get(index)
+                .is_some_and(|u| uplink_shares_single_endpoint(u, transport));
+        let wakeup_min_interval = self.probe_wakeup_min_interval();
         // Read pre-mutation state to determine already_in_cooldown.
         let already_in_cooldown = {
             let s = self.inner.read_status(index);
@@ -444,6 +492,13 @@ impl UplinkManager {
                     {
                         status.tcp.healthy = Some(false);
                     }
+                    if single_endpoint_uplink {
+                        status.tcp.wires_failed_in_round = 0;
+                        status.tcp.consecutive_runtime_failures =
+                            status.tcp.consecutive_runtime_failures.max(runtime_failure_threshold);
+                        status.tcp.healthy = Some(false);
+                        status.tcp.cooldown_until = Some(now + failure_cooldown);
+                    }
                     // Chunk-0 timeouts ride a parallel streak with a wider
                     // decay window — see `chunk0_failure_window` rationale
                     // above. This catches the slow-burn pattern that the
@@ -472,7 +527,7 @@ impl UplinkManager {
                         mark_probe_wakeup(
                             &mut status.tcp.last_probe_wakeup,
                             now,
-                            PROBE_WAKEUP_MIN_INTERVAL,
+                            wakeup_min_interval,
                         );
                     }
                 },
@@ -513,11 +568,18 @@ impl UplinkManager {
                     {
                         status.udp.healthy = Some(false);
                     }
+                    if single_endpoint_uplink {
+                        status.udp.wires_failed_in_round = 0;
+                        status.udp.consecutive_runtime_failures =
+                            status.udp.consecutive_runtime_failures.max(runtime_failure_threshold);
+                        status.udp.healthy = Some(false);
+                        status.udp.cooldown_until = Some(now + failure_cooldown);
+                    }
                     if probe_enabled && !already_in_cooldown {
                         mark_probe_wakeup(
                             &mut status.udp.last_probe_wakeup,
                             now,
-                            PROBE_WAKEUP_MIN_INTERVAL,
+                            wakeup_min_interval,
                         );
                     }
                 },
@@ -537,7 +599,7 @@ impl UplinkManager {
                         && status
                             .tcp
                             .last_probe_wakeup
-                            .is_some_and(|t| now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL),
+                            .is_some_and(|t| now.duration_since(t) < wakeup_min_interval),
                 ),
                 TransportKind::Udp => (
                     status.udp.cooldown_until,
@@ -548,7 +610,7 @@ impl UplinkManager {
                         && status
                             .udp
                             .last_probe_wakeup
-                            .is_some_and(|t| now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL),
+                            .is_some_and(|t| now.duration_since(t) < wakeup_min_interval),
                 ),
             }
         };
@@ -598,7 +660,7 @@ impl UplinkManager {
                     uplink = %uplink_name,
                     uplink_index = index,
                     transport = ?transport,
-                    min_interval_secs = PROBE_WAKEUP_MIN_INTERVAL.as_secs(),
+                    min_interval_secs = wakeup_min_interval.as_secs(),
                     "probe wakeup suppressed by runtime-failure rate limit"
                 );
             }
@@ -646,10 +708,18 @@ impl UplinkManager {
         // that started on the wire `new sessions` lands on).
         // record_wire_outcome filters non-active-wire attributions
         // internally, so misattribution is a no-op.
-        if shuffle_wires_round_mode {
+        if shuffle_wires_round_mode && !single_endpoint_uplink {
             let active = self.active_wire(index, transport);
             let attribution = attempted_wire.unwrap_or(active);
             self.record_wire_outcome(index, transport, attribution, false, uplink_total_wires);
+        }
+    }
+
+    pub(crate) fn probe_wakeup_min_interval(&self) -> Duration {
+        if self.inner.probe.interval >= BATTERY_SAFE_PROBE_INTERVAL_THRESHOLD {
+            BATTERY_SAFE_PROBE_WAKEUP_MIN_INTERVAL
+        } else {
+            FAST_PROBE_WAKEUP_MIN_INTERVAL
         }
     }
 

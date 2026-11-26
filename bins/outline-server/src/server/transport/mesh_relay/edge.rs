@@ -22,6 +22,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 
+/// Shortened Phase-1 ack budget for `x-outline-home-affinity` brand-new
+/// sessions so a completely dead home server falls back to local egress within
+/// ~1.2 s.
+const HOME_AFFINITY_ACK_WAIT: Duration = Duration::from_millis(1200);
+
 /// The deadline for an OPEN ack: [`OPEN_ACK_WAIT`], never longer than the
 /// relay's own progress budget.
 pub(super) fn open_ack_wait(relay_budget: Duration) -> Duration {
@@ -67,10 +72,11 @@ pub(in crate::server) async fn open_edge_relay(
         protocol,
         session_id: *advert.session_id.as_bytes(),
         resume_capable: advert.resume_capable,
-        ack_prefix: advert.ack_prefix,
+        ack_prefix: if advert.home_affinity { false } else { advert.ack_prefix },
         symmetric_replay: advert.symmetric_replay,
         client_down_acked: advert.down_acked,
         peer_addr: Some(peer_addr),
+        home_affinity: advert.home_affinity,
     };
     let mut pooled = match cluster.pool.open_relay(shard, &header).await {
         Ok(pooled) => pooled,
@@ -84,7 +90,12 @@ pub(in crate::server) async fn open_edge_relay(
             return None;
         },
     };
-    let shape = match pooled.await_ack(open_ack_wait(cluster.relay_budget)).await {
+    let ack_wait = if advert.home_affinity {
+        cluster.relay_budget.min(HOME_AFFINITY_ACK_WAIT)
+    } else {
+        open_ack_wait(cluster.relay_budget)
+    };
+    let shape = match pooled.await_ack(ack_wait).await {
         Ok(shape) => shape,
         Err(error) => {
             cluster.metrics.record_mesh_relay_opened("refused");
@@ -156,7 +167,8 @@ pub(in crate::server) fn edge_upstream(
     EdgeUpstream {
         source: UpstreamSource::Mesh(MeshUpstreamSetup::new(
             pooled,
-            advert.ack_prefix,
+            if advert.home_affinity { false } else { advert.ack_prefix },
+            advert.home_affinity,
             cluster.relay_budget,
             shape,
             metrics,
@@ -167,7 +179,10 @@ pub(in crate::server) fn edge_upstream(
             // second guard against this edge parking a socket it does not own.
             requested_resume: None,
             issued_session_id: None,
-            ack_prefix_requested: ack_prefix,
+            // Brand-new home-affinity sessions do NOT expect a leading ORSM
+            // ack-prefix control frame from the server (only resumed sessions
+            // do), even though the HTTP response header still echoes support.
+            ack_prefix_requested: if advert.home_affinity { false } else { ack_prefix },
             symmetric_replay_requested: false,
             client_acked_offset: 0,
         },

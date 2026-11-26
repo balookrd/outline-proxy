@@ -118,7 +118,7 @@ pub(super) async fn splice_plaintext_vless_mux(
     // nothing to a later carrier either, so it is dropped rather than put back
     // (the direct park path refuses to create one for the same reason, see
     // `MuxState::is_parkable`).
-    if parked.sub_conns.is_empty() {
+    if !header.home_affinity && parked.sub_conns.is_empty() {
         cluster.metrics.record_mesh_relay_rejected("park_incomplete");
         // Not a `miss`: a park *was* found under this id and taken, and an empty
         // bundle is worth nothing to a later carrier, so it is dropped rather
@@ -374,7 +374,7 @@ pub(super) async fn splice_plaintext_vless_mux(
                 }
             }
         };
-        if parked.sub_conns.is_empty() {
+        if !header.home_affinity && parked.sub_conns.is_empty() {
             debug!(
                 user = %owner,
                 "not re-parking a relayed vless mux: no sub-connection survived the harvest",

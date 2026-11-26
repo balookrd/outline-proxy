@@ -192,10 +192,6 @@ pub(super) async fn splice_plaintext_udp(
     cluster: &ClusterCtx,
     services: &Services,
 ) -> Result<()> {
-    let MeshStream { mut send, mut recv } = stream;
-    let registry = &services.orphan_registry;
-    let server = Arc::clone(&services.udp_server);
-
     let Some((identity, owned_keys, foreign_keys)) = RelayedUdpIdentity::from_park(&parked, user)
     else {
         cluster.metrics.record_mesh_relay_rejected("park_identity");
@@ -207,9 +203,37 @@ pub(super) async fn splice_plaintext_udp(
             user,
             "refusing a relayed SS-UDP resume: no parked NAT key belongs to the attested user",
         );
-        refuse_relay(MeshStream { send, recv }, CloseReason::Abort);
+        refuse_relay(stream, CloseReason::Abort);
         return Ok(());
     };
+    splice_plaintext_udp_with_identity(
+        stream,
+        identity,
+        owned_keys,
+        foreign_keys,
+        header,
+        session_id,
+        cluster,
+        services,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn splice_plaintext_udp_with_identity(
+    stream: MeshStream,
+    identity: RelayedUdpIdentity,
+    owned_keys: Vec<NatKey>,
+    foreign_keys: usize,
+    header: &OpenHeader,
+    session_id: SessionId,
+    cluster: &ClusterCtx,
+    services: &Services,
+) -> Result<()> {
+    let MeshStream { mut send, mut recv } = stream;
+    let registry = &services.orphan_registry;
+    let server = Arc::clone(&services.udp_server);
+    let user = identity.user_id.as_ref();
     if foreign_keys > 0 {
         // Not fatal — the session keeps the keys that are its own — but nothing
         // in this build parks a mixed-identity key set, so it is worth saying.

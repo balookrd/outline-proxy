@@ -175,11 +175,12 @@ impl TunTcpEngine {
         flow: &Arc<Mutex<TcpFlowState>>,
         trigger: MigrationTrigger,
     ) -> MigrationOutcome {
+        let allow_cluster_failover = matches!(trigger, MigrationTrigger::CarrierDeath);
         let to = match &trigger {
             MigrationTrigger::CarrierDeath => None,
             MigrationTrigger::SoftSwitch { target, .. } => Some(*target),
         };
-        let Some(plan) = self.plan_migration(flow, to).await else {
+        let Some(mut plan) = self.plan_migration(flow, to).await else {
             return MigrationOutcome::NotMigrated;
         };
 
@@ -201,7 +202,9 @@ impl TunTcpEngine {
             drop(retire);
         }
 
-        let result = self.migrate_to_fresh_carrier(key, flow, &plan).await;
+        let result = self
+            .migrate_to_fresh_carrier(key, flow, &mut plan, allow_cluster_failover)
+            .await;
         let notify = {
             let state = flow.lock().await;
             state.signals.carrier_migration.clone()
@@ -293,7 +296,8 @@ impl TunTcpEngine {
         &self,
         key: &TcpFlowKey,
         flow: &Arc<Mutex<TcpFlowState>>,
-        plan: &MigrationPlan,
+        plan: &mut MigrationPlan,
+        allow_cluster_failover: bool,
     ) -> Result<TcpReader> {
         let candidate = migration_candidate(&plan.manager, plan.uplink_index)?;
         let lb = plan.manager.load_balancing();
@@ -301,16 +305,7 @@ impl TunTcpEngine {
         let consume_timeout = lb.tcp_mid_session_retry_consume_timeout;
         let symmetric_replay_max_bytes = lb.tcp_symmetric_replay_max_bytes;
 
-        // Re-dial the uplink this flow already lives on, not a re-selected one: a
-        // different uplink is a different server, where the parked upstream is
-        // not — the resume could only miss (a mesh cluster shares one resume
-        // scope, but its edges also share the shard encoded in the id, so the
-        // same dial reaches the same home). The dial deliberately bypasses the
-        // candidate filter for the same reason: the carrier death we are
-        // recovering from has just been reported as a runtime failure, which may
-        // have put this very uplink in cooldown, and dialling elsewhere would
-        // guarantee the miss.
-        let (writer, mut reader, issued_session_id) = timeout(
+        let primary_dial = timeout(
             self.inner.tcp.connect_timeout,
             redial_tcp_uplink_for_migration(
                 &plan.manager,
@@ -321,22 +316,88 @@ impl TunTcpEngine {
                 symmetric_replay,
             ),
         )
-        .await
-        .map_err(|_| {
-            metrics::record_tun_tcp_event(
-                &plan.group_name,
-                &plan.uplink_name,
-                "carrier_migration_dial_failed",
-            );
-            anyhow!("carrier migration redial timed out after {:?}", self.inner.tcp.connect_timeout)
-        })?
-        .inspect_err(|_| {
-            metrics::record_tun_tcp_event(
-                &plan.group_name,
-                &plan.uplink_name,
-                "carrier_migration_dial_failed",
-            );
-        })?;
+        .await;
+
+        let primary_res = match primary_dial {
+            Ok(Ok(ok)) => Ok(ok),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(anyhow!(
+                "carrier migration redial timed out after {:?}",
+                self.inner.tcp.connect_timeout
+            )),
+        };
+
+        let (writer, mut reader, issued_session_id) = match primary_res {
+            Ok(ok) => ok,
+            Err(primary_err) => {
+                if allow_cluster_failover {
+                    plan.manager
+                        .report_runtime_failure(
+                            plan.uplink_index,
+                            outline_uplink::TransportKind::Tcp,
+                            &primary_err,
+                        )
+                        .await;
+                    if plan.manager.shared_resume() {
+                        let failovers = plan
+                            .manager
+                            .tcp_failover_candidates(&plan.target, plan.uplink_index)
+                            .await;
+                        if let Some(alt) =
+                            failovers.into_iter().find(|c| c.index != plan.uplink_index)
+                        {
+                            match timeout(
+                                self.inner.tcp.connect_timeout,
+                                redial_tcp_uplink_for_migration(
+                                    &plan.manager,
+                                    &alt,
+                                    &plan.target,
+                                    plan.session_id,
+                                    plan.client_acked_offset,
+                                    symmetric_replay,
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(Ok(ok)) => {
+                                    plan.rebind_to = Some(alt.index);
+                                    ok
+                                },
+                                Ok(Err(_)) | Err(_) => {
+                                    metrics::record_tun_tcp_event(
+                                        &plan.group_name,
+                                        &plan.uplink_name,
+                                        "carrier_migration_dial_failed",
+                                    );
+                                    return Err(primary_err);
+                                },
+                            }
+                        } else {
+                            metrics::record_tun_tcp_event(
+                                &plan.group_name,
+                                &plan.uplink_name,
+                                "carrier_migration_dial_failed",
+                            );
+                            return Err(primary_err);
+                        }
+                    } else {
+                        metrics::record_tun_tcp_event(
+                            &plan.group_name,
+                            &plan.uplink_name,
+                            "carrier_migration_dial_failed",
+                        );
+                        return Err(primary_err);
+                    }
+                } else {
+                    metrics::record_tun_tcp_event(
+                        &plan.group_name,
+                        &plan.uplink_name,
+                        "carrier_migration_dial_failed",
+                    );
+                    return Err(primary_err);
+                }
+            },
+        };
 
         // The slot is emptied when (and only when) the writer is installed on the
         // flow. So a still-full slot on the error path is a stream nobody owns —

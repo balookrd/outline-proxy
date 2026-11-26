@@ -184,12 +184,16 @@ pub(super) async fn run_probe_attempt_with_timeout(
         .timeout
         .saturating_mul(transport_budgets)
         .saturating_add(Duration::from_secs(1));
+    let task_dns_cache = Arc::clone(&dns_cache);
+    let task_group = group.clone();
+    let task_uplink = uplink.clone();
+    let task_probe = probe.clone();
     let mut probe_task = tokio::spawn(async move {
         probe_uplink(
-            &dns_cache,
-            &group,
-            &uplink,
-            &probe,
+            &task_dns_cache,
+            &task_group,
+            &task_uplink,
+            &task_probe,
             dial_limit,
             effective_tcp_mode,
             effective_udp_mode,
@@ -200,6 +204,11 @@ pub(super) async fn run_probe_attempt_with_timeout(
     });
     let timeout_sleep = sleep(timeout_duration);
     tokio::pin!(timeout_sleep);
+    let endpoint_watchdog_delay = if probe.endpoint_check {
+        probe.endpoint_check_timeout.max(Duration::from_millis(500))
+    } else {
+        timeout_duration + Duration::from_secs(1)
+    };
 
     tokio::select! {
         joined = &mut probe_task => match joined {
@@ -210,6 +219,20 @@ pub(super) async fn run_probe_attempt_with_timeout(
             probe_task.abort();
             let _ = probe_task.await;
             Err(anyhow!("probe timed out after {:?}", timeout_duration))
+        }
+        Some(endpoints) = async {
+            sleep(endpoint_watchdog_delay).await;
+            unreachable_uplink_endpoints(
+                &dns_cache,
+                &group,
+                &uplink,
+                probe.endpoint_check_timeout,
+            )
+            .await
+        }, if probe.endpoint_check => {
+            probe_task.abort();
+            let _ = probe_task.await;
+            Err(anyhow!("probe aborted by L4 endpoint watchdog ({endpoints})"))
         }
     }
 }

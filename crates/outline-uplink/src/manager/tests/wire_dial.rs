@@ -317,3 +317,34 @@ async fn multi_wire_uplink_warns_once_per_failed_wire_with_fallbacks_allowed() {
     result.expect_err("no wire can build");
     assert_eq!(recorded.count(), 4, "each of the four wires must warn once on its failed dial");
 }
+
+#[tokio::test]
+async fn dial_over_wires_skips_remaining_wires_on_endpoint_unreachable() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let manager = sample_manager_with_three_fallbacks().await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+    let calls = AtomicUsize::new(0);
+
+    let result: Result<(u8, u8)> = manager
+        .dial_over_wires(&candidate, TransportKind::Tcp, true, |wire| {
+            let calls = &calls;
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow!("wire {wire} L4 unreachable")
+                    .context(outline_transport::EndpointUnreachable))
+            }
+        })
+        .await;
+
+    let err = result.expect_err("all wires share dead endpoint");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "only the first wire must be attempted when EndpointUnreachable is returned"
+    );
+    assert!(
+        outline_transport::find_typed::<outline_transport::EndpointUnreachable>(&err).is_some(),
+        "EndpointUnreachable marker must survive on the returned error"
+    );
+}

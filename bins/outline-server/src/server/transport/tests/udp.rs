@@ -916,6 +916,7 @@ impl UdpEdgeHarness {
             ack_prefix: true,
             symmetric_replay: true,
             down_acked: 0,
+            home_affinity: false,
         }
     }
 

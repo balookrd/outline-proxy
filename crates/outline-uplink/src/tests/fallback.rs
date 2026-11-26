@@ -357,7 +357,7 @@ use crate::config::{
 };
 use crate::types::{TransportKind, UplinkManager};
 
-fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig {
+pub(crate) fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig {
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,
         carrier_degraded_failover: None,
@@ -410,7 +410,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
     }
 }
 
-fn make_probe(min_failures: usize) -> ProbeConfig {
+pub(crate) fn make_probe(min_failures: usize) -> ProbeConfig {
     ProbeConfig {
         interval: std::time::Duration::from_secs(30),
         timeout: std::time::Duration::from_secs(5),

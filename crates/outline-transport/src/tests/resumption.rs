@@ -159,3 +159,33 @@ fn udp_datagram_accepted_needs_offer_and_echo() {
     other.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("0"));
     assert!(!parse_resume_response_echo(&datagram_offer(), &other).udp_datagram_accepted);
 }
+
+#[test]
+fn apply_resume_request_headers_emits_home_affinity_only_when_resume_request_absent() {
+    let affinity = SessionId::from_bytes([0xaa; 16]);
+    let resume_id = SessionId::from_bytes([0xbb; 16]);
+
+    // Brand-new session with home_affinity: emits x-outline-home-affinity.
+    let mut headers = http::HeaderMap::new();
+    let opts = crate::dial_plan::DialResumeOptions {
+        home_affinity: Some(affinity),
+        ..Default::default()
+    };
+    apply_resume_request_headers(&opts, &mut headers);
+    assert_eq!(headers.get(HOME_AFFINITY_HEADER).unwrap().to_str().unwrap(), affinity.to_hex());
+    assert!(headers.get(RESUME_REQUEST_HEADER).is_none());
+
+    // Resumed session (resume_request is Some): x-outline-home-affinity must NOT be sent.
+    let mut headers = http::HeaderMap::new();
+    let opts = crate::dial_plan::DialResumeOptions {
+        resume_request: Some(resume_id),
+        home_affinity: Some(affinity),
+        ..Default::default()
+    };
+    apply_resume_request_headers(&opts, &mut headers);
+    assert_eq!(
+        headers.get(RESUME_REQUEST_HEADER).unwrap().to_str().unwrap(),
+        resume_id.to_hex()
+    );
+    assert!(headers.get(HOME_AFFINITY_HEADER).is_none());
+}

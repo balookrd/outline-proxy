@@ -7,6 +7,9 @@ use tokio::time::Instant;
 
 use super::{HEDGE_SCHEDULE, RaceOutcome, race_handshake};
 
+/// Schedule with two hedges used to test multi-point `race_handshake` mechanics.
+const TEST_HEDGE_SCHEDULE: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
 /// What one scripted attempt does: wait `after`, then succeed with its index
 /// or fail; `Silent` never finishes.
 #[derive(Clone, Copy)]
@@ -70,12 +73,17 @@ async fn race(script: &[Step], log: &Arc<Log>) -> Result<(usize, RaceOutcome)> {
                 result
             }
         },
-        &HEDGE_SCHEDULE,
+        &TEST_HEDGE_SCHEDULE,
     )
     .await
 }
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
+
+#[test]
+fn production_hedge_schedule_is_single_800ms_soft_hedge() {
+    assert_eq!(HEDGE_SCHEDULE, [MS(800)]);
+}
 
 #[tokio::test(start_paused = true)]
 async fn fast_first_attempt_wins_without_hedging() {
@@ -201,8 +209,8 @@ async fn hedge_from_a_fresh_port_beats_a_discarded_flow() {
 
     assert_eq!(outcome, RaceOutcome { winner: 1, started: 2 });
     assert!(
-        (Duration::from_secs(1)..Duration::from_secs(2)).contains(&elapsed),
-        "the hedge should win right after its 1 s start, took {elapsed:?}"
+        (Duration::from_millis(800)..Duration::from_secs(2)).contains(&elapsed),
+        "the hedge should win right after its 800 ms start, took {elapsed:?}"
     );
     assert!(conn.close_reason().is_none(), "the winning connection must stay open");
 }

@@ -89,6 +89,7 @@ fn resume() -> DialResumeOptions {
         // The h1 carrier must ignore the HTTP/3 datagram offer: the exact
         // header lists below then prove it never reaches the wire.
         udp_datagram_requested: true,
+        home_affinity: None,
     }
 }
 

@@ -117,6 +117,7 @@ fn resume_options(dial: &FreshTcpDial) -> DialResumeOptions {
             symmetric_replay_requested: dial.symmetric_replay_requested,
             client_acked_offset: dial.client_acked_offset,
             udp_datagram_requested: false,
+            home_affinity: None,
         },
     }
 }
@@ -219,6 +220,7 @@ impl UplinkManager {
             TransportKind::Tcp,
             ws.loss_probe(),
         );
+        self.record_issued_session_id(ws.issued_session_id());
         Some(ws)
     }
 
@@ -555,6 +557,10 @@ impl UplinkManager {
         // `fingerprint_profile` had it read by config and probe but never by a
         // dial; a fallback that omits it inherits the parent's at load time, so
         // the fleet's shape is unaffected.
+        let mut resume_opts = resume_options(&dial);
+        if resume_opts.resume_request.is_none() && resume_opts.home_affinity.is_none() {
+            resume_opts.home_affinity = self.current_home_affinity();
+        }
         let ws = crate::dial::dial_in_wire_scope(
             &candidate.uplink,
             spec.fingerprint_profile,
@@ -562,11 +568,12 @@ impl UplinkManager {
                 TransportDialOptions::new(cache, url, mode, source)
                     .with_network(spec.dial_network())
                     .with_combined_ss_kind(spec.combined_ss_kind(SsPathKind::Tcp))
-                    .with_resume(resume_options(&dial)),
+                    .with_resume(resume_opts),
             ),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        self.record_issued_session_id(ws.issued_session_id());
         // Attribution follows the wire that was actually dialed. Filing this
         // under the primary wire — which is what this function did while it
         // could only ever dial the primary — puts the loss verdict in a slot
@@ -754,6 +761,8 @@ impl UplinkManager {
                         probe,
                     );
                 });
+            let affinity_manager = self.clone();
+            let session_id_manager = self.clone();
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
@@ -771,6 +780,10 @@ impl UplinkManager {
             .with_padding_override(candidate.uplink.padding)
             .with_resume_scope(self.resume_scope(&candidate.uplink.name).to_string())
             .with_resume_store(resume_store.clone())
+            .with_home_affinity_fn(Arc::new(move || affinity_manager.current_home_affinity()))
+            .with_on_session_id_fn(Arc::new(move |id| {
+                session_id_manager.record_issued_session_id(id);
+            }))
             .with_uplink_binding(binding());
             return Ok(UdpSessionTransport::Vless(mux));
         }
@@ -817,6 +830,7 @@ impl UplinkManager {
                 // it into this carrier's store or the flow would have no id of its
                 // own and could never migrate — the reused-standby path was the one
                 // place a TUN UDP flow silently lost its resume identity.
+                self.record_issued_session_id(ws.issued_session_id());
                 resume_store
                     .ss()
                     .store_if_issued(udp_resume_key, ws.issued_session_id());
@@ -867,7 +881,12 @@ impl UplinkManager {
         // is read when `from_websocket` builds the transport (after the dial
         // returns), so the scope must wrap the whole future. The global default
         // is unaffected by an absent override.
-        let connect = UdpWsTransport::connect_with_resume(
+        let home_affinity = if udp_resume_request.is_none() {
+            self.current_home_affinity()
+        } else {
+            None
+        };
+        let connect = UdpWsTransport::connect_with_resume_and_affinity(
             cache,
             udp_ws_url,
             mode,
@@ -877,6 +896,7 @@ impl UplinkManager {
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
             udp_resume_request,
+            home_affinity,
             spec.combined_ss_kind(SsPathKind::Udp),
         );
         let (transport, udp_issued, udp_downgraded_from) =
@@ -885,6 +905,7 @@ impl UplinkManager {
                 .with_context(|| TransportOperation::Connect {
                     target: format!("to {}", udp_ws_url),
                 })?;
+        self.record_issued_session_id(udp_issued);
         resume_store.ss().store_if_issued(udp_resume_key, udp_issued);
         // Attribution follows the wire that was actually dialed — see the TCP
         // twin (`connect_tcp_ws_fresh_internal`) for why filing this under

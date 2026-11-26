@@ -412,6 +412,7 @@ impl UplinkManager {
         // the caller), so a hard one means the same drain an explicit hard
         // switch does.
         let intent = crate::types::SwitchIntent::from_operator_soft(soft);
+        self.clear_home_affinity();
         let scope = self.inner.load_balancing.routing_scope;
         let gate = strict_gate_transport(scope, TransportKind::Tcp);
         let current = self.inner.active_uplinks.read().await.global;
@@ -476,6 +477,7 @@ impl UplinkManager {
     ) -> ReselectOutcome {
         // See `reselect_global`: operator intent, already clamped.
         let intent = crate::types::SwitchIntent::from_operator_soft(soft);
+        self.clear_home_affinity();
         let scope = self.inner.load_balancing.routing_scope;
         let (cur_tcp, cur_udp) = {
             let active = self.inner.active_uplinks.read().await;

@@ -348,6 +348,7 @@ async fn connect_websocket_with_resume(
         symmetric_replay_requested,
         client_acked_offset,
         udp_datagram_requested: false,
+        home_affinity: None,
     };
     let options = outline_transport::TransportDialOptions::new(cache, url, mode, source)
         .with_network(network)

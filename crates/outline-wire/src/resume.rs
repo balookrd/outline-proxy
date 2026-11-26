@@ -38,6 +38,16 @@ pub const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
 /// `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
 pub const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
 
+/// Client → server request header carrying a previously-issued 128-bit
+/// [`SessionId`] (32 lowercase hex chars) whose embedded [`ShardId`] identifies
+/// the client's pinned home exit server in a `shared_resume` cluster.
+///
+/// Sent ONLY on brand-new sessions (when [`RESUME_REQUEST_HEADER`] is absent)
+/// after an automatic failover (`SwitchIntent::Failover`) so that the new
+/// ingress server relays the new session's egress to the original home exit
+/// server over the cluster mesh (`9443/udp`).
+pub const HOME_AFFINITY_HEADER: &str = "x-outline-home-affinity";
+
 /// Lower-cased name of the request-only header carrying the client's
 /// last-acked downstream offset on a v2 resume request. Decimal `u64`,
 /// max `2^63 − 1`; absent or malformed values are treated as `0` per

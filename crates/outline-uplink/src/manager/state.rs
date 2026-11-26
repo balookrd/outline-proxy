@@ -119,6 +119,52 @@ pub(crate) struct UplinkManagerInner {
     /// `disabled_uplinks` set (by uplink name), and construction seeds the
     /// flags from it — a disabled uplink stays parked across a restart.
     pub(crate) admin_enabled: Box<[AtomicBool]>,
+    /// Last server-issued `SessionId` encoding the current home server's
+    /// `ShardId` in a `shared_resume` cluster group.
+    pub(super) pinned_home_id: SyncMutex<Option<outline_transport::SessionId>>,
+    /// `true` after an automatic `SwitchIntent::Failover` in a `shared_resume`
+    /// group so brand-new sessions send `x-outline-home-affinity`. Cleared on
+    /// manual (`OperatorHard`) or scheduled (`OperatorSoft`) switches.
+    pub(super) home_affinity_active: AtomicBool,
+}
+
+impl UplinkManager {
+    /// Record a server-issued `SessionId` from a freshly established carrier.
+    ///
+    /// - When `home_affinity_active` is `false` (normal direct routing), keeps
+    ///   `pinned_home_id` updated with the current direct server's shard so a
+    ///   future automatic failover knows which home shard to preserve.
+    /// - When `home_affinity_active` is `true`, updates `pinned_home_id` with
+    ///   the echoed `SessionId`: if the home shard was alive over mesh, the
+    ///   edge echoed a `SessionId` with that same home shard; if the home shard
+    ///   was dead over mesh, the edge fell back to local exit and echoed a
+    ///   `SessionId` with the edge's own shard, automatically re-pinning future
+    ///   sessions to the new live exit server.
+    pub fn record_issued_session_id(&self, id: Option<outline_transport::SessionId>) {
+        if !self.inner.load_balancing.shared_resume {
+            return;
+        }
+        if let Some(sid) = id {
+            *self.inner.pinned_home_id.lock() = Some(sid);
+        }
+    }
+
+    /// Return the template `SessionId` to send in `x-outline-home-affinity` on
+    /// brand-new sessions, if exit affinity is currently active.
+    pub fn current_home_affinity(&self) -> Option<outline_transport::SessionId> {
+        if !self.inner.load_balancing.shared_resume
+            || !self.inner.home_affinity_active.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        *self.inner.pinned_home_id.lock()
+    }
+
+    /// Clear pinned home exit affinity (invoked on manual or scheduled switch).
+    pub fn clear_home_affinity(&self) {
+        self.inner.home_affinity_active.store(false, Ordering::Release);
+        *self.inner.pinned_home_id.lock() = None;
+    }
 }
 
 impl UplinkManagerInner {

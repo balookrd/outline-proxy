@@ -22,8 +22,9 @@ pub(in crate::server) use endpoint::{
     write_open_ack,
 };
 pub(in crate::server) use frame::{
-    CloseIntent, CloseReason, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
-    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
+    CloseIntent, CloseReason, FreshSessionKind, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
+    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, read_fresh_target_frame,
+    write_fresh_target_frame,
 };
 // Wider than the rest: config validation refuses a clustered user name that
 // could never fit a `UserFrame`, and reads the bound from here.

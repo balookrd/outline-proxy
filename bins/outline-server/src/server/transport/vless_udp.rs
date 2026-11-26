@@ -406,6 +406,12 @@ where
     // so it gets a "try again" close and reconnects. `Fatal` would instead run
     // the anti-fingerprinting inbound sink, which exists for unauthenticated
     // probes. Mirrors the byte-stream edge's `attach_mesh_upstream`.
+    let attach_res = if setup.is_home_affinity() {
+        let kind = crate::server::cluster::mesh::FreshSessionKind::VlessUdp(request.target.clone());
+        setup.attach_fresh_datagrams(&user_id, &kind).await
+    } else {
+        setup.attach_datagrams(&user_id).await
+    };
     let MeshDatagramHalves {
         send,
         recv,
@@ -415,7 +421,7 @@ where
         down_bytes,
         down_datagrams,
         permit,
-    } = setup.attach_datagrams(&user_id).await.map_err(|error| {
+    } = attach_res.map_err(|error| {
         VlessFrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
     })?;
 

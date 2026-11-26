@@ -9,10 +9,46 @@
 //! must not flap the uplink out of the candidate set, which is what makes
 //! within-uplink failover worth having at all.
 
+use std::collections::HashSet;
+
 use anyhow::{Result, anyhow};
 use tracing::{debug, warn};
 
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
+use crate::wire_spec::{Plane, WireSpec};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WireEndpointKey {
+    host: String,
+    port: u16,
+    fwmark: Option<u32>,
+    dscp: Option<u8>,
+    ipv6_first: bool,
+    ipv4_only: bool,
+}
+
+fn wire_endpoint_key(
+    candidate: &UplinkCandidate,
+    wire: u8,
+    transport: TransportKind,
+) -> Option<WireEndpointKey> {
+    let spec = WireSpec::of(&candidate.uplink, wire)?;
+    let plane = match transport {
+        TransportKind::Tcp => Plane::Tcp,
+        TransportKind::Udp => Plane::Udp,
+    };
+    let url = spec.dial_url(plane)?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let port = url.port_or_known_default()?;
+    Some(WireEndpointKey {
+        host,
+        port,
+        fwmark: spec.fwmark,
+        dscp: spec.dscp,
+        ipv6_first: spec.ipv6_first,
+        ipv4_only: spec.ipv4_only,
+    })
+}
 
 /// How a wire is named in an operator-facing log line: `primary (vless)` for
 /// wire 0, `fallback[i] (ss)` for `fallbacks[i]`. The family is part of the
@@ -88,7 +124,26 @@ impl UplinkManager {
         let multi_wire = order.len() > 1;
 
         let mut last_err: Option<anyhow::Error> = None;
+        let mut dead_endpoints: HashSet<WireEndpointKey> = HashSet::new();
         for &wire in &order {
+            let ep_key = wire_endpoint_key(candidate, wire, transport);
+            if let Some(ref key) = ep_key
+                && dead_endpoints.contains(key)
+            {
+                if allow_fallbacks {
+                    self.record_wire_outcome(candidate.index, transport, wire, false, total_wires);
+                }
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    transport = ?transport,
+                    wire_idx = wire,
+                    wire_name = %wire_label(candidate, wire),
+                    host = %key.host,
+                    port = key.port,
+                    "skipping fallback wire pointing to already-unreachable L4 endpoint"
+                );
+                continue;
+            }
             match build(wire).await {
                 Ok(WireAttempt::NotApplicable) => {
                     // Deliberately no `record_wire_outcome`: nothing was
@@ -181,6 +236,14 @@ impl UplinkManager {
                             error = %format!("{error:#}"),
                             "wire dial failed",
                         );
+                    }
+                    if outline_transport::find_typed::<outline_transport::EndpointUnreachable>(
+                        &error,
+                    )
+                    .is_some()
+                        && let Some(key) = ep_key
+                    {
+                        dead_endpoints.insert(key);
                     }
                     last_err = Some(error);
                 },

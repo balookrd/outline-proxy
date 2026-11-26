@@ -458,6 +458,7 @@ fn v5_header(id: SessionId) -> OpenHeader {
         symmetric_replay: false,
         client_down_acked: 0,
         peer_addr: None,
+        home_affinity: false,
     }
 }
 

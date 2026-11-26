@@ -22,11 +22,13 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use outline_metrics as metrics;
+use parking_lot::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, info};
 
@@ -35,12 +37,10 @@ use crate::h3::{TrackedEndpoint, client_endpoint};
 
 /// When further handshake attempts start, measured from the first one.
 ///
-/// Both points match quinn's probe-timeout backoff for a fresh connection
-/// (3 × the 333 ms initial RTT, then doubled): by then the first attempt has
-/// gone unanswered once and twice. A healthy handshake finishes well before
-/// the first point — about two round trips, ~0.7 s even at a 300 ms RTT — so a
-/// healthy path never starts a second attempt.
-pub(crate) const HEDGE_SCHEDULE: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+/// A single soft hedge before the 2-second L4 budget expires: enough to
+/// escape a single-5-tuple UDP blackhole without creating a UDP-scanner
+/// pattern for DPI.
+pub(crate) const HEDGE_SCHEDULE: [Duration; 1] = [Duration::from_millis(800)];
 
 /// How a [`race_handshake`] call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +68,30 @@ impl RaceOutcome {
 /// Attempts that are all silent keep the race pending forever once the
 /// schedule is spent: the caller bounds it with its own timeout, whose expiry
 /// drops every attempt.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn race_handshake<T, F, Fut>(
+    attempt: F,
+    schedule: &[Duration],
+) -> Result<(T, RaceOutcome)>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    race_handshake_inner(attempt, schedule, None).await
+}
+
+struct L4Watchdog {
+    rx_counters: Arc<Mutex<Vec<Arc<std::sync::atomic::AtomicU64>>>>,
+    budget: Duration,
+    what: &'static str,
+    server_name: String,
+    server_addr: SocketAddr,
+}
+
+async fn race_handshake_inner<T, F, Fut>(
     mut attempt: F,
     schedule: &[Duration],
+    watchdog: Option<L4Watchdog>,
 ) -> Result<(T, RaceOutcome)>
 where
     F: FnMut(usize) -> Fut,
@@ -81,6 +102,7 @@ where
     let mut in_flight = FuturesUnordered::new();
     in_flight.push(tagged(0, attempt(0)));
     let mut started = 1;
+    let mut l4_deadline = watchdog.as_ref().map(|w| start + w.budget);
     loop {
         let next_start = schedule.get(started - 1).map(|after| start + *after);
         tokio::select! {
@@ -89,6 +111,27 @@ where
                 Ok(value) => return Ok((value, RaceOutcome { winner: index, started })),
                 Err(error) if in_flight.is_empty() => return Err(error),
                 Err(_) => {},
+            },
+            () = sleep_until_or_never(l4_deadline), if l4_deadline.is_some() => {
+                l4_deadline = None;
+                if let Some(ref w) = watchdog {
+                    let rx_datagrams: u64 = w
+                        .rx_counters
+                        .lock()
+                        .iter()
+                        .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                        .sum();
+                    if rx_datagrams == 0 {
+                        return Err(anyhow::anyhow!(
+                            "{} initial handshake with {} ({}) received 0 UDP datagrams within {:?}",
+                            w.what,
+                            w.server_name,
+                            w.server_addr,
+                            w.budget
+                        )
+                        .context(crate::L4ConnectError));
+                    }
+                }
             },
             () = sleep_until_or_never(next_start) => {
                 in_flight.push(tagged(started, attempt(started)));
@@ -121,7 +164,16 @@ pub(crate) async fn connect_hedged(
 ) -> Result<(TrackedEndpoint, quinn::Connection)> {
     let bind_addr = crate::bind_addr_for(server_addr);
     let started_at = Instant::now();
-    let ((endpoint, connection), outcome) = race_handshake(
+    let rx_counters: Arc<Mutex<Vec<Arc<std::sync::atomic::AtomicU64>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let watchdog = L4Watchdog {
+        rx_counters: Arc::clone(&rx_counters),
+        budget: crate::dial_timeouts::l4_connect_timeout(),
+        what,
+        server_name: server_name.to_owned(),
+        server_addr,
+    };
+    let ((endpoint, connection), outcome) = race_handshake_inner(
         |index| {
             if index > 0 {
                 debug!(
@@ -133,9 +185,11 @@ pub(crate) async fn connect_hedged(
             // Built here, in the caller's task: the config follows the dial's
             // task-local browser profile.
             let client_config = super::h3_quic_client_config_with_first_probe(first_probe);
+            let rx_counters = Arc::clone(&rx_counters);
             async move {
                 let endpoint = client_endpoint(bind_addr, mark, disable_udp_gso, kind)
                     .with_context(|| format!("failed to bind {what} endpoint for {server_addr}"))?;
+                rx_counters.lock().push(endpoint.rx_datagrams_counter());
                 let connection = endpoint
                     .connect_with(client_config, server_addr, server_name)
                     .with_context(|| {
@@ -147,6 +201,7 @@ pub(crate) async fn connect_hedged(
             }
         },
         &HEDGE_SCHEDULE,
+        Some(watchdog),
     )
     .await?;
     if outcome.hedged() {

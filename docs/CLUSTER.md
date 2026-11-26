@@ -686,3 +686,25 @@ There is no per-peer cap and no LRU eviction of relay streams.
    would make configs that still set it fail to load) and logs a warning at
    startup. Remove it from configs; the field will be dropped in a later
    release.
+
+## Brand-New Sessions via Mesh (`X-Outline-Home-Affinity`)
+
+In addition to resuming parked sessions (`X-Outline-Resume`), the v5 mesh
+supports opening brand-new sessions on a pinned home shard after an automatic
+client failover (`SwitchIntent::Failover`):
+
+- **Edge routing**: when `X-Outline-Resume` is absent and
+  `X-Outline-Home-Affinity: <session_id>` carries a foreign shard, `edge_route`
+  mints a fresh unique `SessionId` stamped with that home shard and opens a
+  mesh relay with `FLAG_HOME_AFFINITY` (`0x20`) in `OpenHeader` (with a
+  shortened `1.2 s` Phase-1 ack wait and `ack_prefix = false`). If the home is
+  unreachable over mesh, the edge transparently falls back to local egress and
+  returns its own shard in `X-Outline-Session`.
+- **Phase-2 target framing**: right after `UserFrame`, the edge sends
+  `FreshTargetFrame` (`FreshSessionKind`: `Tcp(TargetAddr)`, `SsUdp`,
+  `VlessUdp(TargetAddr)`, or `VlessMux`).
+- **Home execution**: `serve_relayed` acknowledges Phase 1 immediately without
+  probing `OrphanRegistry`, reads `UserFrame` + `FreshTargetFrame`, opens the
+  outbound socket on the home node (using the user's `fwmark`), and enters the
+  matching plaintext splice (`splice_plaintext_*`), which also parks the new
+  session under its unique `SessionId` on subsequent carrier drops.
