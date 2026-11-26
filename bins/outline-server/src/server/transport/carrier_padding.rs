@@ -20,17 +20,19 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
-use outline_wire::padding::{
-    PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget, encode_frame_into,
-};
-use rand::{Rng, RngExt};
+#[cfg(test)]
+use outline_wire::padding::PADDING_FRAME_HEADER_LEN;
+use outline_wire::padding::PaddingScheme;
+use rand::Rng;
 
 // Frame construction is shared with the client (`outline_wire::padding_frames`)
 // so the uplink and the downlink of one connection are sized by the same code.
+#[cfg(test)]
+pub(in crate::server) use outline_wire::padding_frames::H2_DATA_PAYLOAD_MAX;
+use outline_wire::padding_frames::draw_jitter;
 pub(in crate::server) use outline_wire::padding_frames::{
-    H2_DATA_PAYLOAD_MAX, draw_in, even_piece_lens, frame_payload_into,
+    H2_WS_SERVER_HEADER_LEN as H2_WS_HEADER_LEN, draw_in, even_piece_lens, frame_payload_into,
 };
-use outline_wire::padding_frames::{MIN_H2_PLAINTEXT_CAP, draw_jitter};
 
 use super::throughput_monitor::ThrottleDetectParams;
 use crate::config::PaddingConfig;
@@ -149,22 +151,8 @@ pub(in crate::server) fn frame_datagram_message(
     record: &Bytes,
     room: usize,
 ) -> Option<Bytes> {
-    if !scheme.is_enabled() {
-        return (record.len() <= room).then(|| record.clone());
-    }
-    let budget = datagram_pad_budget(room, record.len())?;
-    let mut rng = rand::rng();
-    let mut pad = vec![0u8; scheme.pad_len_capped(rng.random::<u16>(), budget) as usize];
-    rng.fill_bytes(&mut pad);
-    let mut out = Vec::with_capacity(PADDING_FRAME_HEADER_LEN + record.len() + pad.len());
-    encode_frame_into(&mut out, record, &pad).expect("datagram-sized segments cannot overflow u16");
-    Some(out.into())
+    outline_wire::padding_frames::try_frame_datagram(scheme, record, room, &mut rand::rng())
 }
-
-/// WebSocket header in front of a server→client binary message of 126..=65535
-/// bytes (no mask on this direction). Budgeted for XHTTP bodies too, which carry
-/// no such header: 4 B of slack there is cheaper than a second constant.
-pub(in crate::server) const H2_WS_HEADER_LEN: usize = 4;
 
 /// How many data bytes one downlink message may carry on `protocol` so the
 /// whole message — WS header, padding framing at the scheme's largest pad, the
@@ -172,24 +160,22 @@ pub(in crate::server) const H2_WS_HEADER_LEN: usize = 4;
 /// 0 for plain VLESS) and the data — fits one h2 DATA frame of
 /// [`H2_DATA_PAYLOAD_MAX`] bytes. `None` on every non-h2 carrier (h1 has no
 /// DATA framing, h3 / socket keep their wire) and when the budget leaves less
-/// than [`MIN_H2_PLAINTEXT_CAP`]. The cap is applied before early shaping,
+/// than `MIN_H2_PLAINTEXT_CAP`. The cap is applied before early shaping,
 /// whose pieces are never larger than their input.
 pub(in crate::server) fn h2_plaintext_cap(
     protocol: Protocol,
     scheme: PaddingScheme,
     inner_overhead: usize,
 ) -> Option<usize> {
-    if !matches!(protocol, Protocol::Http2 | Protocol::XhttpH2) {
-        return None;
-    }
-    let padding = if scheme.is_enabled() {
-        PADDING_FRAME_HEADER_LEN + usize::from(scheme.max_pad())
-    } else {
-        0
-    };
-    H2_DATA_PAYLOAD_MAX
-        .checked_sub(H2_WS_HEADER_LEN + padding + inner_overhead)
-        .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
+    matches!(protocol, Protocol::Http2 | Protocol::XhttpH2)
+        .then(|| {
+            outline_wire::padding_frames::h2_record_payload_cap(
+                H2_WS_HEADER_LEN,
+                scheme,
+                inner_overhead,
+            )
+        })
+        .flatten()
 }
 
 /// One discrete downlink message (a resume control / replay frame) as the
@@ -200,14 +186,14 @@ pub(in crate::server) fn h2_plaintext_cap(
 pub(in crate::server) fn capped_downlink_messages(
     protocol: Protocol,
     scheme: PaddingScheme,
-    mut bytes: Bytes,
+    bytes: Bytes,
 ) -> Vec<Bytes> {
-    match h2_plaintext_cap(protocol, scheme, 0) {
-        Some(cap) if bytes.len() > cap => even_piece_lens(bytes.len(), cap)
-            .map(|n| frame_downlink_message(scheme, bytes.split_to(n)))
-            .collect(),
-        _ => vec![frame_downlink_message(scheme, bytes)],
-    }
+    outline_wire::padding_frames::h2_capped_messages(
+        scheme,
+        h2_plaintext_cap(protocol, scheme, 0),
+        bytes,
+        &mut rand::rng(),
+    )
 }
 
 /// Whether the first downlink messages of a TCP session on `protocol` are cut

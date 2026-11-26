@@ -8,10 +8,14 @@
 
 use std::time::Duration;
 
+use bytes::Bytes;
 use rand::{Rng, RngExt};
 
 use crate::early_shape::EarlyShaper;
-use crate::padding::{MAX_PADDING_SEGMENT, PaddingScheme, encode_frame_into};
+use crate::padding::{
+    MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
+    encode_frame_into,
+};
 
 /// Uniform random gap in `[min_ms, max_ms]` (inclusive). `max < min` collapses
 /// to `min` (the `+ 1` keeps the upper bound reachable).
@@ -28,7 +32,7 @@ pub fn draw_jitter(min_ms: u64, max_ms: u64) -> Duration {
 ///
 /// Caller must have checked [`PaddingScheme::is_enabled`] — a disabled scheme
 /// would draw zero pad and uselessly wrap every write in a 4-byte header.
-pub fn frame_payload_into<R: Rng>(
+pub fn frame_payload_into<R: Rng + ?Sized>(
     scheme: PaddingScheme,
     data: &[u8],
     rng: &mut R,
@@ -57,7 +61,7 @@ pub fn frame_payload_into<R: Rng>(
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents
 /// are random bytes (never inspected on decode); length is what matters.
-pub fn draw_pad<R: Rng>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
+pub fn draw_pad<R: Rng + ?Sized>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
     let n = scheme.pad_len(rng.random::<u16>()) as usize;
     let mut pad = vec![0u8; n];
     rng.fill_bytes(&mut pad);
@@ -141,6 +145,90 @@ pub fn shaped_messages<R: Rng>(
         }
     }
     msgs
+}
+
+/// WebSocket header in front of a server->client binary message of 126..=65535 B (no mask).
+pub const H2_WS_SERVER_HEADER_LEN: usize = 4;
+
+/// WebSocket header in front of a client->server binary message of 126..=65535 B (with 4 B mask).
+pub const H2_WS_CLIENT_HEADER_LEN: usize = 8;
+
+/// Maximum data bytes per message on an HTTP/2 carrier so WS header + largest
+/// padding + `inner_overhead` + data fit in a single `H2_DATA_PAYLOAD_MAX` TLS record.
+pub fn h2_record_payload_cap(
+    ws_header_len: usize,
+    scheme: PaddingScheme,
+    inner_overhead: usize,
+) -> Option<usize> {
+    let padding = if scheme.is_enabled() {
+        PADDING_FRAME_HEADER_LEN + usize::from(scheme.max_pad())
+    } else {
+        0
+    };
+    H2_DATA_PAYLOAD_MAX
+        .checked_sub(ws_header_len + padding + inner_overhead)
+        .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
+}
+
+/// Cuts `frame` into even pieces of at most `cap` bytes (when `cap` is `Some`
+/// and `frame.len() > cap`), framing each piece under `scheme` when enabled or
+/// returning zero-copy `Bytes` slices when disabled.
+pub fn h2_capped_messages<R: Rng + ?Sized>(
+    scheme: PaddingScheme,
+    cap: Option<usize>,
+    mut frame: Bytes,
+    rng: &mut R,
+) -> Vec<Bytes> {
+    let frame_one = |piece: Bytes, rng: &mut R| -> Bytes {
+        if scheme.is_enabled() {
+            let mut out = Vec::with_capacity(piece.len() + 8);
+            frame_payload_into(scheme, &piece, rng, &mut out);
+            Bytes::from(out)
+        } else {
+            piece
+        }
+    };
+    match cap {
+        Some(c) if frame.len() > c => even_piece_lens(frame.len(), c)
+            .map(|len| frame_one(frame.split_to(len), rng))
+            .collect(),
+        _ => vec![frame_one(frame, rng)],
+    }
+}
+
+/// Appends one padded datagram frame into `out` when `data` fits `room`
+/// (capping pad to the remaining room). Returns `false` without modifying `out`
+/// when `data` cannot fit as a padded datagram.
+pub fn try_frame_datagram_into<R: Rng + ?Sized>(
+    scheme: PaddingScheme,
+    data: &[u8],
+    room: usize,
+    rng: &mut R,
+    out: &mut Vec<u8>,
+) -> bool {
+    let Some(budget) = datagram_pad_budget(room, data.len()) else {
+        return false;
+    };
+    let mut pad = vec![0u8; scheme.pad_len_capped(rng.random::<u16>(), budget) as usize];
+    rng.fill_bytes(&mut pad);
+    encode_frame_into(out, data, &pad).expect("datagram-sized segments cannot overflow u16");
+    true
+}
+
+/// Frames one datagram payload to fit within `room` bytes, returning zero-copy
+/// `record.clone()` when `scheme` is disabled and `record.len() <= room`.
+pub fn try_frame_datagram<R: Rng + ?Sized>(
+    scheme: PaddingScheme,
+    record: &Bytes,
+    room: usize,
+    rng: &mut R,
+) -> Option<Bytes> {
+    if !scheme.is_enabled() {
+        return (record.len() <= room).then(|| record.clone());
+    }
+    let budget = datagram_pad_budget(room, record.len())?;
+    let mut out = Vec::with_capacity(PADDING_FRAME_HEADER_LEN + record.len() + budget);
+    try_frame_datagram_into(scheme, record, room, rng, &mut out).then(|| Bytes::from(out))
 }
 
 #[cfg(test)]

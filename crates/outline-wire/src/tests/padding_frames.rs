@@ -73,3 +73,45 @@ proptest::proptest! {
         proptest::prop_assert!(max - min <= 1);
     }
 }
+
+#[test]
+fn h2_record_payload_cap_accounts_for_ws_header_padding_and_overhead() {
+    assert_eq!(
+        h2_record_payload_cap(H2_WS_CLIENT_HEADER_LEN, PaddingScheme::disabled(), 0),
+        Some(16375 - 8),
+    );
+    assert_eq!(
+        h2_record_payload_cap(H2_WS_SERVER_HEADER_LEN, PaddingScheme::new(0, 256), 34),
+        Some(16375 - 4 - 4 - 256 - 34),
+    );
+    assert_eq!(
+        h2_record_payload_cap(H2_WS_CLIENT_HEADER_LEN, PaddingScheme::new(0, 16_000), 0),
+        None,
+    );
+}
+
+#[test]
+fn h2_capped_messages_cuts_evenly_and_round_trips() {
+    let scheme = PaddingScheme::new(0, 128);
+    let cap = h2_record_payload_cap(H2_WS_CLIENT_HEADER_LEN, scheme, 0).unwrap();
+    let payload = bytes::Bytes::from(vec![0x5A; cap * 2 + 17]);
+    let msgs = h2_capped_messages(scheme, Some(cap), payload.clone(), &mut rand::rng());
+    assert_eq!(msgs.len(), 3);
+    let mut decoder = PaddingDecoder::new();
+    let mut out = Vec::new();
+    for m in msgs {
+        assert!(m.len() + H2_WS_CLIENT_HEADER_LEN <= H2_DATA_PAYLOAD_MAX);
+        decoder.push(&m, &mut out);
+    }
+    assert!(decoder.is_at_frame_boundary());
+    assert_eq!(out, payload.as_ref());
+}
+
+#[test]
+fn try_frame_datagram_respects_room_budget() {
+    let scheme = PaddingScheme::new(16, 64);
+    let record = bytes::Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert!(try_frame_datagram(scheme, &record, 11, &mut rand::rng()).is_none());
+    let framed = try_frame_datagram(scheme, &record, 24, &mut rand::rng()).unwrap();
+    assert!(framed.len() <= 24);
+}

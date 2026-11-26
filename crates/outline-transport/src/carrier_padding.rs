@@ -25,19 +25,19 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
-use outline_wire::padding::{
-    PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget, encode_frame_into,
-};
-use rand::{Rng, RngExt};
+use outline_wire::padding::PaddingScheme;
+use rand::Rng;
 
 // Frame construction is shared with the server (`outline_wire::padding_frames`)
 // so the uplink and the downlink of one connection are sized by the same code.
 #[cfg(test)]
+pub(crate) use outline_wire::padding_frames::H2_DATA_PAYLOAD_MAX;
+use outline_wire::padding_frames::draw_jitter;
+#[cfg(test)]
 use outline_wire::padding_frames::draw_pad;
 pub(crate) use outline_wire::padding_frames::{
-    H2_DATA_PAYLOAD_MAX, draw_in, even_piece_lens, frame_payload_into, shaped_messages,
+    H2_WS_CLIENT_HEADER_LEN, draw_in, frame_payload_into, shaped_messages,
 };
-use outline_wire::padding_frames::{MIN_H2_PLAINTEXT_CAP, draw_jitter};
 
 /// Resolved carrier-padding knobs for this process. `Copy` so the transport
 /// layers can stash a snapshot per connection without sharing state.
@@ -203,21 +203,13 @@ pub(crate) fn frame_datagram_into<R: Rng>(
     rng: &mut R,
     out: &mut Vec<u8>,
 ) {
-    let Some(budget) = room.and_then(|room| datagram_pad_budget(room, data.len())) else {
-        frame_payload_into(scheme, data, rng, out);
+    if let Some(room) = room
+        && outline_wire::padding_frames::try_frame_datagram_into(scheme, data, room, rng, out)
+    {
         return;
-    };
-    let mut pad = vec![0u8; scheme.pad_len_capped(rng.random::<u16>(), budget) as usize];
-    rng.fill_bytes(&mut pad);
-    // `data` fits one datagram, far below the u16 segment ceiling.
-    encode_frame_into(out, data, &pad).expect("datagram-sized segments cannot overflow u16");
+    }
+    frame_payload_into(scheme, data, rng, out);
 }
-
-/// WebSocket header in front of a client→server binary message of
-/// 126..=65535 bytes: 2 + 2 extended length + 4 mask. Budgeted for XHTTP
-/// stream-one bodies too, which carry no such header: 8 B of slack there is
-/// cheaper than a second constant.
-pub(crate) const H2_WS_CLIENT_HEADER_LEN: usize = 8;
 
 /// How many stream bytes one uplink message may carry on an h2 carrier so the
 /// whole message — WS header, padding framing at the scheme's largest pad and
@@ -225,17 +217,10 @@ pub(crate) const H2_WS_CLIENT_HEADER_LEN: usize = 8;
 /// TLS record. The data is the already encrypted / encoded stream (SS AEAD
 /// chunks, VLESS bytes), which the server reads as a stream, so a cut needs no
 /// inner overhead. `None` when the budget leaves less than
-/// [`MIN_H2_PLAINTEXT_CAP`]. Callers apply it only on h2 carriers (see
+/// `MIN_H2_PLAINTEXT_CAP`. Callers apply it only on h2 carriers (see
 /// `TransportStream::caps_h2_uplink`).
 pub(crate) fn h2_uplink_cap(scheme: PaddingScheme) -> Option<usize> {
-    let padding = if scheme.is_enabled() {
-        PADDING_FRAME_HEADER_LEN + usize::from(scheme.max_pad())
-    } else {
-        0
-    };
-    H2_DATA_PAYLOAD_MAX
-        .checked_sub(H2_WS_CLIENT_HEADER_LEN + padding)
-        .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
+    outline_wire::padding_frames::h2_record_payload_cap(H2_WS_CLIENT_HEADER_LEN, scheme, 0)
 }
 
 /// One uplink frame past the shaping window as the messages it goes out as on
@@ -248,20 +233,7 @@ pub(crate) fn h2_capped_messages<R: Rng>(
     frame: Bytes,
     rng: &mut R,
 ) -> Vec<Bytes> {
-    let mut offset = 0;
-    even_piece_lens(frame.len(), cap)
-        .map(|len| {
-            let piece = frame.slice(offset..offset + len);
-            offset += len;
-            if scheme.is_enabled() {
-                let mut out = Vec::with_capacity(len + 8);
-                frame_payload_into(scheme, &piece, rng, &mut out);
-                Bytes::from(out)
-            } else {
-                piece
-            }
-        })
-        .collect()
+    outline_wire::padding_frames::h2_capped_messages(scheme, Some(cap), frame, rng)
 }
 
 #[cfg(test)]
