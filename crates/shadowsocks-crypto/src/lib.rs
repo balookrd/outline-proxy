@@ -7,6 +7,7 @@ mod cipher_kind;
 mod error;
 mod keys;
 mod ss2022_udp;
+pub mod stream;
 mod udp;
 
 pub use error::{CryptoError, Result};
@@ -17,7 +18,7 @@ mod tests;
 pub use aead::{
     AeadCipher, LEGACY_MAX_PAYLOAD_LEN, MAX_STREAM_NONCE_COUNTER, SHADOWSOCKS_MAX_PAYLOAD,
     SHADOWSOCKS_NONCE_LEN, SHADOWSOCKS_TAG_LEN, SHADOWSOCKS_XNONCE_LEN, StreamNonce, decrypt,
-    encrypt, encrypt_into, increment_nonce,
+    encrypt, encrypt_into,
 };
 pub use cipher_kind::CipherKind;
 pub use keys::{SHADOWSOCKS_2022_INFO, SHADOWSOCKS_INFO, derive_subkey, evp_bytes_to_key};

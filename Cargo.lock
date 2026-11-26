@@ -3519,6 +3519,7 @@ version = "26.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aws-lc-rs",
  "brotli-decompressor",
  "bytes",
  "flate2",
@@ -3542,7 +3543,6 @@ dependencies = [
  "quinn-proto",
  "rand 0.10.3",
  "rcgen",
- "ring",
  "rustls",
  "ruzstd",
  "serde",

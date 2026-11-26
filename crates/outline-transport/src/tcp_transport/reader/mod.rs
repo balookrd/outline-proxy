@@ -16,9 +16,8 @@ use anyhow::{Result, anyhow, bail};
 use bytes::{Bytes, BytesMut};
 use outline_wire::padding::PaddingDecoder;
 use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
-use shadowsocks_crypto::{
-    AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
-};
+use shadowsocks_crypto::stream::{open_length_block, open_payload_in_place};
+use shadowsocks_crypto::{AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, StreamNonce, derive_subkey};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::tcp::OwnedReadHalf;
@@ -38,7 +37,7 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
     /// Lazily-initialised session cipher (built after reading the response
     /// salt and deriving the subkey).  `None` until the first chunk arrives.
     cipher_state: Option<AeadCipher>,
-    nonce: [u8; 12],
+    nonce: StreamNonce,
     ss2022: Option<Ss2022TcpReaderState>,
     _lifetime: Arc<UpstreamTransportGuard>,
     /// `true` when the last read ended with a clean WebSocket close (Close
@@ -118,7 +117,7 @@ impl TcpShadowsocksReader<WsReadTransport> {
             cipher,
             master_key: mk,
             cipher_state: None,
-            nonce: [0u8; 12],
+            nonce: StreamNonce::new(),
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
@@ -151,7 +150,7 @@ impl TcpShadowsocksReader<SocketReadTransport> {
             cipher,
             master_key: mk,
             cipher_state: None,
-            nonce: [0u8; 12],
+            nonce: StreamNonce::new(),
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
@@ -485,15 +484,16 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
             .transport
             .read_exact(2 + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly)
             .await?;
-        self.decrypt_in_place_session(&mut len_buf)?;
-
-        if len_buf.len() != 2 {
-            bail!("invalid decrypted length block");
-        }
-        let payload_len = u16::from_be_bytes([len_buf[0], len_buf[1]]) as usize;
-        if payload_len > self.cipher.max_payload_len() {
-            bail!("payload length exceeds limit: {payload_len}");
-        }
+        let cipher = self
+            .cipher_state
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing session cipher"))?;
+        let payload_len = open_length_block(
+            cipher,
+            &mut self.nonce,
+            self.cipher.max_payload_len(),
+            &mut len_buf,
+        )?;
 
         let mut payload_buf = self
             .transport
@@ -507,13 +507,12 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
     /// cipher and advance the nonce.  No new allocation — `buf` is truncated to
     /// plaintext length on success.
     fn decrypt_in_place_session(&mut self, buf: &mut BytesMut) -> Result<()> {
-        let plaintext_len = self
+        let cipher = self
             .cipher_state
             .as_ref()
-            .ok_or_else(|| anyhow!("missing session cipher"))?
-            .decrypt_detached_in_place(&self.nonce, buf)?;
+            .ok_or_else(|| anyhow!("missing session cipher"))?;
+        let plaintext_len = open_payload_in_place(cipher, &mut self.nonce, buf)?;
         buf.truncate(plaintext_len);
-        increment_nonce(&mut self.nonce)?;
         Ok(())
     }
 }

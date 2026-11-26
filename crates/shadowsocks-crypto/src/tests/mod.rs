@@ -4,7 +4,6 @@ mod known_answers;
 
 use crate::cipher_kind::CipherKind;
 
-use super::aead::increment_nonce;
 use super::keys::evp_bytes_to_key;
 use super::ss2022_udp::{
     SS2022_UDP_SERVER_PACKET, decrypt_udp_packet_2022, encrypt_udp_packet_2022_aes,
@@ -16,29 +15,6 @@ use super::udp::{decrypt_udp_packet, encrypt_udp_packet};
 fn bytes_to_key_matches_known_vector() {
     let key = evp_bytes_to_key(b"password", 32);
     assert_eq!(hex(&key), "5f4dcc3b5aa765d61d8327deb882cf992b95990a9151374abd8ff8c5a7a0fe08");
-}
-
-#[test]
-fn nonce_is_incremented_little_endian() {
-    let mut nonce = [0u8; 12];
-    increment_nonce(&mut nonce).unwrap();
-    assert_eq!(nonce[0], 1);
-
-    nonce[0] = 0xff;
-    increment_nonce(&mut nonce).unwrap();
-    assert_eq!(nonce[0], 0);
-    assert_eq!(nonce[1], 1);
-}
-
-#[test]
-fn nonce_overflow_returns_error() {
-    // A fully saturated nonce wraps to [0; 12], which would reuse the same
-    // (key, nonce) pair — increment_nonce must detect and reject this.
-    let mut nonce = [0xffu8; 12];
-    assert!(
-        increment_nonce(&mut nonce).is_err(),
-        "expected Err on nonce overflow, but got Ok"
-    );
 }
 
 #[test]
@@ -137,6 +113,14 @@ fn aes_header_and_xchacha_ciphers_round_trip() {
     let enc = hdr_cipher.encrypt_header(&block);
     assert_ne!(enc, block);
     assert_eq!(hdr_cipher.decrypt_header(&enc).unwrap(), block);
+    assert!(matches!(
+        hdr_cipher.decrypt_header(&enc[..15]),
+        Err(crate::CryptoError::InvalidHeaderLength)
+    ));
+    assert!(matches!(
+        hdr_cipher.decrypt_header(&[0u8; 17]),
+        Err(crate::CryptoError::InvalidHeaderLength)
+    ));
 
     let xcipher = crate::XChaChaCipher::new(&key32).unwrap();
     let nonce = [0x11u8; 24];

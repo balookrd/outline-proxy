@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use ring::{aead, hmac};
+use aws_lc_rs::{aead, hmac};
 
 use crate::quic::loopback;
 use crate::tests::client_hello::{

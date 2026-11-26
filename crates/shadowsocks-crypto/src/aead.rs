@@ -193,22 +193,3 @@ pub fn encrypt_into(
 ) -> Result<()> {
     AeadCipher::new(cipher, key)?.encrypt_into(nonce, payload, out)
 }
-
-/// Increments the AEAD nonce by 1 (little-endian, as required by Shadowsocks).
-///
-/// Returns `Err` if all 96 bits carry over and the nonce wraps back to all-zeros.
-/// Reusing the same `(key, nonce)` pair would break AEAD confidentiality, so the
-/// caller must treat this as a fatal error and close the connection.
-///
-/// In practice a 96-bit nonce requires 2^96 encrypt/decrypt operations to overflow
-/// within a single TCP stream — this branch should never be reached.
-pub fn increment_nonce(nonce: &mut [u8; 12]) -> Result<()> {
-    for byte in nonce.iter_mut() {
-        let (next, carry) = byte.overflowing_add(1);
-        *byte = next;
-        if !carry {
-            return Ok(());
-        }
-    }
-    Err(CryptoError::NonceOverflow)
-}

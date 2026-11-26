@@ -100,6 +100,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"] }
 # SHA-256 for the JA4 helper of the ClientHello tests (`tests/client_hello.rs`), which
 # also run without the `quic` feature.
-ring = { workspace = true }
+aws-lc-rs = { workspace = true }
 # Self-signed cert for the zero-length-CID rebinding test (`quic/tests/tp_profile.rs`).
 rcgen = { workspace = true, features = ["aws_lc_rs"] }

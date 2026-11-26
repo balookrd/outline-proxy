@@ -194,8 +194,9 @@ impl AesHeaderCipher {
         block
     }
 
-    pub fn decrypt_header(&self, header: &[u8; 16]) -> Result<[u8; 16]> {
-        let mut block = *header;
+    pub fn decrypt_header(&self, encrypted: &[u8]) -> Result<[u8; 16]> {
+        let mut block: [u8; 16] =
+            encrypted.try_into().map_err(|_| CryptoError::InvalidHeaderLength)?;
         match self {
             Self::Aes128(cipher) => cipher.decrypt_block((&mut block).into()),
             Self::Aes256(cipher) => cipher.decrypt_block((&mut block).into()),

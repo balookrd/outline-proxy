@@ -215,7 +215,7 @@ pub(crate) fn ech_outer(ch: &[u8]) -> (u16, u16, usize, usize) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn sha256_hex12(s: &str) -> String {
-    let d = ring::digest::digest(&ring::digest::SHA256, s.as_bytes());
+    let d = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, s.as_bytes());
     d.as_ref()[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 

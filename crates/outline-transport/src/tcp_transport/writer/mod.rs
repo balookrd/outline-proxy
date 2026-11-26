@@ -7,9 +7,8 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use outline_wire::ss2022::Ss2022Error;
 use rand::Rng;
-use shadowsocks_crypto::{
-    AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
-};
+use shadowsocks_crypto::stream::seal_payload_chunk;
+use shadowsocks_crypto::{AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, StreamNonce, derive_subkey};
 use socks5_proto::TargetAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -25,7 +24,7 @@ pub struct TcpShadowsocksWriter<T: WriteTransport> {
     /// Session cipher instance with the key schedule pre-computed; reused for
     /// every frame to avoid per-chunk AES key expansion.
     cipher_state: AeadCipher,
-    nonce: [u8; 12],
+    nonce: StreamNonce,
     pending_salt: Option<[u8; 32]>,
     ss2022: Option<Ss2022TcpWriterState>,
     _lifetime: Arc<UpstreamTransportGuard>,
@@ -61,7 +60,7 @@ impl TcpShadowsocksWriter<WsWriteTransport> {
                 transport,
                 cipher,
                 cipher_state,
-                nonce: [0u8; 12],
+                nonce: StreamNonce::new(),
                 pending_salt: Some(salt),
                 ss2022: cipher
                     .is_ss2022()
@@ -98,7 +97,7 @@ impl TcpShadowsocksWriter<SocketWriteTransport> {
             transport: SocketWriteTransport { writer },
             cipher,
             cipher_state,
-            nonce: [0u8; 12],
+            nonce: StreamNonce::new(),
             pending_salt: Some(salt),
             ss2022: cipher
                 .is_ss2022()
@@ -142,11 +141,9 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
                 frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
             }
             self.cipher_state
-                .encrypt_into(&self.nonce, &fixed_header, &mut frame)?;
-            increment_nonce(&mut self.nonce)?;
+                .encrypt_into(&self.nonce.next()?, &fixed_header, &mut frame)?;
             self.cipher_state
-                .encrypt_into(&self.nonce, &variable_header, &mut frame)?;
-            increment_nonce(&mut self.nonce)?;
+                .encrypt_into(&self.nonce.next()?, &variable_header, &mut frame)?;
             state.header_sent = true;
 
             self.transport.write_frame_held(frame).await?;
@@ -247,17 +244,19 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
         self.write_frame(frame).await
     }
 
-    // Encrypt one SS2022 payload chunk and append it (plus salt prefix, if pending)
+    // Encrypt one payload chunk and append it (plus salt prefix, if pending)
     // to `frame`.  No allocation — the caller pre-sizes the buffer.
     fn encrypt_payload_frame_into(&mut self, payload: &[u8], frame: &mut Vec<u8>) -> Result<()> {
-        if let Some(salt) = self.pending_salt.take() {
-            frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
-        }
-        let len = (payload.len() as u16).to_be_bytes();
-        self.cipher_state.encrypt_into(&self.nonce, &len, frame)?;
-        increment_nonce(&mut self.nonce)?;
-        self.cipher_state.encrypt_into(&self.nonce, payload, frame)?;
-        increment_nonce(&mut self.nonce)?;
+        let salt = self.pending_salt.take();
+        let salt_slice = salt.as_ref().map(|s| &s[..self.cipher.salt_len()]);
+        seal_payload_chunk(
+            &self.cipher_state,
+            &mut self.nonce,
+            self.cipher.max_payload_len(),
+            salt_slice,
+            payload,
+            frame,
+        )?;
         Ok(())
     }
 
