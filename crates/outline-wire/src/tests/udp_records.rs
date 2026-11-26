@@ -109,3 +109,47 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn encode_record_round_trips_and_rejects_oversized() {
+    let encoded = encode_record(b"hello").expect("small payload fits u16");
+    assert_eq!(encoded.as_ref(), &[0x00, 0x05, b'h', b'e', b'l', b'l', b'o']);
+
+    let oversized = vec![0u8; MAX_UDP_RECORD_PAYLOAD + 1];
+    assert_eq!(
+        encode_record(&oversized),
+        Err(UdpRecordError::PayloadTooLarge(MAX_UDP_RECORD_PAYLOAD + 1))
+    );
+}
+
+#[test]
+fn udp_record_stream_passthrough_when_disabled() {
+    let mut stream = UdpRecordStream::new(false);
+    assert!(!stream.is_enabled());
+    stream.push_chunk(Bytes::from_static(b"chunk1"));
+    stream.push_chunk(Bytes::from_static(b"chunk2"));
+    assert_eq!(stream.pop_datagram(), Some(Bytes::from_static(b"chunk1")));
+    assert_eq!(stream.pop_datagram(), Some(Bytes::from_static(b"chunk2")));
+    assert_eq!(stream.pop_datagram(), None);
+}
+
+#[test]
+fn udp_record_stream_reassembles_splits_and_coalesced_chunks() {
+    let mut stream = UdpRecordStream::new(true);
+    assert!(stream.is_enabled());
+
+    let r1 = encode_record(b"first").unwrap();
+    let r2 = encode_record(b"second-dgram").unwrap();
+    let mut combined = Vec::new();
+    combined.extend_from_slice(&r1);
+    combined.extend_from_slice(&r2);
+    let split_at = r1.len() + 3;
+
+    stream.push_chunk(Bytes::copy_from_slice(&combined[..split_at]));
+    assert_eq!(stream.pop_datagram(), Some(Bytes::from_static(b"first")));
+    assert_eq!(stream.pop_datagram(), None);
+
+    stream.push_chunk(Bytes::copy_from_slice(&combined[split_at..]));
+    assert_eq!(stream.pop_datagram(), Some(Bytes::from_static(b"second-dgram")));
+    assert_eq!(stream.pop_datagram(), None);
+}

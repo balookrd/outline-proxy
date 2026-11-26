@@ -31,6 +31,8 @@
 //! decodes, so a half-rolled-out pair keeps the pre-existing (unframed) wire
 //! instead of talking past each other.
 
+use std::collections::VecDeque;
+
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
 
@@ -60,6 +62,13 @@ pub fn encode_record_into(payload: &[u8], out: &mut Vec<u8>) -> Result<(), UdpRe
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(payload);
     Ok(())
+}
+
+/// Encodes `payload` as a standalone length-prefixed [`Bytes`] record.
+pub fn encode_record(payload: &[u8]) -> Result<Bytes, UdpRecordError> {
+    let mut out = Vec::new();
+    encode_record_into(payload, &mut out)?;
+    Ok(Bytes::from(out))
 }
 
 /// Streaming reassembler: feed it carrier chunks, take back whole datagrams.
@@ -107,6 +116,48 @@ impl UdpRecordDecoder {
     /// Bytes currently held pending reassembly. Diagnostics / bound checks.
     pub fn buffered_len(&self) -> usize {
         self.buf.len()
+    }
+}
+
+/// Optional streaming UDP record deframer with a FIFO queue of decoded
+/// datagrams. When disabled, pushed chunks pass through unchanged.
+#[derive(Debug, Default)]
+pub struct UdpRecordStream {
+    decoder: Option<UdpRecordDecoder>,
+    pending: VecDeque<Bytes>,
+}
+
+impl UdpRecordStream {
+    /// Creates a stream in framed (`enabled = true`) or passthrough (`false`)
+    /// mode.
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            decoder: enabled.then(UdpRecordDecoder::new),
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// Whether record framing is active on this stream.
+    pub const fn is_enabled(&self) -> bool {
+        self.decoder.is_some()
+    }
+
+    /// Feeds one transport chunk and queues all newly completed datagrams
+    /// (or the chunk itself in passthrough mode).
+    pub fn push_chunk(&mut self, chunk: Bytes) {
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.push(&chunk);
+            while let Some(datagram) = decoder.next_record() {
+                self.pending.push_back(datagram);
+            }
+        } else {
+            self.pending.push_back(chunk);
+        }
+    }
+
+    /// Pops the next queued datagram, if any.
+    pub fn pop_datagram(&mut self) -> Option<Bytes> {
+        self.pending.pop_front()
     }
 }
 

@@ -2,8 +2,9 @@
 
 use super::{
     PADDING_HEADER, PADDING_MAX_LEN, PADDING_MIN_LEN, SESSION_ID_ALPHABET, SsPathKind,
-    UDP_RECORDS_HEADER, XhttpSubmode, decode_kind, encode_kind_first_byte, generate_padding_header,
-    header_flag_enabled, is_valid_session_id, masquerade_response_headers, post_response_headers,
+    UDP_DATAGRAM_HEADER, UDP_RECORDS_HEADER, XhttpSubmode, apply_udp_datagram_header, decode_kind,
+    encode_kind_first_byte, generate_padding_header, header_flag_enabled, is_valid_session_id,
+    masquerade_response_headers, offers_udp_datagrams, post_response_headers,
 };
 
 #[test]
@@ -154,4 +155,17 @@ fn response_header_sets_and_flag_helper() {
     assert!(!header_flag_enabled(&map, UDP_RECORDS_HEADER));
     map.insert(UDP_RECORDS_HEADER, http::HeaderValue::from_static(" 1 "));
     assert!(header_flag_enabled(&map, UDP_RECORDS_HEADER));
+}
+
+#[test]
+fn udp_datagram_header_helpers() {
+    let mut map = http::HeaderMap::new();
+    assert!(!offers_udp_datagrams(&map));
+    apply_udp_datagram_header(&mut map);
+    assert!(offers_udp_datagrams(&map));
+
+    map.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static(" 1 "));
+    assert!(offers_udp_datagrams(&map));
+    map.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("0"));
+    assert!(!offers_udp_datagrams(&map));
 }

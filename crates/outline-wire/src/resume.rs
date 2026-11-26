@@ -15,7 +15,9 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use rand::Rng;
 
 use crate::cluster::{ObfuscationKey, ShardId, decode_shard, encode_session_id};
-use crate::xhttp::{UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
+use crate::xhttp::{
+    UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER, apply_udp_datagram_header, offers_udp_datagrams,
+};
 
 /// Lower-cased name of the request header carrying the Session ID a
 /// client wishes to resume.
@@ -441,10 +443,7 @@ impl ResumeRequestHeaders {
             );
         }
         if self.udp_datagram {
-            headers.insert(
-                HeaderName::from_static(UDP_DATAGRAM_HEADER),
-                HeaderValue::from_static("1"),
-            );
+            apply_udp_datagram_header(headers);
         }
     }
 
@@ -476,7 +475,7 @@ impl ResumeRequestHeaders {
             symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
             down_acked,
             malformed_down_acked,
-            udp_datagram: header_is_one(headers, UDP_DATAGRAM_HEADER),
+            udp_datagram: offers_udp_datagrams(headers),
             udp_records: header_is_one(headers, UDP_RECORDS_HEADER),
         }
     }
@@ -513,10 +512,7 @@ impl ResumeResponseHeaders {
             );
         }
         if self.udp_datagram {
-            headers.insert(
-                HeaderName::from_static(UDP_DATAGRAM_HEADER),
-                HeaderValue::from_static("1"),
-            );
+            apply_udp_datagram_header(headers);
         }
     }
 
@@ -529,7 +525,7 @@ impl ResumeResponseHeaders {
         let symmetric_replay = requested.symmetric_replay
             && ack_prefix
             && header_is_one(headers, SYMMETRIC_REPLAY_HEADER);
-        let udp_datagram = requested.udp_datagram && header_is_one(headers, UDP_DATAGRAM_HEADER);
+        let udp_datagram = requested.udp_datagram && offers_udp_datagrams(headers);
         let udp_records = requested.udp_records && header_is_one(headers, UDP_RECORDS_HEADER);
         Self {
             session_id,

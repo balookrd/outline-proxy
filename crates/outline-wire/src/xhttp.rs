@@ -232,6 +232,16 @@ pub fn header_flag_enabled(headers: &HeaderMap, name: &str) -> bool {
     crate::resume::header_is_one(headers, name)
 }
 
+/// Returns `true` when `headers` advertise/confirm HTTP/3 UDP datagram support.
+pub fn offers_udp_datagrams(headers: &HeaderMap) -> bool {
+    header_flag_enabled(headers, UDP_DATAGRAM_HEADER)
+}
+
+/// Inserts [`UDP_DATAGRAM_HEADER`] = `"1"` into `headers`.
+pub fn apply_udp_datagram_header(headers: &mut HeaderMap) {
+    headers.insert(HeaderName::from_static(UDP_DATAGRAM_HEADER), HeaderValue::from_static("1"));
+}
+
 #[cfg(test)]
 #[path = "tests/xhttp.rs"]
 mod tests;

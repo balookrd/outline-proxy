@@ -115,3 +115,109 @@ fn try_frame_datagram_respects_room_budget() {
     let framed = try_frame_datagram(scheme, &record, 24, &mut rand::rng()).unwrap();
     assert!(framed.len() <= 24);
 }
+
+#[test]
+fn frame_message_is_zero_copy_when_disabled_and_frames_when_enabled() {
+    let mut rng = StdRng::seed_from_u64(1);
+    let payload = Bytes::from_static(b"hello world");
+    let unpadded = frame_message(PaddingScheme::disabled(), payload.clone(), &mut rng);
+    assert_eq!(unpadded, payload);
+    assert_eq!(unpadded.as_ptr(), payload.as_ptr());
+
+    let padded = frame_message(SCHEME, payload.clone(), &mut rng);
+    assert_eq!(decode(&padded), payload.as_ref());
+    assert!(padded.len() >= payload.len() + PADDING_FRAME_HEADER_LEN + 16);
+}
+
+#[test]
+fn cover_params_requires_enabled_scheme_and_cover_flag() {
+    assert!(CoverParams::new(PaddingScheme::disabled(), true, 10, 50).is_none());
+    assert!(CoverParams::new(SCHEME, false, 10, 50).is_none());
+
+    let params = CoverParams::new(SCHEME, true, 10, 50).expect("enabled scheme + cover");
+    let mut rng = StdRng::seed_from_u64(2);
+    for _ in 0..64 {
+        let gap = params.next_gap(&mut rng);
+        assert!((Duration::from_millis(10)..=Duration::from_millis(50)).contains(&gap));
+    }
+    let inverted = CoverParams::new(SCHEME, true, 300, 100).unwrap();
+    assert_eq!(inverted.next_gap(&mut rng), Duration::from_millis(300));
+
+    let cover = params.frame(&mut rng);
+    assert!(decode(&cover).is_empty());
+    assert!(cover.len() >= PADDING_FRAME_HEADER_LEN + 16);
+}
+
+#[test]
+fn outbound_framer_passthrough_without_padding_or_shaper() {
+    let mut rng = StdRng::seed_from_u64(3);
+    let mut framer = OutboundFramer::new(PaddingScheme::disabled(), None, None);
+    assert_eq!(framer.scheme(), PaddingScheme::disabled());
+
+    let payload = Bytes::from_static(b"plain passthrough");
+    let frames = framer.frame(payload.clone(), &mut rng);
+    match frames {
+        OutboundFrames::Single(out) => {
+            assert_eq!(out, payload);
+            assert_eq!(out.as_ptr(), payload.as_ptr());
+        },
+        OutboundFrames::Multi(_) => panic!("expected Single frame on passthrough"),
+    }
+}
+
+#[test]
+fn outbound_framer_activates_shaper_and_auto_clears_when_exhausted() {
+    let mut rng = StdRng::seed_from_u64(4);
+    let shaper = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut |lo, _| lo);
+    let mut framer = OutboundFramer::new(SCHEME, Some(shaper), None);
+    assert_eq!(framer.scheme(), SCHEME);
+
+    // Exhaust the 6-message shaping window.
+    for i in 0..6 {
+        let payload = Bytes::from(vec![0x11u8 + i as u8; 1200]);
+        let frames = framer.frame(payload.clone(), &mut rng);
+        let parts: Vec<Bytes> = frames.into_iter().collect();
+        assert!(!parts.is_empty());
+        let mut decoded = Vec::new();
+        for part in parts {
+            decoded.extend_from_slice(&decode(&part));
+        }
+        assert_eq!(decoded, payload.as_ref());
+    }
+
+    // Now the shaper is exhausted and auto-cleared; next frame takes the Single fast path.
+    let tail = Bytes::from(vec![0x77u8; 1200]);
+    match framer.frame(tail.clone(), &mut rng) {
+        OutboundFrames::Single(out) => assert_eq!(decode(&out), tail.as_ref()),
+        OutboundFrames::Multi(_) => panic!("expected Single frame after shaper exhaustion"),
+    }
+}
+
+#[test]
+fn outbound_framer_splits_by_h2_cap_and_updates_cap() {
+    let mut rng = StdRng::seed_from_u64(5);
+    let mut framer = OutboundFramer::new(SCHEME, None, None);
+    let payload = Bytes::from(vec![0x2Au8; 10_000]);
+
+    match framer.frame(payload.clone(), &mut rng) {
+        OutboundFrames::Single(out) => assert_eq!(decode(&out), payload.as_ref()),
+        OutboundFrames::Multi(_) => panic!("expected Single without h2_cap"),
+    }
+
+    framer.set_h2_cap(Some(3_500));
+    let frames = framer.frame(payload.clone(), &mut rng);
+    let parts: Vec<Bytes> = match frames {
+        OutboundFrames::Multi(v) => {
+            assert!(v.len() >= 3);
+            OutboundFrames::Multi(v).into_iter().collect()
+        },
+        OutboundFrames::Single(_) => panic!("expected Multi when payload exceeds h2_cap"),
+    };
+    let mut decoded = Vec::new();
+    for part in parts {
+        let real = decode(&part);
+        assert!(real.len() <= 3_500);
+        decoded.extend_from_slice(&real);
+    }
+    assert_eq!(decoded, payload.as_ref());
+}

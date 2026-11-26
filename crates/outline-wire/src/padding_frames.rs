@@ -170,6 +170,147 @@ pub fn h2_record_payload_cap(
         .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
 }
 
+/// Frames one message under `scheme`, returning `bytes` unchanged (zero-copy)
+/// when `scheme` is disabled.
+pub fn frame_message<R: Rng + ?Sized>(scheme: PaddingScheme, bytes: Bytes, rng: &mut R) -> Bytes {
+    if !scheme.is_enabled() {
+        return bytes;
+    }
+    let mut out = Vec::with_capacity(bytes.len() + 8);
+    frame_payload_into(scheme, &bytes, rng, &mut out);
+    Bytes::from(out)
+}
+
+/// Parameters controlling periodic cover traffic on a padded carrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoverParams {
+    pub scheme: PaddingScheme,
+    pub jitter_min_ms: u64,
+    pub jitter_max_ms: u64,
+}
+
+impl CoverParams {
+    /// Builds cover parameters when both `scheme` and `cover` are enabled.
+    pub const fn new(
+        scheme: PaddingScheme,
+        cover: bool,
+        jitter_min_ms: u64,
+        jitter_max_ms: u64,
+    ) -> Option<Self> {
+        if scheme.is_enabled() && cover {
+            Some(Self { scheme, jitter_min_ms, jitter_max_ms })
+        } else {
+            None
+        }
+    }
+
+    /// Draws the next cover interval uniformly in `[jitter_min_ms, jitter_max_ms]`.
+    pub fn next_gap<R: Rng + ?Sized>(&self, rng: &mut R) -> Duration {
+        let span = self
+            .jitter_max_ms
+            .saturating_sub(self.jitter_min_ms)
+            .saturating_add(1);
+        Duration::from_millis(self.jitter_min_ms + rng.random::<u64>() % span)
+    }
+
+    /// Builds one pad-only cover frame (`real_len = 0`).
+    pub fn frame<R: Rng + ?Sized>(&self, rng: &mut R) -> Bytes {
+        frame_message(self.scheme, Bytes::new(), rng)
+    }
+}
+
+/// Result of [`OutboundFramer::frame`], avoiding a `Vec` allocation on the
+/// single-frame fast path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundFrames {
+    Single(Bytes),
+    Multi(Vec<Bytes>),
+}
+
+/// Iterator over [`OutboundFrames`].
+pub enum OutboundFramesIter {
+    Single(Option<Bytes>),
+    Multi(std::vec::IntoIter<Bytes>),
+}
+
+impl Iterator for OutboundFramesIter {
+    type Item = Bytes;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Single(item) => item.take(),
+            Self::Multi(iter) => iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Single(item) => {
+                let n = usize::from(item.is_some());
+                (n, Some(n))
+            },
+            Self::Multi(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for OutboundFramesIter {}
+
+impl IntoIterator for OutboundFrames {
+    type Item = Bytes;
+    type IntoIter = OutboundFramesIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::Single(frame) => OutboundFramesIter::Single(Some(frame)),
+            Self::Multi(frames) => OutboundFramesIter::Multi(frames.into_iter()),
+        }
+    }
+}
+
+/// Stateful outbound framer applying optional [`EarlyShaper`], HTTP/2 cap, and
+/// [`PaddingScheme`] in a single pipeline.
+#[derive(Debug)]
+pub struct OutboundFramer {
+    scheme: PaddingScheme,
+    shaper: Option<EarlyShaper>,
+    h2_cap: Option<usize>,
+}
+
+impl OutboundFramer {
+    /// Creates a new framer with optional early-session shaper and HTTP/2 cap.
+    pub fn new(scheme: PaddingScheme, shaper: Option<EarlyShaper>, h2_cap: Option<usize>) -> Self {
+        Self { scheme, shaper, h2_cap }
+    }
+
+    /// Updates the HTTP/2 per-message payload cap.
+    pub fn set_h2_cap(&mut self, h2_cap: Option<usize>) {
+        self.h2_cap = h2_cap;
+    }
+
+    /// Returns the configured [`PaddingScheme`].
+    pub const fn scheme(&self) -> PaddingScheme {
+        self.scheme
+    }
+
+    /// Frames `payload` through early shaping (while active), then optional
+    /// HTTP/2 capping, then padding. Automatically clears `shaper` once its
+    /// window is exhausted.
+    pub fn frame<R: Rng>(&mut self, payload: Bytes, rng: &mut R) -> OutboundFrames {
+        if let Some(shaper) = self.shaper.as_mut() {
+            let msgs = shaped_messages(self.scheme, shaper, &payload, self.h2_cap, rng);
+            if !shaper.is_active() {
+                self.shaper = None;
+            }
+            return OutboundFrames::Multi(msgs.into_iter().map(Bytes::from).collect());
+        }
+        if let Some(cap) = self.h2_cap.filter(|&c| payload.len() > c) {
+            return OutboundFrames::Multi(h2_capped_messages(self.scheme, Some(cap), payload, rng));
+        }
+        OutboundFrames::Single(frame_message(self.scheme, payload, rng))
+    }
+}
+
 /// Cuts `frame` into even pieces of at most `cap` bytes (when `cap` is `Some`
 /// and `frame.len() > cap`), framing each piece under `scheme` when enabled or
 /// returning zero-copy `Bytes` slices when disabled.
@@ -179,20 +320,11 @@ pub fn h2_capped_messages<R: Rng + ?Sized>(
     mut frame: Bytes,
     rng: &mut R,
 ) -> Vec<Bytes> {
-    let frame_one = |piece: Bytes, rng: &mut R| -> Bytes {
-        if scheme.is_enabled() {
-            let mut out = Vec::with_capacity(piece.len() + 8);
-            frame_payload_into(scheme, &piece, rng, &mut out);
-            Bytes::from(out)
-        } else {
-            piece
-        }
-    };
     match cap {
         Some(c) if frame.len() > c => even_piece_lens(frame.len(), c)
-            .map(|len| frame_one(frame.split_to(len), rng))
+            .map(|len| frame_message(scheme, frame.split_to(len), rng))
             .collect(),
-        _ => vec![frame_one(frame, rng)],
+        _ => vec![frame_message(scheme, frame, rng)],
     }
 }
 
