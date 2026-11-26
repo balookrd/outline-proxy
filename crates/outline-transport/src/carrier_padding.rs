@@ -22,9 +22,7 @@
 //! leaving a VLESS uplink to a third-party server unpadded.
 
 use std::sync::OnceLock;
-use std::time::Duration;
 
-use bytes::Bytes;
 use outline_wire::padding::PaddingScheme;
 use rand::Rng;
 
@@ -32,11 +30,10 @@ use rand::Rng;
 // so the uplink and the downlink of one connection are sized by the same code.
 #[cfg(test)]
 pub(crate) use outline_wire::padding_frames::H2_DATA_PAYLOAD_MAX;
-use outline_wire::padding_frames::draw_jitter;
 #[cfg(test)]
 use outline_wire::padding_frames::draw_pad;
 pub(crate) use outline_wire::padding_frames::{
-    H2_WS_CLIENT_HEADER_LEN, draw_in, frame_payload_into, shaped_messages,
+    CoverParams, H2_WS_CLIENT_HEADER_LEN, draw_in, frame_payload_into,
 };
 
 /// Resolved carrier-padding knobs for this process. `Copy` so the transport
@@ -77,19 +74,14 @@ impl CarrierPadding {
         self.scheme.is_enabled() && self.cover
     }
 
-    /// Draws one idle gap before the next cover frame, uniform in the
-    /// configured jitter range. Called by the WS writer task to re-arm its
-    /// cover timer after each gap or real write.
-    pub(crate) fn cover_gap(&self) -> Duration {
-        draw_jitter(self.cover_jitter_min_ms, self.cover_jitter_max_ms)
-    }
-
-    /// Builds one pad-only cover frame (`real_len = 0`): the server's decoder
-    /// recovers no payload and drops it transparently.
-    pub(crate) fn cover_frame(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        frame_payload_into(self.scheme, &[], &mut rand::rng(), &mut out);
-        out
+    /// Builds [`CoverParams`] when both padding and cover traffic are enabled.
+    pub(crate) const fn cover_params(&self) -> Option<CoverParams> {
+        CoverParams::new(
+            self.scheme,
+            self.cover,
+            self.cover_jitter_min_ms,
+            self.cover_jitter_max_ms,
+        )
     }
 }
 
@@ -221,19 +213,6 @@ pub(crate) fn frame_datagram_into<R: Rng>(
 /// `TransportStream::caps_h2_uplink`).
 pub(crate) fn h2_uplink_cap(scheme: PaddingScheme) -> Option<usize> {
     outline_wire::padding_frames::h2_record_payload_cap(H2_WS_CLIENT_HEADER_LEN, scheme, 0)
-}
-
-/// One uplink frame past the shaping window as the messages it goes out as on
-/// an h2 carrier: evenly cut pieces of at most `cap` bytes (see
-/// [`h2_uplink_cap`]), each padded for `scheme`, or zero-copy slices of `frame`
-/// when padding is off. A frame within `cap` is one message, as before.
-pub(crate) fn h2_capped_messages<R: Rng>(
-    scheme: PaddingScheme,
-    cap: usize,
-    frame: Bytes,
-    rng: &mut R,
-) -> Vec<Bytes> {
-    outline_wire::padding_frames::h2_capped_messages(scheme, Some(cap), frame, rng)
 }
 
 #[cfg(test)]

@@ -207,6 +207,7 @@ mod url_utils;
 mod ws_h1;
 mod ws_mode_cache;
 mod ws_stream;
+mod ws_writer;
 mod ws_writer_diag;
 mod xhttp;
 mod xhttp_mode_cache;

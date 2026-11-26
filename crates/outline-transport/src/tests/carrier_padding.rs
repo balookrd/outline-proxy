@@ -1,7 +1,9 @@
 use super::*;
 
+use bytes::Bytes;
 use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use outline_wire::padding::{MAX_PADDING_SEGMENT, PaddingDecoder};
+use outline_wire::padding_frames::{h2_capped_messages, shaped_messages};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -325,7 +327,7 @@ fn h2_capped_messages_round_trip_within_the_budget() {
     let frame: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
     for scheme in [PaddingScheme::disabled(), PaddingScheme::new(0, 256)] {
         let cap = h2_uplink_cap(scheme).unwrap();
-        let msgs = h2_capped_messages(scheme, cap, Bytes::from(frame.clone()), &mut seeded());
+        let msgs = h2_capped_messages(scheme, Some(cap), Bytes::from(frame.clone()), &mut seeded());
         assert_eq!(msgs.len(), 70_000usize.div_ceil(cap), "{scheme:?}");
         let mut decoded = Vec::new();
         let mut dec = PaddingDecoder::new();

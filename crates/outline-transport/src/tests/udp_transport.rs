@@ -417,7 +417,11 @@ async fn try_read_packet_skips_padding_cover_frames_and_returns_none_when_empty(
     let target = [1_u8, 127, 0, 0, 1, 1, 187];
 
     // Push a cover frame (real_len = 0) followed by a real padded datagram.
-    channel.push(padding.cover_frame());
+    let cover_frame = outline_wire::padding_frames::CoverParams::new(padding.scheme, true, 0, 0)
+        .unwrap()
+        .frame(&mut rand::rng())
+        .to_vec();
+    channel.push(cover_frame);
     let raw = build_server_aes_packet(
         cipher,
         &master_key,

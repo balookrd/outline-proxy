@@ -20,34 +20,27 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use futures_util::{StreamExt, stream::SplitStream};
+use outline_net::time::JitteredTicker;
 use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use outline_wire::padding::PaddingDecoder;
+use outline_wire::padding_frames::OutboundFramer;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
 use tracing::debug;
 
-use crate::carrier_padding::{self, CarrierPadding};
-use crate::carrier_queue::{self, BudgetedSender};
-use crate::ws_writer_diag::{KIND_COVER, KIND_CTRL, KIND_DATA, WRITER_FRAME, send_or_report};
+use crate::carrier_padding;
+use crate::carrier_queue::BudgetedSender;
+use crate::ws_writer::{WsWriterOptions, spawn_ws_writer};
+use crate::ws_writer_diag::WRITER_FRAME;
 
-/// Pings/Pongs/Close are tiny and rare; a deeper queue would only
-/// delay close propagation.
-const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 /// How long `close()` waits for the writer task to put the queued Close frame
 /// on the wire before giving up on it. A Close is a handful of bytes, so on any
 /// carrier whose peer is still reading this resolves immediately; the bound is
 /// there for a peer that has stopped reading and whose socket buffer is full,
 /// where waiting longer would only stall the caller's own teardown.
 const WS_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
-/// Far-future deadline the cover timer parks at when cover is disabled (the
-/// `if cover.is_some()` select guard keeps the arm inert). One day is well
-/// beyond any real session.
-const COVER_DISABLED_PARK: Duration = Duration::from_secs(86_400);
 
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
 use crate::{AbortOnDrop, TransportOperation, TransportStream, TryAgain, WsClosed};
@@ -85,19 +78,7 @@ pub(crate) fn carrier_liveness(
     }
 }
 
-// ── Writer task ────────────────────────────────────────────────────────────
-
-/// Signals that the writer task has stopped, whichever way it stopped: a clean
-/// Close, a write error, or an abort from [`AbortOnDrop`] when the carrier is
-/// dropped. Held inside the task, so the notification is tied to the task's
-/// future being dropped rather than to any one exit path.
-struct WriterExit(watch::Sender<bool>);
-
-impl Drop for WriterExit {
-    fn drop(&mut self) {
-        self.0.send_replace(true);
-    }
-}
+// ── Writer exit & keepalive ────────────────────────────────────────────────
 
 /// Waits for the writer task to stop, bounded by [`WS_CLOSE_FLUSH_TIMEOUT`].
 ///
@@ -117,143 +98,11 @@ async fn await_writer_exit(exit: &watch::Receiver<bool>) {
     let _ = timeout(WS_CLOSE_FLUSH_TIMEOUT, exit.changed()).await;
 }
 
-/// Spawn the WS writer task: drains `ctrl_rx` (Pings/Pongs/Close) with
-/// priority over `data_rx` (Binary frames) into `ws_stream`. Returns the
-/// task handle, the data/ctrl senders, and a receiver that fires once the
-/// writer has stopped (see [`await_writer_exit`]).
-fn spawn_ws_writer(
-    ws_stream: TransportStream,
-    cover: Option<CarrierPadding>,
-) -> (
-    AbortOnDrop,
-    BudgetedSender<Message>,
-    mpsc::Sender<Message>,
-    SplitStream<TransportStream>,
-    watch::Receiver<bool>,
-) {
-    let (sink, stream) = ws_stream.split();
-    // Byte-budgeted data queue: VLESS coalesces up to `FRAME_SOFT_CAP` per
-    // frame, datagram carriers put one packet per frame — bounding by bytes
-    // fits both without throttling either. Control frames stay unbudgeted.
-    let (data_tx, mut data_rx) = carrier_queue::channel::<Message>();
-    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
-    let (exit_tx, exit_rx) = watch::channel(false);
-    let task = tokio::spawn(async move {
-        let _exit = WriterExit(exit_tx);
-        let mut ws_sink = sink;
-        let mut ctrl_open = true;
-        // Idle cover timer. Parked far in the future when cover is off (the
-        // `if cover.is_some()` guard keeps the arm inert); when on, armed to
-        // the next jittered gap and reset after every real write so a cover
-        // frame fires only on a genuinely quiet uplink — never interleaved
-        // with live traffic. A cover frame is a `Binary` message
-        // (`real_len = 0`), so it is H3-safe (unlike a Ping it cannot escalate
-        // to `H3_INTERNAL_ERROR`) and the server's decoder drops it. Only the
-        // VLESS-TCP `from_ws_frames` path passes `Some`; the datagram path
-        // passes `None` (SS-UDP / VLESS-UDP are not stream-padded here).
-        let cover_sleep = tokio::time::sleep(COVER_DISABLED_PARK);
-        tokio::pin!(cover_sleep);
-        if let Some(c) = &cover {
-            cover_sleep
-                .as_mut()
-                .reset(tokio::time::Instant::now() + c.cover_gap());
-        }
-        loop {
-            if ctrl_open {
-                tokio::select! {
-                    biased;
-                    msg = ctrl_rx.recv() => match msg {
-                        Some(m) => {
-                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_CTRL).await {
-                                return;
-                            }
-                            arm_cover(cover_sleep.as_mut(), &cover);
-                        }
-                        None => ctrl_open = false,
-                    },
-                    msg = data_rx.recv() => match msg {
-                        Some(queued) => {
-                            // The byte permit lives until the frame reaches the
-                            // sink — see `carrier_queue`.
-                            let (m, permit) = queued.into_parts();
-                            if matches!(m, Message::Close(_)) {
-                                let _ = ws_sink.close().await;
-                                return;
-                            }
-                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_DATA).await {
-                                return;
-                            }
-                            drop(permit);
-                            arm_cover(cover_sleep.as_mut(), &cover);
-                        }
-                        None => { let _ = ws_sink.close().await; return; }
-                    },
-                    _ = cover_sleep.as_mut(), if cover.is_some() => {
-                        if !send_cover(&mut ws_sink, &cover).await {
-                            return;
-                        }
-                        arm_cover(cover_sleep.as_mut(), &cover);
-                    },
-                }
-            } else {
-                tokio::select! {
-                    biased;
-                    msg = data_rx.recv() => match msg {
-                        Some(queued) => {
-                            let (m, permit) = queued.into_parts();
-                            if matches!(m, Message::Close(_)) {
-                                let _ = ws_sink.close().await;
-                                return;
-                            }
-                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_DATA).await {
-                                return;
-                            }
-                            drop(permit);
-                            arm_cover(cover_sleep.as_mut(), &cover);
-                        }
-                        None => { let _ = ws_sink.close().await; return; }
-                    },
-                    _ = cover_sleep.as_mut(), if cover.is_some() => {
-                        if !send_cover(&mut ws_sink, &cover).await {
-                            return;
-                        }
-                        arm_cover(cover_sleep.as_mut(), &cover);
-                    },
-                }
-            }
-        }
-    });
-    (AbortOnDrop::new(task), data_tx, ctrl_tx, stream, exit_rx)
-}
-
-/// Re-arms the cover timer to the next jittered idle gap. No-op when cover is
-/// off (the timer stays parked and the select guard inert). Mirrors the SS WS
-/// writer's `arm_cover`.
-fn arm_cover(sleep: std::pin::Pin<&mut tokio::time::Sleep>, cover: &Option<CarrierPadding>) {
-    if let Some(c) = cover {
-        sleep.reset(tokio::time::Instant::now() + c.cover_gap());
-    }
-}
-
-/// Sends one pad-only cover frame on the uplink. Returns `false` (signalling
-/// the writer task to terminate) if the sink write fails, matching the
-/// data/ctrl arms' error handling.
-async fn send_cover(
-    ws_sink: &mut SplitSink<TransportStream, Message>,
-    cover: &Option<CarrierPadding>,
-) -> bool {
-    let Some(c) = cover else {
-        return true;
-    };
-    let frame = Message::Binary(c.cover_frame().into());
-    send_or_report(ws_sink, frame, WRITER_FRAME, KIND_COVER).await
-}
-
 fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortOnDrop {
     AbortOnDrop::new(tokio::spawn(async move {
+        let mut ticker = JitteredTicker::new(interval);
         loop {
-            // A fresh draw per Ping: a fixed period is a timing signature.
-            tokio::time::sleep(crate::jittered(interval)).await;
+            ticker.tick().await;
             if ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
                 break;
             }
@@ -273,17 +122,9 @@ pub struct WsFrameSink {
     /// [`AbortOnDrop`] takes the writer down with it.
     writer_exit: watch::Receiver<bool>,
     _keepalive_task: Option<AbortOnDrop>,
-    /// Process-wide carrier padding read at construction. Disabled by default,
-    /// in which case `send_frame` leaves the bytes untouched and the wire
-    /// carries no padding frames (the early-session shaper may still cut them).
-    padding: CarrierPadding,
-    /// Early-session shaper (h1/h2 carriers, padded or not). `None`
-    /// otherwise, including every h3 carrier.
-    shaper: Option<EarlyShaper>,
-    /// Data bytes per message on an h2 carrier, so each message fits one h2
-    /// DATA frame of one TLS record (see `carrier_padding::h2_uplink_cap`).
-    /// `None` off h2.
-    h2_cap: Option<usize>,
+    /// Outbound framer applying optional early-session shaping, HTTP/2 cap,
+    /// and carrier padding.
+    framer: OutboundFramer,
 }
 
 #[async_trait]
@@ -293,60 +134,14 @@ impl FrameSink for WsFrameSink {
             .data_tx
             .as_ref()
             .ok_or_else(|| anyhow!("ws frame sink already closed"))?;
-        // When padding is on, wrap the VLESS frame bytes in length-delimited
-        // padding frames so the WS/TLS record size no longer tracks the VLESS
-        // payload size; otherwise hand the bytes through unframed (no padding
-        // frames on the wire). The server decodes symmetrically only when
-        // its matching path also opted in (config-synchronised gate).
-        if let Some(shaper) = self.shaper.as_mut().filter(|s| s.is_active()) {
-            let msgs = carrier_padding::shaped_messages(
-                self.padding.scheme,
-                shaper,
-                &data,
-                self.h2_cap,
-                &mut rand::rng(),
-            );
-            for payload in msgs {
-                let bytes = payload.len();
-                tx.send(Message::Binary(payload.into()), bytes)
-                    .await
-                    .context(TransportOperation::WebSocketSend)?;
-            }
-            return Ok(());
+        let frames = self.framer.frame(data, &mut rand::rng());
+        for payload in frames {
+            let bytes = payload.len();
+            tx.send(Message::Binary(payload), bytes)
+                .await
+                .context(TransportOperation::WebSocketSend)?;
         }
-        // On h2 a frame over the cap leaves as even pieces, each one h2 DATA
-        // frame of one TLS record; the server reads the VLESS stream across them.
-        if let Some(cap) = self.h2_cap.filter(|cap| data.len() > *cap) {
-            let msgs = carrier_padding::h2_capped_messages(
-                self.padding.scheme,
-                cap,
-                data,
-                &mut rand::rng(),
-            );
-            for payload in msgs {
-                let bytes = payload.len();
-                tx.send(Message::Binary(payload), bytes)
-                    .await
-                    .context(TransportOperation::WebSocketSend)?;
-            }
-            return Ok(());
-        }
-        let payload: Bytes = if self.padding.scheme.is_enabled() {
-            let mut out = Vec::with_capacity(data.len() + 8);
-            carrier_padding::frame_payload_into(
-                self.padding.scheme,
-                &data,
-                &mut rand::rng(),
-                &mut out,
-            );
-            out.into()
-        } else {
-            data
-        };
-        let bytes = payload.len();
-        tx.send(Message::Binary(payload), bytes)
-            .await
-            .context(TransportOperation::WebSocketSend)
+        Ok(())
     }
 
     async fn close(&mut self) -> Result<()> {
@@ -504,7 +299,7 @@ pub fn from_ws_frames(
     // frames. VLESS-TCP-over-WS / -XHTTP ride this byte-chunk pipe; the
     // datagram pipe (`from_ws_datagrams`, used by SS-UDP / VLESS-UDP) does not.
     let padding = carrier_padding::effective_carrier_padding();
-    let cover = padding.cover_enabled().then_some(padding);
+    let cover = padding.cover_params();
     // Early-session shaping: h1/h2 carriers only (not h3, not XHTTP packet-up).
     // h2 carriers: each uplink message fits one h2 DATA frame of one TLS record.
     let h2_cap = ws_stream
@@ -518,20 +313,28 @@ pub fn from_ws_frames(
             &mut carrier_padding::draw_in(&mut rand::rng()),
         )
     });
-    let (writer_task, data_tx, ctrl_tx, stream, writer_exit) = spawn_ws_writer(ws_stream, cover);
-    let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
+    let framer = OutboundFramer::new(padding.scheme, shaper, h2_cap);
+    let (sink, stream) = ws_stream.split();
+    let handles = spawn_ws_writer(
+        sink,
+        WsWriterOptions {
+            cover,
+            hold_header: None,
+            diag_writer: WRITER_FRAME,
+            stop_on_data_close_frame: false,
+        },
+    );
+    let keepalive_task = keepalive.map(|i| spawn_keepalive(handles.ctrl_tx.clone(), i));
     let sink = WsFrameSink {
-        data_tx: Some(data_tx),
-        _writer_task: writer_task,
-        writer_exit,
+        data_tx: Some(handles.data_tx),
+        _writer_task: handles.task,
+        writer_exit: handles.exit_rx,
         _keepalive_task: keepalive_task,
-        padding,
-        shaper,
-        h2_cap,
+        framer,
     };
     let source = WsFrameSource {
         stream,
-        ctrl_tx,
+        ctrl_tx: handles.ctrl_tx,
         idle_timeout,
         closed_cleanly: false,
         diag_uplink: String::new(),
@@ -627,10 +430,19 @@ pub fn from_ws_datagrams(
     // `H3DatagramChannel` sends as HTTP/3 datagrams past this writer, or it
     // would fire during live traffic (the server writer does this through
     // its datagram activity counter).
-    let (writer_task, data_tx, ctrl_tx, mut stream, writer_exit) = spawn_ws_writer(ws_stream, None);
-    let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
+    let (sink, mut stream) = ws_stream.split();
+    let handles = spawn_ws_writer(
+        sink,
+        WsWriterOptions {
+            cover: None,
+            hold_header: None,
+            diag_writer: WRITER_FRAME,
+            stop_on_data_close_frame: true,
+        },
+    );
+    let keepalive_task = keepalive.map(|i| spawn_keepalive(handles.ctrl_tx.clone(), i));
     let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(64);
-    let reader_ctrl_tx = ctrl_tx.clone();
+    let reader_ctrl_tx = handles.ctrl_tx;
     let reader_task = tokio::spawn(async move {
         loop {
             let next = match idle_timeout {
@@ -681,10 +493,10 @@ pub fn from_ws_datagrams(
         }
     });
     WsDatagramChannel {
-        data_tx,
+        data_tx: handles.data_tx,
         downlink_rx: Mutex::new(downlink_rx),
-        _writer_task: writer_task,
-        writer_exit,
+        _writer_task: handles.task,
+        writer_exit: handles.exit_rx,
         _reader_task: AbortOnDrop::new(reader_task),
         _keepalive_task: keepalive_task,
     }
