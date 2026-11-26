@@ -28,7 +28,7 @@ struct ScriptedUpstream {
 }
 
 impl UpstreamRead for ScriptedUpstream {
-    async fn readable(&self) -> std::io::Result<()> {
+    async fn readable(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 

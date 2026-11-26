@@ -14,17 +14,21 @@ pub(super) fn spawn(metrics: Arc<Metrics>) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            refresh(&metrics);
+            refresh(&metrics).await;
         }
     });
 }
 
-// /proc/self/{status,smaps} are kernel pseudo-files: the read returns instantly
-// (single-digit ms even on multi-GiB processes) without touching disk. Doing
-// it inline on the tokio runtime avoids burning a one-shot blocking thread
-// per sample, which under mimalloc would leak a fresh per-thread segment
-// (~64 MiB) into the abandoned pool every 15 seconds.
-fn refresh(metrics: &Arc<Metrics>) {
-    let snapshot = sample_process_memory();
-    *metrics.process_memory_snapshot.write() = snapshot;
+// Run `/proc/self/{status,smaps}` parsing off the async runtime workers (mirroring
+// `outline-client`'s `collect_off_runtime`), so a large mapping table never
+// stalls reactor polling.
+async fn refresh(metrics: &Arc<Metrics>) {
+    match tokio::task::spawn_blocking(sample_process_memory).await {
+        Ok(snapshot) => {
+            *metrics.process_memory_snapshot.write() = snapshot;
+        },
+        Err(error) => {
+            tracing::debug!(%error, "process metrics sampling task failed");
+        },
+    }
 }

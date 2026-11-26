@@ -66,7 +66,7 @@ pub(super) struct TunUdpEngineInner {
     pub(super) idle_timeout: Duration,
     /// Async cleanup pool: flows removed from the table are sent here so
     /// `transport.close()` runs off the hot path without holding any map lock.
-    pub(super) close_tx: mpsc::UnboundedSender<CloseWork>,
+    pub(super) close_tx: mpsc::Sender<CloseWork>,
     /// When `false` (default), the PMTUD path refuses to advertise a path
     /// MTU below the QUIC v1 Initial-datagram minimum (1200 v4 / 1280 v6,
     /// RFC 9000 §14.1) — sending such a PTB would tell compliant QUIC
@@ -247,7 +247,8 @@ impl TunUdpEngine {
         ipsec_nat_keepalive_interval: Duration,
         ipsec_idle_timeout: Duration,
     ) -> Self {
-        let (close_tx, close_rx) = mpsc::unbounded_channel();
+        let close_queue_cap = max_flows.saturating_add(max_carrier_flows).max(1024);
+        let (close_tx, close_rx) = mpsc::channel(close_queue_cap);
         let engine = Self {
             inner: Arc::new(TunUdpEngineInner {
                 writer,

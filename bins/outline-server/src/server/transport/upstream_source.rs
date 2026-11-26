@@ -15,7 +15,6 @@
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -311,9 +310,9 @@ impl MeshUpstreamSetup {
                 _permit: Arc::clone(&permit),
             },
             reader: MeshUpstream {
-                recv: tokio::sync::Mutex::new(recv),
-                pending: parking_lot::Mutex::new(None),
-                eof: AtomicBool::new(false),
+                recv,
+                pending: None,
+                eof: false,
                 bytes: counters.down_bytes,
                 _permit: permit,
             },
@@ -576,13 +575,10 @@ impl VlessUdpSink {
 /// that claimed [`CloseIntent::ClientDone`] there would destroy the continuity
 /// this whole path exists to provide.
 pub(in crate::server::transport) struct MeshUpstream {
-    /// Locked only by `readable`, which needs `&self`; `try_read_buf` takes
-    /// `&mut self` and reaches the fields directly. Uncontended by
-    /// construction — one relay task owns this half.
-    recv: tokio::sync::Mutex<RecvStream>,
+    recv: RecvStream,
     /// One chunk read off the mesh and not yet handed to the relay.
-    pending: parking_lot::Mutex<Option<Bytes>>,
-    eof: AtomicBool,
+    pending: Option<Bytes>,
+    eof: bool,
     bytes: Counter,
     _permit: Arc<OwnedSemaphorePermit>,
 }
@@ -596,29 +592,25 @@ impl Drop for MeshUpstream {
     fn drop(&mut self) {
         // Fails only when the stream is already finished or reset, where there
         // is nothing left to tell the home.
-        let _ = self
-            .recv
-            .get_mut()
-            .stop(VarInt::from_u32(CloseIntent::CarrierEnded.code()));
+        let _ = self.recv.stop(VarInt::from_u32(CloseIntent::CarrierEnded.code()));
     }
 }
 
 impl UpstreamRead for MeshUpstream {
-    async fn readable(&self) -> io::Result<()> {
-        if self.pending.lock().is_some() || self.eof.load(Ordering::Relaxed) {
+    async fn readable(&mut self) -> io::Result<()> {
+        if self.pending.is_some() || self.eof {
             return Ok(());
         }
-        let mut recv = self.recv.lock().await;
-        match recv.read_chunk(MESH_UPSTREAM_CHUNK, true).await {
+        match self.recv.read_chunk(MESH_UPSTREAM_CHUNK, true).await {
             Ok(Some(chunk)) => {
                 self.bytes.increment(chunk.bytes.len() as u64);
-                *self.pending.lock() = Some(chunk.bytes);
+                self.pending = Some(chunk.bytes);
                 Ok(())
             },
             // The home finished its half: the upstream EOF'd, or it ended the
             // relay. Either way this is end-of-stream for the client.
             Ok(None) => {
-                self.eof.store(true, Ordering::Relaxed);
+                self.eof = true;
                 Ok(())
             },
             Err(error) => Err(io::Error::other(error)),
@@ -626,8 +618,7 @@ impl UpstreamRead for MeshUpstream {
     }
 
     fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> io::Result<usize> {
-        let pending = self.pending.get_mut();
-        match pending.take() {
+        match self.pending.take() {
             Some(mut bytes) => {
                 // Hand over only what `buf` has room for — a relay bounding its
                 // read (one h2 DATA frame per message) passes a `Limit` — and keep
@@ -637,11 +628,11 @@ impl UpstreamRead for MeshUpstream {
                 let rest = bytes.split_off(n);
                 buf.put_slice(&bytes);
                 if !rest.is_empty() {
-                    *pending = Some(rest);
+                    self.pending = Some(rest);
                 }
                 Ok(n)
             },
-            None if self.eof.load(Ordering::Relaxed) => Ok(0),
+            None if self.eof => Ok(0),
             None => Err(io::ErrorKind::WouldBlock.into()),
         }
     }

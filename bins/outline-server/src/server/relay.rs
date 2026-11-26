@@ -71,7 +71,7 @@ pub(in crate::server) enum UpstreamRelayOutcome<R> {
 /// allocating a fresh `BytesMut` every read cycle.
 pub(in crate::server) trait UpstreamRead: Send + Unpin {
     /// Resolves when at least one byte may be readable.
-    async fn readable(&self) -> std::io::Result<()>;
+    async fn readable(&mut self) -> std::io::Result<()>;
 
     /// Non-blocking read appending into `buf`. `Ok(0)` is EOF;
     /// `ErrorKind::WouldBlock` means nothing is pending right now.
@@ -79,7 +79,7 @@ pub(in crate::server) trait UpstreamRead: Send + Unpin {
 }
 
 impl UpstreamRead for OwnedReadHalf {
-    async fn readable(&self) -> std::io::Result<()> {
+    async fn readable(&mut self) -> std::io::Result<()> {
         OwnedReadHalf::readable(self).await
     }
 

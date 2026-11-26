@@ -84,7 +84,7 @@ impl TunUdpEngine {
     /// slow) runs without holding any map lock and without blocking the
     /// calling task. Each close request is dispatched to its own spawned
     /// task for full concurrency.
-    pub(super) fn spawn_cleanup_pool(&self, mut rx: mpsc::UnboundedReceiver<CloseWork>) {
+    pub(super) fn spawn_cleanup_pool(&self, mut rx: mpsc::Receiver<CloseWork>) {
         tokio::spawn(async move {
             while let Some(work) = rx.recv().await {
                 match work {
@@ -119,8 +119,20 @@ impl TunUdpEngine {
         });
     }
 
+    fn enqueue_close_work(&self, work: CloseWork) {
+        match self.inner.close_tx.try_send(work) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {},
+            Err(mpsc::error::TrySendError::Full(work)) => {
+                let tx = self.inner.close_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(work).await;
+                });
+            },
+        }
+    }
+
     pub(super) fn enqueue_close(&self, flow: Arc<Mutex<UdpFlowState>>, reason: &'static str) {
-        let _ = self.inner.close_tx.send(CloseWork::Tunnel { flow, reason });
+        self.enqueue_close_work(CloseWork::Tunnel { flow, reason });
     }
 
     pub(super) fn enqueue_close_direct(
@@ -128,7 +140,7 @@ impl TunUdpEngine {
         flow: Arc<Mutex<DirectUdpFlowState>>,
         reason: &'static str,
     ) {
-        let _ = self.inner.close_tx.send(CloseWork::Direct { flow, reason });
+        self.enqueue_close_work(CloseWork::Direct { flow, reason });
     }
 
     /// Register a new tunnelled UDP flow **without** blocking the caller (the
