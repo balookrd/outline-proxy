@@ -69,7 +69,7 @@ struct UplinkPump {
     client_read: Arc<Mutex<OwnedReadHalf>>,
     ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>>,
     writer: TcpWriter,
-    activity: tokio::sync::mpsc::UnboundedSender<()>,
+    activity: tokio::sync::mpsc::Sender<()>,
     keepalive_interval: Option<Duration>,
     overflow_policy: OverflowPolicy,
     buffer_cap: usize,
@@ -192,7 +192,7 @@ impl UplinkPump {
                 }
             }
             self.writer.send_chunk(read_buf.filled()).await?;
-            let _ = self.activity.send(());
+            let _ = self.activity.try_send(());
             chunks_sent += 1;
             if chunks_sent == 1 {
                 debug!(uplink = %self.name, "first chunk sent to upstream");
@@ -224,7 +224,7 @@ struct DownlinkPump {
     client_acked_offset: Arc<std::sync::atomic::AtomicU64>,
     reader: TcpReader,
     first_chunk: Option<Vec<u8>>,
-    activity: tokio::sync::mpsc::UnboundedSender<()>,
+    activity: tokio::sync::mpsc::Sender<()>,
 }
 
 impl DownlinkPump {
@@ -247,7 +247,7 @@ impl DownlinkPump {
                 // bumping the counter.
                 self.client_acked_offset
                     .fetch_add(fc.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                let _ = self.activity.send(());
+                let _ = self.activity.try_send(());
                 self.uplinks
                     .report_active_traffic(self.active_index, TransportKind::Tcp)
                     .await;
@@ -289,7 +289,7 @@ impl DownlinkPump {
             // SOCKS5 client has observed.
             self.client_acked_offset
                 .fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            let _ = self.activity.send(());
+            let _ = self.activity.try_send(());
             self.uplinks
                 .report_active_traffic(self.active_index, TransportKind::Tcp)
                 .await;
@@ -456,7 +456,7 @@ pub(super) async fn run_relay(
         // the local WebSocket writer task is alive, not that the upstream
         // server is still reading. A fresh channel per iteration so the
         // watcher's deadline restarts after a successful redial.
-        let (activity_tx, activity_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (activity_tx, activity_rx) = tokio::sync::mpsc::channel::<()>(1);
         let activity_for_uplink = activity_tx.clone();
         let activity_for_downlink = activity_tx.clone();
         drop(activity_tx);

@@ -270,7 +270,7 @@ cargo server-release-musl-armv7
 | `[outbound].ipv6_refresh_secs` | `30` | Интервал перечитывания адресов интерфейса для `ipv6_interface` / `ipv6_prefix_interface` |
 | `[outbound].ipv6_sticky` | `true` | При включённой ротации source закрепляет один адрес на каждый upstream destination IP на `ipv6_sticky_ttl_secs` вместо нового на каждый connect. Cloudflare привязывает cookie `cf_clearance` к source IP клиента, поэтому при новом source на каждый запрос сайт вроде `claude.ai` каждый раз показывает challenge «Verifying you are human». Ротация сохраняется между разными адресатами и после TTL. У кэша закреплений есть LRU-лимит и TTL на запись; стартовая проба достижимости по-прежнему проверяет случайные source. Без префикса или интерфейса не действует. `false` возвращает случайный source на каждый connect |
 | `[outbound].ipv6_sticky_ttl_secs` | `1800` | TTL закрепления source. Ставьте выше срока жизни challenge-clearance у origin (у Cloudflare около 30 мин) |
-| `[outbound].block_private_ips` | `false` | Блокировать loopback, частные, link-local, unspecified, multicast, broadcast и cloud metadata IP-адреса назначения в исходящих TCP/UDP подключениях для защиты от SSRF |
+| `[outbound].block_private_ips` | `false` | Блокировать loopback, частные, link-local, unspecified, multicast, broadcast и cloud metadata IP-адреса назначения в исходящих TCP/UDP подключениях для защиты от SSRF. На публичных узлах рекомендуется `true`; при `false` сервер пишет предупреждение при старте |
 | `[outbound].allowed_subnets` | `[]` | Явный список CIDR или IP-адресов, разрешенных даже при включенном `block_private_ips` |
 | `tuning_profile` | `large` | Пресет ресурсных лимитов: `small` / `medium` / `large`. Задаёт flow-control окна H2/H3, лимиты стримов, таймауты сессий и NAT, глобальные лимиты UDP- и XHTTP-задач и сессий |
 | `[tuning]` | значения профиля | Переопределения отдельных ключей поверх профиля; ключи ниже |
@@ -851,7 +851,7 @@ scrape_configs:
 - Крупнейшие виртуальные отображения и промежутки из `/proc/self/smaps`
 - Информация о сборке и конфигурации
 
-Глобальный аллокатор бинаря — `jemalloc` (cargo feature `jemalloc`, по умолчанию); `mimalloc` остаётся feature для отката. Оба выделяют память в анонимных отображениях, а не в области `[heap]`, поэтому `[heap]`- и trim-метрики не экспортируются. Под jemalloc используйте `outline_ss_process_heap_*` (allocated, resident и их разность — фрагментация), под mimalloc — RSS и метрики анонимных отображений.
+Глобальный аллокатор бинаря — `jemalloc` (cargo feature `jemalloc`, по умолчанию). Он выделяет память в анонимных отображениях, а не в области `[heap]`, поэтому `[heap]`- и trim-метрики не экспортируются. Используйте `outline_ss_process_heap_*` (allocated, resident и их разность — фрагментация).
 
 ### Grafana
 

@@ -31,18 +31,9 @@ env-filter = ["tracing-subscriber/env-filter"]
 # multi-thread: tokio work-stealing scheduler. Opt out via `--no-default-features`
 # for a single-threaded build, removing ~100–200 KB of scheduler code on MIPS.
 multi-thread = ["tokio/rt-multi-thread"]
-# mimalloc: the previous default, kept buildable for comparison and rollback.
-# Measured against jemalloc on 2026-08-22/23 (see the spec below) and dropped
-# from `default`: at matched load it held 143 MiB against jemalloc's 30 on the
-# same node, because it cannot return a partly-used arena and its arenas are
-# 32 MiB at minimum.
-mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
-# jemalloc: alternative allocator, mutually exclusive with `mimalloc`. Built to
-# answer one question mimalloc cannot: it reports live bytes (`stats.allocated`)
+# jemalloc: global allocator on non-Windows targets. Reports live bytes (`stats.allocated`)
 # next to what it holds from the OS (`stats.resident`), so fragmentation is
-# measured rather than inferred. It also decays dirty pages per extent instead
-# of per 32+ MiB arena, which is exactly where mimalloc could not give memory
-# back on our nodes.
+# measured rather than inferred, and decays dirty pages per extent.
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # test-tls: integration-only. Lets the binary trust a self-signed root supplied
 # via the OUTLINE_WS_TEST_TLS_CA_DER env var (forwarded to
@@ -63,9 +54,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 libc = { workspace = true, default-features = true }
-libmimalloc-sys = { workspace = true, features = ["extended"], optional = true }
 lru = { workspace = true, optional = true }
-mimalloc = { workspace = true, optional = true }
 outline-metrics = { path = "../../crates/outline-metrics", default-features = false }
 outline-net = { path = "../../crates/outline-net" }
 outline-routing = { path = "../../crates/outline-routing" }
@@ -94,10 +83,6 @@ webpki-roots = { workspace = true }
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
-
-[target.'cfg(windows)'.dependencies]
-mimalloc = { workspace = true }
-libmimalloc-sys = { workspace = true, features = ["extended"] }
 
 [dev-dependencies]
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false, features = ["test-helpers"] }

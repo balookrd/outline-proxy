@@ -270,7 +270,7 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | `[outbound].ipv6_refresh_secs` | `30` | Interval between re-reads of the interface addresses for `ipv6_interface` / `ipv6_prefix_interface` |
 | `[outbound].ipv6_sticky` | `true` | With source rotation on, pin one source address per upstream destination IP for `ipv6_sticky_ttl_secs` instead of drawing a new one per connect. Cloudflare binds the `cf_clearance` cookie to the client source IP, so with a new source on every request an origin such as `claude.ai` shows the "Verifying you are human" challenge every time. Rotation still happens between destinations and after the TTL. The pin cache has an LRU cap and per-entry TTL; the startup reachability probe still tests random sources. No effect without a prefix or interface. `false` restores a random source per connect |
 | `[outbound].ipv6_sticky_ttl_secs` | `1800` | TTL of a sticky source pin. Set it above the origin's challenge-clearance lifetime (about 30 min for Cloudflare) |
-| `[outbound].block_private_ips` | `false` | Block loopback, private, link-local, unspecified, multicast, broadcast, and cloud metadata destination IPs in outbound TCP/UDP connections to prevent SSRF |
+| `[outbound].block_private_ips` | `false` | Block loopback, private, link-local, unspecified, multicast, broadcast, and cloud metadata destination IPs in outbound TCP/UDP connections to prevent SSRF. Recommended `true` on public nodes; when `false`, the server logs a startup warning |
 | `[outbound].allowed_subnets` | `[]` | Explicit list of CIDRs or IPs permitted even when `block_private_ips` is enabled |
 | `tuning_profile` | `large` | Resource-limit preset: `small` / `medium` / `large`. Sets H2/H3 flow-control windows, stream limits, session and NAT timeouts, and the global UDP / XHTTP task and session caps |
 | `[tuning]` | profile values | Per-key overrides on top of the profile; keys below |
@@ -849,7 +849,7 @@ Exported metrics:
 - Largest virtual mappings and gaps from `/proc/self/smaps`
 - Build and configuration info
 
-The binary uses `jemalloc` as the global allocator (cargo feature `jemalloc`, default); `mimalloc` remains as a feature for rollback. Both allocate in anonymous mappings rather than the `[heap]` region, so `[heap]` and trim metrics are not exported. With jemalloc use `outline_ss_process_heap_*` (allocated, resident, and their difference, which is fragmentation); with mimalloc use RSS and the anonymous mapping gauges.
+The binary uses `jemalloc` as the global allocator (cargo feature `jemalloc`, default). It allocates in anonymous mappings rather than the `[heap]` region, so `[heap]` and trim metrics are not exported. Use `outline_ss_process_heap_*` (allocated, resident, and their difference, which is fragmentation).
 
 ### Grafana
 

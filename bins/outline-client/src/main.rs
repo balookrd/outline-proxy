@@ -3,13 +3,6 @@ use clap::Parser;
 
 use outline_client::config::Args;
 
-#[cfg(all(not(windows), feature = "mimalloc", feature = "jemalloc"))]
-compile_error!("features `mimalloc` and `jemalloc` are mutually exclusive: pick one allocator");
-
-#[cfg(any(windows, feature = "mimalloc"))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 #[cfg(all(not(windows), feature = "jemalloc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -38,43 +31,6 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[unsafe(export_name = "malloc_conf")]
 pub static MALLOC_CONF: &[u8] =
     b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,calloc_madvise_threshold:0\0";
-
-/// Period between forced mimalloc reclamation passes. 10 s keeps the window
-/// where post-burst RSS sits above `MemoryHigh` short (that window is where a
-/// low-RAM host livelocks); the heap walk itself is milliseconds, negligible
-/// at this cadence.
-#[cfg(any(windows, feature = "mimalloc"))]
-const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Spawn a low-frequency background thread that forces mimalloc to return
-/// decommittable memory to the OS.
-///
-/// mimalloc purges freed pages lazily, driven by allocator activity
-/// (alloc/free traffic). A process that goes idle right after a large
-/// transient burst — e.g. tens of thousands of TUN UDP flows created and
-/// then drained together — can otherwise sit on its high-water-mark RSS
-/// indefinitely, because nothing triggers the delayed purge. A periodic
-/// `mi_collect(true)` forces that reclamation; a heap walk every 30 s is
-/// negligible next to the RSS it returns. mimalloc already decommits on
-/// purge by default (`mi_option_purge_decommits = 1`), so reclaimed pages
-/// are handed back to the kernel rather than merely reset.
-#[cfg(any(windows, feature = "mimalloc"))]
-fn spawn_mimalloc_maintenance() {
-    let spawned = std::thread::Builder::new()
-        .name("mimalloc-purge".to_owned())
-        .spawn(|| {
-            loop {
-                std::thread::sleep(MIMALLOC_PURGE_INTERVAL);
-                // SAFETY: `mi_collect` is a thread-safe mimalloc entry point
-                // with no preconditions. `force = true` reclaims empty
-                // segments and returns decommitted memory to the OS.
-                unsafe { libmimalloc_sys::mi_collect(true) };
-            }
-        });
-    if let Err(error) = spawned {
-        tracing::warn!(%error, "failed to spawn mimalloc maintenance thread");
-    }
-}
 
 fn main() -> Result<()> {
     outline_client::init_rustls_crypto_provider()?;
@@ -125,9 +81,6 @@ fn main() -> Result<()> {
         // Log level is fixed at WARN. Use a full build to get RUST_LOG support.
         #[cfg(not(feature = "env-filter"))]
         tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
-
-        #[cfg(any(windows, feature = "mimalloc"))]
-        spawn_mimalloc_maintenance();
 
         #[cfg(all(unix, feature = "jemalloc"))]
         outline_client::memory::log_allocator_page_size();

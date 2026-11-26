@@ -137,6 +137,11 @@ pub async fn run(config: Config) -> Result<()> {
             shutdown_signal.clone(),
         );
     }
+    if !config.outbound_block_private_ips {
+        warn!(
+            "outbound.block_private_ips is false; outbound TCP/UDP connections may reach private, loopback, and metadata IP ranges (SSRF risk on public nodes)"
+        );
+    }
     info!(
         listen = ?config.listen,
         tcp_tls = config.tcp_tls_enabled(),

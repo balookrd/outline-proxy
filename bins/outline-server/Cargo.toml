@@ -24,9 +24,7 @@ hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 http-body-util = { workspace = true }
 libc = { workspace = true, default-features = true }
-libmimalloc-sys = { workspace = true, features = ["extended"], optional = true }
 lru = { workspace = true, default-features = true }
-mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
 metrics = "0.24"
@@ -68,13 +66,10 @@ zeroize = { workspace = true }
 [features]
 default = ["control", "jemalloc"]
 control = ["dep:toml_edit"]
-# Allocator, mutually exclusive. jemalloc is the default since 2026-08-23: on
-# the client it cut RSS from 143 MiB to 30 at matched load, and the server has
-# the same symptom — 87-90% of its resident memory sits in dirty mimalloc
-# arenas that never come back, because a partly-used arena cannot be returned
-# and arenas are 32 MiB at minimum. `mimalloc` stays buildable for rollback.
+# Allocator. jemalloc is the default since 2026-08-23: on the client it cut RSS
+# from 143 MiB to 30 at matched load, and the server had the same symptom under
+# mimalloc (87-90% of resident memory in dirty 32+ MiB arenas).
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
-mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # Integration-test hooks, never enabled in release builds: lets the e2e harness
 # shorten the relay keepalive (and with it the pong deadline and the xhttp idle
 # eviction) through `OUTLINE_SS_TEST_WS_KEEPALIVE_SECS`.

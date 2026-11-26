@@ -65,12 +65,12 @@ pub(super) enum DriveExit {
 /// Counting them as activity would make the watcher useless against the
 /// exact stall we are trying to detect.
 pub(super) struct IdleGuard {
-    activity_rx: mpsc::UnboundedReceiver<()>,
+    activity_rx: mpsc::Receiver<()>,
     pub(super) idle_timeout: Duration,
 }
 
 impl IdleGuard {
-    pub(super) fn new(activity_rx: mpsc::UnboundedReceiver<()>, idle_timeout: Duration) -> Self {
+    pub(super) fn new(activity_rx: mpsc::Receiver<()>, idle_timeout: Duration) -> Self {
         Self { activity_rx, idle_timeout }
     }
 

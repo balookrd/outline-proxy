@@ -94,7 +94,7 @@ async fn drive_tcp_session_tasks_idle_watcher_fires_and_aborts_both_tasks() {
     // abort both stalled tasks.  The senders are kept alive inside the
     // data tasks' closures (they only drop when the tasks are aborted),
     // mirroring how `serve_tcp_connect` wires them in.
-    let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
+    let (activity_tx, activity_rx) = mpsc::channel::<()>(1);
     let _uplink_tx = activity_tx.clone();
     let _downlink_tx = activity_tx.clone();
     drop(activity_tx);
@@ -123,7 +123,7 @@ async fn drive_tcp_session_tasks_idle_watcher_fires_and_aborts_both_tasks() {
 
 #[tokio::test]
 async fn drive_tcp_session_tasks_activity_resets_idle_deadline() {
-    let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
+    let (activity_tx, activity_rx) = mpsc::channel::<()>(1);
     let uplink_tx = activity_tx.clone();
     let downlink_tx = activity_tx.clone();
     drop(activity_tx);
@@ -133,7 +133,7 @@ async fn drive_tcp_session_tasks_activity_resets_idle_deadline() {
         // the 50 ms idle deadline alive so the watcher cannot fire.
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            let _ = uplink_tx.send(());
+            let _ = uplink_tx.try_send(());
         }
         Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
     };

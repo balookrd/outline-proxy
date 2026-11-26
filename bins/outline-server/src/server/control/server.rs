@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderValue, Request, StatusCode, header::AUTHORIZATION},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -68,8 +68,14 @@ async fn run(
         token: Arc::from(config.token),
         access_keys,
     };
+    let router = build_control_router(state);
+    serve_control_router(listener, router, shutdown).await
+}
 
-    let router = Router::new()
+const CONTROL_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
+fn build_control_router(state: ControlState) -> Router {
+    Router::new()
         .route("/control/users", get(list_users).post(create_user))
         .route("/control/users/{id}", get(get_user).patch(update_user).delete(delete_user))
         .route("/control/users/{id}/block", post(block_user))
@@ -79,10 +85,9 @@ async fn run(
         .route("/control/defaults", get(get_defaults))
         .route("/control/config", get(get_config).patch(patch_config))
         .fallback(any(not_found))
+        .layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
-        .with_state(state);
-
-    serve_control_router(listener, router, shutdown).await
+        .with_state(state)
 }
 
 /// Serve the control API router under the shared plain-HTTP accept loop, giving

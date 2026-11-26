@@ -178,3 +178,25 @@ async fn access_keys_routes_return_501_when_generator_not_configured() {
         .unwrap();
     assert_eq!(user_links.status(), StatusCode::NOT_IMPLEMENTED);
 }
+
+#[tokio::test]
+async fn control_router_rejects_oversized_body_with_413() {
+    use tower::ServiceExt;
+
+    let router = build_control_router(test_control_state());
+    let oversized = vec![b'a'; CONTROL_BODY_LIMIT_BYTES + 1];
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/control/config")
+                .header(AUTHORIZATION, "Bearer test-token")
+                .header("content-type", "application/json")
+                .body(Body::from(oversized))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

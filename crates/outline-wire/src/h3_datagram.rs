@@ -340,7 +340,7 @@ mod demux {
             // body), so datagrams arriving meanwhile count as `closed_stream`.
             // Queued datagrams, and any the reader writes into the channel
             // after this, return their bytes when the channel drops them.
-            let mut routes = self.demux.routes.lock().expect("demux lock");
+            let mut routes = self.demux.routes.lock().unwrap_or_else(|p| p.into_inner());
             // A newer registration of the same id must keep its route.
             let current = matches!(
                 routes.map.get(&self.id),
@@ -437,7 +437,7 @@ mod demux {
                         continue;
                     };
                     let lookup = {
-                        let mut routes = task_routes.lock().expect("demux lock");
+                        let mut routes = task_routes.lock().unwrap_or_else(|p| p.into_inner());
                         let ttl = routes.tombstone_ttl;
                         match routes.map.get(&id) {
                             Some(Route::Live { tx, queue, .. }) => {
@@ -485,7 +485,7 @@ mod demux {
                     }
                 }
                 // Connection closed: dropping the senders ends every `rx`.
-                let mut routes = task_routes.lock().expect("demux lock");
+                let mut routes = task_routes.lock().unwrap_or_else(|p| p.into_inner());
                 routes.map.clear();
                 routes.closed = true;
             });
@@ -515,7 +515,7 @@ mod demux {
             });
             // A fresh registration counts as just read: it is not stalled.
             queue.mark_active();
-            let mut routes = self.routes.lock().expect("demux lock");
+            let mut routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
             let generation = routes.next_generation;
             routes.next_generation += 1;
             if !routes.closed {

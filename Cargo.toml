@@ -67,10 +67,8 @@ http-body-util = "0.1"
 hyper = "1.8"
 hyper-util = "0.1"
 libc = { version = "0.2", default-features = false }
-libmimalloc-sys = { version = "0.1", default-features = false }
 lru = { version = "0.19", default-features = false }
 md5 = "0.8"
-mimalloc = { version = "0.1", default-features = false }
 parking_lot = "0.13"
 proptest = "1.5"
 quinn = { version = "0.11", default-features = false }
